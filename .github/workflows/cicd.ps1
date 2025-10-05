@@ -36,9 +36,12 @@ $moduleManifest = "$moduleFolder/Eigenverft.Manifested.Drydock.psd1" -replace '[
 Write-Host "===> Testing module manifest at: $moduleManifest" -ForegroundColor Cyan
 Test-ModuleManifest -Path $moduleManifest
 
-Publish-Module -Path $moduleFolder -Repository "PSGallery" -NuGetApiKey "$POWERSHELL_GALLERY"
 
 exit
+
+Publish-Module -Path $moduleFolder -Repository "PSGallery" -NuGetApiKey "$POWERSHELL_GALLERY"
+
+
 ##############################
 # Git operations: commit changes, tag the repo with the new version, and push them
 

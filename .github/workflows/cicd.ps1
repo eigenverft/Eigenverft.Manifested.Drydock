@@ -21,6 +21,9 @@ Install-Module -Name BlackBytesBox.Manifested.Git -Repository "PSGallery" -Force
 
 $GeneratedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
 $GitTopLevelDirectory = Get-GitTopLevelDirectory
+$gitCurrentBranch = Get-GitCurrentBranch
+$gitCurrentBranchRoot = Get-GitCurrentBranchRoot
+$gitRepositoryName = Get-GitRepositoryName
 ##############################
 
 # Define the path to your module folder (adjust "MyModule" as needed)
@@ -32,6 +35,14 @@ $moduleManifest = "$moduleFolder/Eigenverft.Manifested.Drydock.psd1" -replace '[
 Write-Host "===> Testing module manifest at: $moduleManifest" -ForegroundColor Cyan
 Test-ModuleManifest -Path $moduleManifest
 
+
+Write-Host "===> gitCurrentBranch at: $gitCurrentBranch" -ForegroundColor Cyan
+Write-Host "===> gitCurrentBranchRoot at: $gitCurrentBranchRoot" -ForegroundColor Cyan
+Write-Host "===> gitRepositoryName at: $gitRepositoryName" -ForegroundColor Cyan
+
+exit
+
 Publish-Module -Path $moduleFolder -Repository "PSGallery" -NuGetApiKey "$POWERSHELL_GALLERY"
+
 
 exit

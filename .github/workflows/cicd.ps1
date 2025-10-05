@@ -54,7 +54,7 @@ git -C "$gitTopLevelDirectory" -c user.name="github-actions[bot]" -c user.email=
 
 # 3) Ensure pushes use the token *when running in Actions*
 # (requires env GH_TOKEN and GITHUB_REPOSITORY)
-git -C "$gitTopLevelDirectory" remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/$gitRepositoryName.git"
+git -C "$gitTopLevelDirectory" remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/eigenverft/$gitRepositoryName.git"
 
 # 4) Push
 git -C "$gitTopLevelDirectory" push origin "$gitCurrentBranch"

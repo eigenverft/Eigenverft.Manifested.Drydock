@@ -45,8 +45,19 @@ Write-Host "===> gitRepositoryName at: $gitRepositoryName" -ForegroundColor Cyan
 #Stage only module changes
 
 git -C "$gitTopLevelDirectory" add -v -- "$moduleFolder"
-git -C "$gitTopLevelDirectory" commit -m "Updated from Workflow [no ci]"
-git push origin $gitCurrentBranch
+
+# (optional, avoids ownership warnings on GH runners)
+git -C "$gitTopLevelDirectory" config --global --add safe.directory "$gitTopLevelDirectory"
+
+# 2) Commit without user changes (use [skip ci] for GitHub; [no ci] is not recognized)
+git -C "$gitTopLevelDirectory" -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "Updated from Workflow [skip ci]"
+
+# 3) Ensure pushes use the token *when running in Actions*
+# (requires env GH_TOKEN and GITHUB_REPOSITORY)
+git -C "$gitTopLevelDirectory" remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+# 4) Push
+git -C "$gitTopLevelDirectory" push origin "$gitCurrentBranch"
 
 exit
 

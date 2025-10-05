@@ -44,7 +44,9 @@ Write-Host "===> gitRepositoryName at: $gitRepositoryName" -ForegroundColor Cyan
 
 #Stage only module changes
 
-git -C "$gitTopLevelDirectory" add -- "$moduleFolder"
+git -C "$gitTopLevelDirectory" add -v -- "$moduleFolder"
+git -C "$gitTopLevelDirectory" commit -m "Updated from Workflow [no ci]"
+git push origin $gitCurrentBranch
 
 exit
 

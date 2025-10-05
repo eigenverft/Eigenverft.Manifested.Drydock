@@ -44,7 +44,7 @@ Write-Host "===> gitRepositoryName at: $gitRepositoryName" -ForegroundColor Cyan
 
 #Stage only module changes
 
-git -C $gitTopLevelDirectory add -- "$moduleDir"/*.ps*
+git -C "$gitTopLevelDirectory" add -- "$moduleFolder"
 
 exit
 

@@ -25,6 +25,7 @@ $gitTopLevelDirectory = Get-GitTopLevelDirectory
 $gitCurrentBranch = Get-GitCurrentBranch
 $gitCurrentBranchRoot = Get-GitCurrentBranchRoot
 $gitRepositoryName = Get-GitRepositoryName
+$gitRemoteUrl = Get-GitRemoteUrl
 ##############################
 
 # Define the path to your module folder (adjust "MyModule" as needed)
@@ -41,6 +42,8 @@ Write-Host "===> gitTopLevelDirectory at: $gitTopLevelDirectory" -ForegroundColo
 Write-Host "===> gitCurrentBranch at: $gitCurrentBranch" -ForegroundColor Cyan
 Write-Host "===> gitCurrentBranchRoot at: $gitCurrentBranchRoot" -ForegroundColor Cyan
 Write-Host "===> gitRepositoryName at: $gitRepositoryName" -ForegroundColor Cyan
+Write-Host "===> gitRemoteUrl at: $gitRemoteUrl" -ForegroundColor Cyan
+
 
 try {
     Publish-Module -Path $moduleFolder -Repository "PSGallery" -NuGetApiKey "$POWERSHELL_GALLERY" -ErrorAction Stop    
@@ -61,7 +64,10 @@ git -C "$gitTopLevelDirectory" -c user.name="github-actions[bot]" -c user.email=
 
 # 3) Ensure pushes use the token *when running in Actions*
 # (requires env GH_TOKEN and GITHUB_REPOSITORY)
-git -C "$gitTopLevelDirectory" remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/eigenverft/$gitRepositoryName.git"
+#git -C "$gitTopLevelDirectory" remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/eigenverft/$gitRepositoryName.git"
+
+#& git -C $repoPath -c ("http.https://github.com/.extraheader=AUTHORIZATION: basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(("x-access-token:{0}" -f $token)))) push origin $branch
+
 
 # 4) Push
 git -C "$gitTopLevelDirectory" push origin "$gitCurrentBranch"

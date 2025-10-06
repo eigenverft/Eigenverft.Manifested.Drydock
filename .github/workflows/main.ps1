@@ -10,16 +10,16 @@ Ensure-Variable -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideValue
 $generatedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
 $gitTopLevelDirectory = Get-GitTopLevelDirectory
 $gitCurrentBranch = Get-GitCurrentBranch
-$gitCurrentBranchRoot = Get-GitCurrentBranchRoot
-$gitRepositoryName = Get-GitRepositoryName
-$gitRemoteUrl = Get-GitRemoteUrl
+#$gitCurrentBranchRoot = Get-GitCurrentBranchRoot
+#$gitRepositoryName = Get-GitRepositoryName
+#$gitRemoteUrl = Get-GitRemoteUrl
 
-Write-Host "===> gitTopLevelDirectory at: $generatedPowershellVersion" -ForegroundColor Cyan
+Write-Host "===> generatedPowershellVersion at: $($generatedPowershellVersion.VersionBuild).$($generatedPowershellVersion.VersionMajor).$($generatedPowershellVersion.VersionMinor)" -ForegroundColor Cyan
 Write-Host "===> gitTopLevelDirectory at: $gitTopLevelDirectory" -ForegroundColor Cyan
 Write-Host "===> gitCurrentBranch at: $gitCurrentBranch" -ForegroundColor Cyan
-Write-Host "===> gitCurrentBranchRoot at: $gitCurrentBranchRoot" -ForegroundColor Cyan
-Write-Host "===> gitRepositoryName at: $gitRepositoryName" -ForegroundColor Cyan
-Write-Host "===> gitRemoteUrl at: $gitRemoteUrl" -ForegroundColor Cyan
+#Write-Host "===> gitCurrentBranchRoot at: $gitCurrentBranchRoot" -ForegroundColor Cyan
+#Write-Host "===> gitRepositoryName at: $gitRepositoryName" -ForegroundColor Cyan
+#Write-Host "===> gitRemoteUrl at: $gitRemoteUrl" -ForegroundColor Cyan
 
 
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" -ErrorAction Stop

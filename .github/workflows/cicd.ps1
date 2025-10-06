@@ -14,10 +14,6 @@ if ([string]::IsNullOrEmpty($POWERSHELL_GALLERY)) {
     }
 }
 
-Install-Module -Name BlackBytesBox.Manifested.Initialize -Repository "PSGallery" -Force -AllowClobber
-Install-Module -Name BlackBytesBox.Manifested.Version -Repository "PSGallery" -Force -AllowClobber
-Install-Module -Name BlackBytesBox.Manifested.Git -Repository "PSGallery" -Force -AllowClobber
-
 Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Force -AllowClobber
 
 $GeneratedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0

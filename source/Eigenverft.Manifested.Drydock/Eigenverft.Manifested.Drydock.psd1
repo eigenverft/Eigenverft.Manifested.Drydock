@@ -75,10 +75,13 @@ FunctionsToExport = @(
     'Get-GitCurrentBranchRoot',
     'Get-GitRepositoryName',
     'Get-GitRemoteUrl',
+
     'Convert-DateTimeTo64SecVersionComponents',
     'Convert-64SecVersionComponentsToDateTime',
     'Convert-DateTimeTo64SecPowershellVersion',
-    'Convert-64SecPowershellVersionToDateTime'
+    'Convert-64SecPowershellVersionToDateTime',
+
+    'Update-ManifestModuleVersion'
     )
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -94,10 +97,13 @@ AliasesToExport = @(
     'ggcbr',
     'ggrn',
     'gru',
+
     'cdv64',
     'cdv64r',
     'cdv64ps',
-    'cdv64psr'
+    'cdv64psr',
+    
+    'ummv'
     )
 
 # DSC resources to export from this module

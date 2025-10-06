@@ -4,8 +4,8 @@ param (
 
 # If any of the parameters are empty, try loading them from a secrets file.
 if ([string]::IsNullOrEmpty($POWERSHELL_GALLERY)) {
-    if (Test-Path "$PSScriptRoot\cicd_secrets.ps1") {
-        . "$PSScriptRoot\cicd_secrets.ps1"
+    if (Test-Path "$PSScriptRoot\main_secrets.ps1") {
+        . "$PSScriptRoot\main_secrets.ps1"
         Write-Host "Secrets loaded from file."
     }
     if ([string]::IsNullOrEmpty($POWERSHELL_GALLERY))

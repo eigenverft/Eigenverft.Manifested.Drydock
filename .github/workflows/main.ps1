@@ -16,13 +16,14 @@ if ([string]::IsNullOrEmpty($POWERSHELL_GALLERY)) {
 
 Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Force -AllowClobber -RequiredVersion 0.20255.47830 -ErrorAction Stop
 
-$GeneratedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
+$generatedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
 $gitTopLevelDirectory = Get-GitTopLevelDirectory
 $gitCurrentBranch = Get-GitCurrentBranch
 $gitCurrentBranchRoot = Get-GitCurrentBranchRoot
 $gitRepositoryName = Get-GitRepositoryName
 $gitRemoteUrl = Get-GitRemoteUrl
 
+Write-Host "===> gitTopLevelDirectory at: $generatedPowershellVersion" -ForegroundColor Cyan
 Write-Host "===> gitTopLevelDirectory at: $gitTopLevelDirectory" -ForegroundColor Cyan
 Write-Host "===> gitCurrentBranch at: $gitCurrentBranch" -ForegroundColor Cyan
 Write-Host "===> gitCurrentBranchRoot at: $gitCurrentBranchRoot" -ForegroundColor Cyan
@@ -33,7 +34,7 @@ Write-Host "===> gitRemoteUrl at: $gitRemoteUrl" -ForegroundColor Cyan
 
 # Define the path to your module folder (adjust "MyModule" as needed)
 $moduleFolder = "$gitTopLevelDirectory/source/Eigenverft.Manifested.Drydock"
-Update-ManifestModuleVersion -ManifestPath "$moduleFolder" -NewVersion "$($GeneratedPowershellVersion.VersionBuild).$($GeneratedPowershellVersion.VersionMajor).$($GeneratedPowershellVersion.VersionMinor)"
+Update-ManifestModuleVersion -ManifestPath "$moduleFolder" -NewVersion "$($generatedPowershellVersion.VersionBuild).$($generatedPowershellVersion.VersionMajor).$($generatedPowershellVersion.VersionMinor)"
 $moduleManifest = "$moduleFolder/Eigenverft.Manifested.Drydock.psd1" -replace '[/\\]', [System.IO.Path]::DirectorySeparatorChar
 
 # Validate the module manifest

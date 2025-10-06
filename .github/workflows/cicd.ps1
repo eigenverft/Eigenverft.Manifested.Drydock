@@ -14,7 +14,7 @@ if ([string]::IsNullOrEmpty($POWERSHELL_GALLERY)) {
     }
 }
 
-Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Force -AllowClobber
+Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Force -AllowClobber -RequiredVersion 0.20255.47830 -ErrorAction Stop
 
 $GeneratedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
 $gitTopLevelDirectory = Get-GitTopLevelDirectory
@@ -48,15 +48,11 @@ catch {
 }
 
 #Stage only module changes
-
-git -C "$gitTopLevelDirectory" add -v -- "$moduleFolder"
-
 # (optional, avoids ownership warnings on GH runners)
-git -C "$gitTopLevelDirectory" config --global --add safe.directory "$gitTopLevelDirectory"
-
 # 2) Commit without user changes (use [skip ci] for GitHub; [no ci] is not recognized)
-git -C "$gitTopLevelDirectory" -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "Updated from Workflow [skip ci]"
-
 # 4) Push
+git -C "$gitTopLevelDirectory" add -v -- "$moduleFolder"
+git -C "$gitTopLevelDirectory" config --global --add safe.directory "$gitTopLevelDirectory"
+git -C "$gitTopLevelDirectory" -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "Updated from Workflow [skip ci]"
 git -C "$gitTopLevelDirectory" push origin "$gitCurrentBranch"
 

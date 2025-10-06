@@ -263,6 +263,147 @@ function Get-GitRemoteUrl {
     }
 }
 
+function Invoke-GitAddCommitPush {
+<#
+.SYNOPSIS
+Stages a module folder, configures safe.directory, commits with a transient identity, and pushes to origin.
+
+.DESCRIPTION
+This wraps four Git calls, kept close to the original flags:
+  git -C "$TopLevelDirectory" add -v -A -- "$ModuleFolder"
+  git -C "$TopLevelDirectory" config --global --add safe.directory "$TopLevelDirectory"
+  git -C "$TopLevelDirectory" -c user.name="..." -c user.email="..." commit -m "..."
+  git -C "$TopLevelDirectory" push origin "$CurrentBranch"
+
+Writes status via Write-Host and emits no return value. Optionally exits the host on errors.
+
+.PARAMETER TopLevelDirectory
+Git repository root to pass via -C. If omitted, the current repo root is detected.
+
+.PARAMETER ModuleFolder
+Pathspec/folder to stage (ideally relative to repo root). Passed after the pathspec separator: -- "$ModuleFolder".
+
+.PARAMETER CurrentBranch
+Target branch for push. If omitted, the current branch is detected.
+
+.PARAMETER CommitMessage
+Commit message. Default: 'Updated from Workflow [skip ci]'.
+
+PARAMETER UserName
+Transient user.name for the commit via 'git -c'. Default: 'github-actions[bot]'.
+
+.PARAMETER UserEmail
+Transient user.email for the commit via 'git -c'. Default matches GitHub Actions bot.
+
+.PARAMETER SkipSafeDirectory
+Skips the 'git config --global --add safe.directory' step.
+
+.PARAMETER NoPush
+Skips the push step.
+
+.PARAMETER ExitOnError
+On any failure, exits the PowerShell host with a non-zero code (atomic behavior).
+
+.EXAMPLE
+Invoke-GitAddCommitPush -TopLevelDirectory (Get-GitTopLevelDirectory) -ModuleFolder 'src/My.Module' -CurrentBranch 'main'
+
+.EXAMPLE
+Invoke-GitAddCommitPush -ModuleFolder 'src/My.Module' -ExitOnError
+Auto-detects repo root and branch; exits the session if any step fails.
+
+.NOTES
+- Uses Write-Host per requirement; no objects returned.
+- Reviewer note: Avoids changing original flags; error handling added around each call.
+#>
+    [CmdletBinding()]
+    [Alias('igacp')]
+    param(
+        [string]$TopLevelDirectory,
+        [Parameter(Mandatory)][string]$ModuleFolder,
+        [string]$CurrentBranch,
+        [string]$CommitMessage = 'Updated from Workflow [skip ci]',
+        [string]$UserName  = 'github-actions[bot]',
+        [string]$UserEmail = '41898282+github-actions[bot]@users.noreply.github.com',
+        [switch]$SkipSafeDirectory,
+        [switch]$NoPush,
+        [switch]$ExitOnError
+    )
+
+    # --- Preflight: Git availability ----------------------------------------------------------
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Host "[Invoke-GitAddCommitPush] Git not found in PATH."
+        if ($ExitOnError) { exit 1 }; return
+    }
+
+    # --- Resolve repo root: use provided path, or detect via rev-parse ------------------------
+    if (-not $TopLevelDirectory) {
+        try {
+            $TopLevelDirectory = (git rev-parse --show-toplevel 2>$null).Trim()
+        } catch { $TopLevelDirectory = $null }
+    }
+    if ([string]::IsNullOrWhiteSpace($TopLevelDirectory)) {
+        Write-Host "[Invoke-GitAddCommitPush] Unable to determine repo root (TopLevelDirectory)."
+        if ($ExitOnError) { exit 1 }; return
+    }
+    try {
+        $repoPath = (Resolve-Path -LiteralPath $TopLevelDirectory -ErrorAction Stop).ProviderPath
+    } catch {
+        Write-Host "[Invoke-GitAddCommitPush] Repo root not found: '$TopLevelDirectory'."
+        if ($ExitOnError) { exit 1 }; return
+    }
+
+    # --- git add -v -A -- "$ModuleFolder" -----------------------------------------------------
+    Write-Host "[Invoke-GitAddCommitPush] git add -v -A -- '$ModuleFolder'"
+    & git -C $repoPath add -v -A -- $ModuleFolder 2>&1 | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[Invoke-GitAddCommitPush] git add failed (code $LASTEXITCODE)."
+        if ($ExitOnError) { exit $LASTEXITCODE }; return
+    }
+
+    # --- git config --global --add safe.directory "$TopLevelDirectory" ------------------------
+    if (-not $SkipSafeDirectory) {
+        Write-Host "[Invoke-GitAddCommitPush] git config --global --add safe.directory '$repoPath'"
+        & git -C $repoPath config --global --add safe.directory $repoPath 2>&1 | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[Invoke-GitAddCommitPush] git config safe.directory failed (code $LASTEXITCODE)."
+            if ($ExitOnError) { exit $LASTEXITCODE }; return
+        }
+    }
+
+    # --- git commit with transient identity ---------------------------------------------------
+    Write-Host "[Invoke-GitAddCommitPush] git commit -m '$CommitMessage'"
+    & git -C $repoPath -c "user.name=$UserName" -c "user.email=$UserEmail" commit -m $CommitMessage 2>&1 `
+        | ForEach-Object { Write-Host $_ }
+    $commitCode = $LASTEXITCODE
+    if ($commitCode -ne 0) {
+        # Common case: nothing to commit -> nonzero exit with message. Treat as soft success unless atomic.
+        Write-Host "[Invoke-GitAddCommitPush] git commit returned $commitCode (possibly nothing to commit)."
+        if ($ExitOnError) { exit $commitCode }
+    }
+
+    # --- Determine branch if not provided -----------------------------------------------------
+    if (-not $CurrentBranch) {
+        $CurrentBranch = (git -C $repoPath rev-parse --abbrev-ref HEAD 2>$null).Trim()
+    }
+    if ([string]::IsNullOrWhiteSpace($CurrentBranch)) {
+        Write-Host "[Invoke-GitAddCommitPush] Unable to determine branch."
+        if ($ExitOnError) { exit 1 }; return
+    }
+
+    # --- git push origin "$CurrentBranch" -----------------------------------------------------
+    if (-not $NoPush) {
+        Write-Host "[Invoke-GitAddCommitPush] git push origin '$CurrentBranch'"
+        & git -C $repoPath push origin $CurrentBranch 2>&1 | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[Invoke-GitAddCommitPush] git push failed (code $LASTEXITCODE)."
+            if ($ExitOnError) { exit $LASTEXITCODE }; return
+        }
+    }
+
+    Write-Host "[Invoke-GitAddCommitPush] Completed."
+}
+
+
 ###############################################
 
 

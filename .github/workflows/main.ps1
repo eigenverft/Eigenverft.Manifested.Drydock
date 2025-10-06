@@ -2,22 +2,10 @@ param (
     [string]$POWERSHELL_GALLERY
 )
 
-# If any of the parameters are empty, try loading them from a secrets file.
-if ([string]::IsNullOrEmpty($POWERSHELL_GALLERY)) {
-    if (Test-Path "$PSScriptRoot\main_secrets.ps1") {
-        . "$PSScriptRoot\main_secrets.ps1"
-        Write-Host "Secrets loaded from file."
-    }
-    if ([string]::IsNullOrEmpty($POWERSHELL_GALLERY))
-    {
-        exit 1
-    }
-}
-
-#Import-ScriptIfPresent -FullPath (Join-Path $PSScriptRoot 'main_secrets.ps1')
-#Ensure-Variable -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideValue
-
 Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Force -AllowClobber -ErrorAction Stop
+
+Import-ScriptIfPresent -FullPath (Join-Path $PSScriptRoot 'main_secrets.ps1')
+Ensure-Variable -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideValue
 
 $generatedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
 $gitTopLevelDirectory = Get-GitTopLevelDirectory

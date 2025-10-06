@@ -75,6 +75,7 @@ FunctionsToExport = @(
     'Get-GitCurrentBranchRoot',
     'Get-GitRepositoryName',
     'Get-GitRemoteUrl',
+    'Invoke-GitAddCommitPush',
 
     'Convert-DateTimeTo64SecVersionComponents',
     'Convert-64SecVersionComponentsToDateTime',
@@ -101,6 +102,7 @@ AliasesToExport = @(
     'ggcbr',
     'ggrn',
     'gru',
+    'igacp',
 
     'cdv64',
     'cdv64r',

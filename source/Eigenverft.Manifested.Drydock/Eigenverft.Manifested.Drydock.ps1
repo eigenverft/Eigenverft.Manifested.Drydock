@@ -265,168 +265,95 @@ function Get-GitRemoteUrl {
 
 ###############################################
 
+
 function Convert-DateTimeTo64SecVersionComponents {
-    <#
-    .SYNOPSIS
-        Converts a DateTime instance into NuGet and assembly version components with a granularity of 64 seconds.
+<#
+.SYNOPSIS
+  Encode DateTime to 64s-packed version (Build.Major.Minor.Revision), UTC-internal.
+.DESCRIPTION
+  Seconds since Jan 1 (UTC) >> 6, split: HighPart (0..7), LowPart (16-bit).
+  Minor = (Year * 10) + HighPart. Valid for years where Minor ≤ 65535.
+#>
+  [CmdletBinding()]
+  [Alias('cdv64_2')]
+  param(
+    [Parameter(Mandatory=$true)][int]$VersionBuild,
+    [Parameter(Mandatory=$true)][int]$VersionMajor,
+    [Parameter()][datetime]$InputDate = (Get-Date).ToUniversalTime()
+  )
 
-    .DESCRIPTION
-        This function calculates the total seconds elapsed from January 1st of the input DateTime's year and discards the lower 6 bits (each unit representing 64 seconds). The resulting value is split into:
-          - LowPart: The lower 16 bits, simulating a ushort value.
-          - HighPart: The remaining upper bits combined with a year-based offset (year multiplied by 10).
-        The output is provided as a version string along with individual version components. This conversion is designed to generate version segments suitable for both NuGet package versions and assembly version numbers. The function accepts additional version parameters and supports years up to 6553.
+  $dtUtc = $InputDate.ToUniversalTime()
+  if ($dtUtc.Year -lt 1 -or $dtUtc.Year -gt 9999) { throw "Year must be 1..9999." }
 
-    .PARAMETER VersionBuild
-        An integer representing the build version component.
+  $startOfYear = New-Object datetime ($dtUtc.Year,1,1,0,0,0,[datetimekind]::Utc)
+  $elapsedSeconds = [int](([timespan]($dtUtc - $startOfYear)).TotalSeconds)
+  $shifted = $elapsedSeconds -shr 6
 
-    .PARAMETER VersionMajor
-        An integer representing the major version component.
+  $low  = $shifted -band 0xFFFF
+  $high = $shifted -shr 16
+  if ($high -lt 0 -or $high -gt 7) { throw "Internal HighPart=$high out of 0..7." }
 
-    .PARAMETER InputDate
-        An optional UTC DateTime value. If not provided, the current UTC date/time is used.
-        The year of the InputDate must not exceed 6553.
+  $minor = ($dtUtc.Year * 10) + $high
+  if ($minor -gt 65535) { throw "VersionMinor=$minor (>65535). Use year ≤ 6552 or change packing." }
 
-    .EXAMPLE
-        PS C:\> $result = Convert-DateTimeTo64SecVersionComponents -VersionBuild 1 -VersionMajor 0
-        PS C:\> $result
-        Name              Value
-        ----              -----
-        VersionFull       1.0.20250.1234
-        VersionBuild      1
-        VersionMajor      0
-        VersionMinor      20250
-        VersionRevision   1234
-    #>
-
-    [CmdletBinding()]
-    [alias("cdv64")]
-    param(
-        [Parameter(Mandatory = $true)]
-        [int]$VersionBuild,
-
-        [Parameter(Mandatory = $true)]
-        [int]$VersionMajor,
-
-        [Parameter(Mandatory = $false)]
-        [datetime]$InputDate = (Get-Date).ToUniversalTime()
-    )
-
-    # The number of bits to discard, where each unit equals 64 seconds.
-    $shiftAmount = 6
-
-    $dateTime = $InputDate
-
-    if ($dateTime.Year -gt 6553) {
-        throw "Year must not be greater than 6553."
-    }
-
-    # Determine the start of the current year
-    $startOfYear = [datetime]::new($dateTime.Year, 1, 1, 0, 0, 0, $dateTime.Kind)
-    
-    # Calculate total seconds elapsed since the start of the year
-    $elapsedSeconds = [int](([timespan]($dateTime - $startOfYear)).TotalSeconds)
-    
-    # Discard the lower bits by applying a bitwise shift
-    $shiftedSeconds = $elapsedSeconds -shr $shiftAmount
-    
-    # LowPart: extract the lower 16 bits (simulate ushort using bitwise AND with 0xFFFF)
-    $lowPart = $shiftedSeconds -band 0xFFFF
-    
-    # HighPart: remaining bits after a right-shift of 16 bits
-    $highPart = $shiftedSeconds -shr 16
-    
-    # Combine the high part with a year offset (year multiplied by 10)
-    $combinedHigh = $highPart + ($dateTime.Year * 10)
-    
-    # Return a hashtable with the version string and components (output names must remain unchanged)
-    return @{
-        VersionFull    = "$($VersionBuild.ToString()).$($VersionMajor.ToString()).$($combinedHigh.ToString()).$($lowPart.ToString())"
-        VersionBuild   = $VersionBuild.ToString();
-        VersionMajor   = $VersionMajor.ToString();
-        VersionMinor   = $combinedHigh.ToString();
-        VersionRevision = $lowPart.ToString()
-    }
+  @{
+    VersionFull     = "$($VersionBuild).$($VersionMajor).$minor.$low"
+    VersionBuild    = "$VersionBuild"
+    VersionMajor    = "$VersionMajor"
+    VersionMinor    = "$minor"
+    VersionRevision = "$low"
+  }
 }
 
 function Convert-64SecVersionComponentsToDateTime {
-    <#
-    .SYNOPSIS
-        Reconstructs an approximate DateTime from version components encoded with 64-second granularity.
-        
-    .DESCRIPTION
-        This function reverses the conversion performed by Convert-DateTimeTo64SecVersionComponents.
-        It accepts the version components where VersionMinor is calculated as (Year * 10 + HighPart)
-        and VersionRevision holds the lower 16 bits of the shifted elapsed seconds.
-        The function computes:
-          - The Year is extracted from VersionMinor by integer division by 10.
-          - The original shifted seconds are reassembled from the high part (derived from VersionMinor) and VersionRevision.
-          - Multiplying the shifted seconds by 64 recovers the approximate total elapsed seconds since the year's start.
-        The function returns a hashtable with the original VersionBuild, VersionMajor, and the computed DateTime.
-        Note: Due to the loss of the lower 6 bits in the original conversion, the computed DateTime is approximate.
-        
-    .PARAMETER VersionBuild
-        An integer representing the build version component (passed through unchanged).
-        
-    .PARAMETER VersionMajor
-        An integer representing the major version component (passed through unchanged).
-        
-    .PARAMETER VersionMinor
-        An integer representing the combined high part of the shifted seconds along with the encoded year 
-        (calculated as Year * 10 + (shiftedSeconds >> 16)).
-        
-    .PARAMETER VersionRevision
-        An integer representing the low 16 bits of the shifted seconds.
-        
-    .EXAMPLE
-        PS C:\> $result = Convert-64SecVersionComponentsToDateTime -VersionBuild 1 -VersionMajor 0 `
-                  -VersionMinor 20250 -VersionRevision 1234
-        PS C:\> $result
-        Name                Value
-        ----                -----
-        VersionBuild        1
-        VersionMajor        0
-        ComputedDateTime    2025-06-15T12:34:56Z
-    #>
-    [CmdletBinding()]
-    [alias("cdv64r")]
-    param(
-        [Parameter(Mandatory = $true)]
-        [int]$VersionBuild,
-        
-        [Parameter(Mandatory = $true)]
-        [int]$VersionMajor,
-        
-        [Parameter(Mandatory = $true)]
-        [int]$VersionMinor,
-        
-        [Parameter(Mandatory = $true)]
-        [int]$VersionRevision
-    )
+<#
+.SYNOPSIS
+  Decode 64s-packed version back to approximate UTC DateTime.
+.DESCRIPTION
+  Expects: Minor = Year*10 + HighPart, Revision = Low 16 bits.
+  Robust year extraction (integer decade + normalization) to avoid rounding bugs.
+#>
+  [CmdletBinding()]
+  [Alias('cdv64r_2')]
+  param(
+    [Parameter(Mandatory=$true)][int]$VersionBuild,
+    [Parameter(Mandatory=$true)][int]$VersionMajor,
+    [Parameter(Mandatory=$true)][int]$VersionMinor,
+    [Parameter(Mandatory=$true)][int]$VersionRevision
+  )
 
-    # Extract the year from VersionMinor.
-    # Since VersionMinor = (Year * 10) + HighPart, integer division by 10 yields the year.
-    $year = [int]($VersionMinor / 10)
+  if ($VersionMinor -lt 0) { throw "VersionMinor must be ≥ 0." }
 
-    # Calculate the high part by subtracting (Year * 10) from VersionMinor.
-    $highPart = $VersionMinor - ($year * 10)
+  # --- Robust decade split (avoid rounding-to-nearest bugs) ---
+  # Use integer truncation then normalize remainder into 0..9.
+  $year = [int]($VersionMinor / 10)          # truncates toward zero for positives
+  $high = $VersionMinor - ($year * 10)
+  if ($high -lt 0) { $year -= 1; $high += 10 }
+  elseif ($high -gt 9) { $year += 1; $high -= 10 }
 
-    # Reconstruct the shifted seconds: original shiftedSeconds = (HighPart << 16) + VersionRevision.
-    $shiftedSeconds = ($highPart -shl 16) + $VersionRevision
+  if ($year -lt 1 -or $year -gt 9999) { throw "Decoded year $year out of 1..9999." }
+  if ($high -lt 0 -or $high -gt 7)    { throw "HighPart $high out of range 0..7 — not an encoded 64s version." }
 
-    # Multiply the shifted seconds by 64 to recover the approximate elapsed seconds.
-    $elapsedSeconds = $shiftedSeconds * 64
+  $low = $VersionRevision -band 0xFFFF
+  if ($VersionRevision -ne $low) { throw "VersionRevision $VersionRevision exceeds 16 bits." }
 
-    # Define the start of the year in UTC.
-    $startOfYear = [datetime]::new($year, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+  $shifted = ($high -shl 16) -bor $low
 
-    # Compute the approximate DateTime.
-    $computedDateTime = $startOfYear.AddSeconds($elapsedSeconds)
+  $isLeap = [datetime]::IsLeapYear($year)
+  $secondsInYear = if ($isLeap) { 31622400 } else { 31536000 }
+  $maxShifted = [int][math]::Floor(($secondsInYear - 1) / 64)
+  if ($shifted -gt $maxShifted) {
+    throw "ShiftedSeconds $shifted exceeds max $maxShifted for year $year — components invalid."
+  }
 
-    return @{
-        VersionBuild     = $VersionBuild;
-        VersionMajor     = $VersionMajor;
-        ComputedDateTime = $computedDateTime
-    }
+  $startOfYearUtc = New-Object datetime ($year,1,1,0,0,0,[datetimekind]::Utc)
+  $computed = $startOfYearUtc.AddSeconds($shifted * 64)
+
+  @{
+    VersionBuild     = $VersionBuild
+    VersionMajor     = $VersionMajor
+    ComputedDateTime = $computed
+  }
 }
 
 function Convert-DateTimeTo64SecPowershellVersion {
@@ -595,3 +522,15 @@ function Update-ManifestModuleVersion {
     # Write the updated content back to the manifest file.
     [System.IO.File]::WriteAllText($ManifestPath, $updatedContent)
 }
+
+
+#$now=(Get-Date).ToUniversalTime()
+#$e=Convert-DateTimeTo64SecVersionComponents -VersionBuild 1 -VersionMajor 0 -InputDate $now
+#$d=Convert-64SecVersionComponentsToDateTime -VersionBuild ([int]$e.VersionBuild) -VersionMajor ([int]$e.VersionMajor) -VersionMinor ([int]$e.VersionMinor) -VersionRevision ([int]$e.VersionRevision)
+#"Full=$($e.VersionFull)  Decoded=$($d.ComputedDateTime.ToString('o'))  Δs=$([int](($now - $d.ComputedDateTime).TotalSeconds))"
+
+
+#$nowx =(Get-Date).ToUniversalTime()
+#$ex=Convert-DateTimeTo64SecPowershellVersion -VersionBuild 1 -InputDate $nowx
+#$dx=Convert-64SecPowershellVersionToDateTime -VersionBuild ([int]$ex.VersionBuild) -VersionMajor ([int]$ex.VersionMajor) -VersionMinor ([int]$ex.VersionMinor)
+#"Full=$($ex.VersionFull)  Decoded=$($dx.ComputedDateTime.ToString('o'))  Δs=$([int](($now - $dx.ComputedDateTime).TotalSeconds))"

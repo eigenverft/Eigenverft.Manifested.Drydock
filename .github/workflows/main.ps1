@@ -14,7 +14,9 @@ if ([string]::IsNullOrEmpty($POWERSHELL_GALLERY)) {
     }
 }
 
-#Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Force -AllowClobber -RequiredVersion 0.20255.47830 -ErrorAction Stop
+Import-ScriptIfPresent -FullPath (Join-Path $PSScriptRoot 'main_secrets.ps1')
+Ensure-Variable -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideValue
+
 Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Force -AllowClobber -ErrorAction Stop
 
 $generatedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
@@ -33,17 +35,13 @@ Write-Host "===> gitRemoteUrl at: $gitRemoteUrl" -ForegroundColor Cyan
 
 ##############################
 
-# Define the path to your module folder (adjust "MyModule" as needed)
-$moduleFolder = "$gitTopLevelDirectory/source/Eigenverft.Manifested.Drydock"
-Update-ManifestModuleVersion -ManifestPath "$moduleFolder" -NewVersion "$($generatedPowershellVersion.VersionBuild).$($generatedPowershellVersion.VersionMajor).$($generatedPowershellVersion.VersionMinor)"
-$moduleManifest = "$moduleFolder/Eigenverft.Manifested.Drydock.psd1" -replace '[/\\]', [System.IO.Path]::DirectorySeparatorChar
-
-# Validate the module manifest
-Write-Host "===> Testing module manifest at: $moduleManifest" -ForegroundColor Cyan
-Test-ModuleManifest -Path $moduleManifest
+$manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" -ErrorAction Stop
+Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedPowershellVersion.VersionBuild).$($generatedPowershellVersion.VersionMajor).$($generatedPowershellVersion.VersionMinor)"
+Write-Host "===> Testing module manifest at: $($manifestFile.FullName)" -ForegroundColor Cyan
+Test-ModuleManifest -Path $($manifestFile.FullName)
 
 try {
-    Publish-Module -Path $moduleFolder -Repository "PSGallery" -NuGetApiKey "$POWERSHELL_GALLERY" -ErrorAction Stop    
+    Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$POWERSHELL_GALLERY" -ErrorAction Stop    
 }
 catch {
     Write-Error "Failed to publish module: $_"
@@ -53,7 +51,7 @@ catch {
 # (optional, avoids ownership warnings on GH runners)
 # 2) Commit without user changes (use [skip ci] for GitHub; [no ci] is not recognized)
 # 4) Push
-git -C "$gitTopLevelDirectory" add -v -- "$moduleFolder"
+git -C "$gitTopLevelDirectory" add -v -A -- "$moduleFolder"
 git -C "$gitTopLevelDirectory" config --global --add safe.directory "$gitTopLevelDirectory"
 git -C "$gitTopLevelDirectory" -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "Updated from Workflow [skip ci]"
 git -C "$gitTopLevelDirectory" push origin "$gitCurrentBranch"

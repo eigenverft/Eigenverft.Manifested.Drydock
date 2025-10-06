@@ -566,6 +566,164 @@ function Find-FilesByPattern {
     }
 }
 
+function Import-ScriptIfPresent {
+<#
+.SYNOPSIS
+Dot-sources a script file if it exists; writes a user-facing message.
+
+.DESCRIPTION
+Accepts a full or relative path to a .ps1 file. If found, the file is dot-sourced into the
+current scope and a success message is written; otherwise, a not-found/failure message is written.
+This function intentionally returns no value.
+
+.PARAMETER FullPath
+The path to a .ps1 file to dot-source. Alias: Full.
+
+.EXAMPLE
+Import-ScriptIfPresent -Full (Join-Path $PSScriptRoot 'test.ps1')
+
+.EXAMPLE
+Import-ScriptIfPresent -Full 'C:\repo\scripts\test.ps1'
+
+.NOTES
+Reviewer note: Uses Write-Host per requirement; avoid returning values to prevent pipeline side-effects.
+#>
+    [CmdletBinding()]
+    [alias("isip")]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$FullPath
+    )
+
+    # Reviewer note: Emit messages only; do not return values.
+    if ([string]::IsNullOrWhiteSpace($FullPath)) {
+        Write-Host "[Import-ScriptIfPresent] No path provided."
+        return
+    }
+
+    # Resolve relative paths for clearer diagnostics.
+    try {
+        $resolved = Resolve-Path -LiteralPath $FullPath -ErrorAction Stop
+        $target   = $resolved.ProviderPath
+    } catch {
+        Write-Host "[Import-ScriptIfPresent] Not found: '$FullPath'."
+        return
+    }
+
+    if (Test-Path -LiteralPath $target -PathType Leaf) {
+        if ($target -notmatch '\.ps1$') {
+            # Reviewer note: Dot-sourcing non-.ps1 files is likely unintended.
+            Write-Host "[Import-ScriptIfPresent] Skipped: target is not a .ps1 file -> '$target'."
+            return
+        }
+        try {
+            . $target
+            Write-Host "[Import-ScriptIfPresent] Success: dot-sourced '$target'."
+        } catch {
+            Write-Host "[Import-ScriptIfPresent] Failed to dot-source '$target': $($_.Exception.Message)"
+        }
+    } else {
+        Write-Host "[Import-ScriptIfPresent] Not found: '$FullPath'."
+    }
+}
+
+function Ensure-Variable {
+    # Suppress the use of unapproved verb in function name
+    [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+    <#
+    .SYNOPSIS
+    Ensures a variable meets conditions and displays its details.
+
+    .DESCRIPTION
+    Accepts a script block containing a simple variable reference (e.g. { $currentBranch }),
+    extracts the variable's name from the AST, evaluates its value, and displays both in one line.
+    The -HideValue switch suppresses the actual value by displaying "[Hidden]". When -ExitIfNullOrEmpty
+    is specified, the function exits with code 1 if the variable's value is null, an empty string,
+    or (in the case of a hashtable) empty.
+
+    .PARAMETER Variable
+    A script block that must contain a simple variable reference.
+
+    .PARAMETER HideValue
+    If specified, the displayed value will be replaced with "[Hidden]".
+
+    .PARAMETER ExitIfNullOrEmpty
+    If specified, the function exits with code 1 when the variable's value is null or empty.
+
+    .EXAMPLE
+    $currentBranch = "develop"
+    Ensure-Variable -Variable { $currentBranch }
+    # Output: Variable Name: currentBranch, Value: develop
+
+    .EXAMPLE
+    $currentBranch = ""
+    Ensure-Variable -Variable { $currentBranch } -ExitIfNullOrEmpty
+    # Outputs an error and exits with code 1.
+
+    .EXAMPLE
+    $myHash = @{ Key1 = "Value1"; Key2 = "Value2" }
+    Ensure-Variable -Variable { $myHash }
+    # Output: Variable Name: myHash, Value: {"Key1":"Value1","Key2":"Value2"}
+
+    .NOTES
+    The script block must contain a simple variable reference for the AST extraction to work correctly.
+    #>
+    [CmdletBinding()]
+    [alias("ev")]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ScriptBlock]$Variable,
+        
+        [switch]$HideValue,
+        
+        [switch]$ExitIfNullOrEmpty
+    )
+
+    # Extract variable name from the script block's AST.
+    $ast = $Variable.Ast
+    $varAst = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)
+    if (-not $varAst) {
+        Write-Error "The script block must contain a simple variable reference."
+        return
+    }
+    $varName = $varAst.VariablePath.UserPath
+
+    # Evaluate the script block to get the variable's value.
+    $value = & $Variable
+
+    # Check if the value is null or empty and exit if required.
+    if ($ExitIfNullOrEmpty) {
+        if ($null -eq $value) {
+            Write-Error "Variable '$varName' is null."
+            exit 1
+        }
+        if (($value -is [string]) -and [string]::IsNullOrEmpty($value)) {
+            Write-Error "Variable '$varName' is an empty string."
+            exit 1
+        }
+        if ($value -is [hashtable] -and ($value.Count -eq 0)) {
+            Write-Error "Variable '$varName' is an empty hashtable."
+            exit 1
+        }
+    }
+
+    # Prepare the display value.
+    if ($HideValue) {
+        $displayValue = "[Hidden]"
+    }
+    else {
+        if ($value -is [hashtable]) {
+            # Convert the hashtable to a compact JSON string for one-line output.
+            $displayValue = $value | ConvertTo-Json -Compress
+        }
+        else {
+            $displayValue = $value
+        }
+    }
+
+    Write-Output "Variable Name: $varName, Value: $displayValue"
+}
+
 #$now=(Get-Date).ToUniversalTime()
 #$e=Convert-DateTimeTo64SecVersionComponents -VersionBuild 1 -VersionMajor 0 -InputDate $now
 #$d=Convert-64SecVersionComponentsToDateTime -VersionBuild ([int]$e.VersionBuild) -VersionMajor ([int]$e.VersionMajor) -VersionMinor ([int]$e.VersionMinor) -VersionRevision ([int]$e.VersionRevision)

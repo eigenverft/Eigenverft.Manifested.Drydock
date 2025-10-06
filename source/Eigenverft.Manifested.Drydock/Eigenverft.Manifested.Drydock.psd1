@@ -81,7 +81,9 @@ FunctionsToExport = @(
     'Convert-DateTimeTo64SecPowershellVersion',
     'Convert-64SecPowershellVersionToDateTime',
 
-    'Update-ManifestModuleVersion'
+    'Update-ManifestModuleVersion',
+
+    'Find-FilesByPattern'
     )
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -103,7 +105,9 @@ AliasesToExport = @(
     'cdv64ps',
     'cdv64psr',
     
-    'ummv'
+    'ummv',
+
+    'ffbp'
     )
 
 # DSC resources to export from this module

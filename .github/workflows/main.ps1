@@ -14,7 +14,8 @@ if ([string]::IsNullOrEmpty($POWERSHELL_GALLERY)) {
     }
 }
 
-Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Force -AllowClobber -RequiredVersion 0.20255.47830 -ErrorAction Stop
+#Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Force -AllowClobber -RequiredVersion 0.20255.47830 -ErrorAction Stop
+Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Force -AllowClobber -ErrorAction Stop
 
 $generatedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
 $gitTopLevelDirectory = Get-GitTopLevelDirectory

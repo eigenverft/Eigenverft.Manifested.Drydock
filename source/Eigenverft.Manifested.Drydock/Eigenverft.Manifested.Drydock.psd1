@@ -69,7 +69,17 @@ Description = 'Module for retrieving essential Git repository info, including th
 # NestedModules = @()
 
 # Functions to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no functions to export.
-FunctionsToExport = @('Get-GitTopLevelDirectory','Get-GitCurrentBranch','Get-GitCurrentBranchRoot','Get-GitRepositoryName')
+FunctionsToExport = @(
+    'Get-GitTopLevelDirectory',
+    'Get-GitCurrentBranch',
+    'Get-GitCurrentBranchRoot',
+    'Get-GitRepositoryName',
+    'Get-GitRemoteUrl',
+    'Convert-DateTimeTo64SecVersionComponents',
+    'Convert-64SecVersionComponentsToDateTime',
+    'Convert-DateTimeTo64SecPowershellVersion',
+    'Convert-64SecPowershellVersionToDateTime'
+    )
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
 CmdletsToExport = @()
@@ -78,7 +88,17 @@ CmdletsToExport = @()
 # VariablesToExport = @()
 
 # Aliases to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no aliases to export.
-AliasesToExport = @('ggtd','ggcb','ggcbr','ggrn')
+AliasesToExport = @(
+    'ggtd',
+    'ggcb',
+    'ggcbr',
+    'ggrn',
+    'gru',
+    'cdv64',
+    'cdv64r',
+    'cdv64ps',
+    'cdv64psr'
+    )
 
 # DSC resources to export from this module
 # DscResourcesToExport = @()

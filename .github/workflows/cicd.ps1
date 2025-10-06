@@ -18,6 +18,7 @@ Install-Module -Name BlackBytesBox.Manifested.Initialize -Repository "PSGallery"
 Install-Module -Name BlackBytesBox.Manifested.Version -Repository "PSGallery" -Force -AllowClobber
 Install-Module -Name BlackBytesBox.Manifested.Git -Repository "PSGallery" -Force -AllowClobber
 
+Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Force -AllowClobber
 
 $GeneratedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
 $gitTopLevelDirectory = Get-GitTopLevelDirectory
@@ -41,6 +42,12 @@ Write-Host "===> gitCurrentBranch at: $gitCurrentBranch" -ForegroundColor Cyan
 Write-Host "===> gitCurrentBranchRoot at: $gitCurrentBranchRoot" -ForegroundColor Cyan
 Write-Host "===> gitRepositoryName at: $gitRepositoryName" -ForegroundColor Cyan
 
+try {
+    Publish-Module -Path $moduleFolder -Repository "PSGallery" -NuGetApiKey "$POWERSHELL_GALLERY" -ErrorAction Stop    
+}
+catch {
+    Write-Error "Failed to publish module: $_"
+}
 
 #Stage only module changes
 
@@ -59,9 +66,3 @@ git -C "$gitTopLevelDirectory" remote set-url origin "https://x-access-token:${G
 # 4) Push
 git -C "$gitTopLevelDirectory" push origin "$gitCurrentBranch"
 
-exit
-
-Publish-Module -Path $moduleFolder -Repository "PSGallery" -NuGetApiKey "$POWERSHELL_GALLERY"
-
-
-exit

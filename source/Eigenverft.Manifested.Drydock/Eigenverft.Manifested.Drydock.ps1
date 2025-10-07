@@ -788,67 +788,6 @@ function Find-FilesByPattern {
     }
 }
 
-function Import-ScriptIfPresent {
-<#
-.SYNOPSIS
-Dot-sources a script file if it exists; writes a user-facing message.
-
-.DESCRIPTION
-Accepts a full or relative path to a .ps1 file. If found, the file is dot-sourced into the
-current scope and a success message is written; otherwise, a not-found/failure message is written.
-This function intentionally returns no value.
-
-.PARAMETER FullPath
-The path to a .ps1 file to dot-source. Alias: Full.
-
-.EXAMPLE
-Import-ScriptIfPresent -Full (Join-Path $PSScriptRoot 'test.ps1')
-
-.EXAMPLE
-Import-ScriptIfPresent -Full 'C:\repo\scripts\test.ps1'
-
-.NOTES
-Reviewer note: Uses Write-Host per requirement; avoid returning values to prevent pipeline side-effects.
-#>
-    [CmdletBinding()]
-    [alias("isip")]
-    param(
-        [Parameter(Mandatory, Position = 0)]
-        [string]$FullPath
-    )
-
-    # Reviewer note: Emit messages only; do not return values.
-    if ([string]::IsNullOrWhiteSpace($FullPath)) {
-        Write-Host "[Import-ScriptIfPresent] No path provided."
-        return
-    }
-
-    # Resolve relative paths for clearer diagnostics.
-    try {
-        $resolved = Resolve-Path -LiteralPath $FullPath -ErrorAction Stop
-        $target   = $resolved.ProviderPath
-    } catch {
-        Write-Host "[Import-ScriptIfPresent] Not found: '$FullPath'."
-        return
-    }
-
-    if (Test-Path -LiteralPath $target -PathType Leaf) {
-        if ($target -notmatch '\.ps1$') {
-            # Reviewer note: Dot-sourcing non-.ps1 files is likely unintended.
-            Write-Host "[Import-ScriptIfPresent] Skipped: target is not a .ps1 file -> '$target'."
-            return
-        }
-        try {
-            . $target
-            Write-Host "[Import-ScriptIfPresent] Success: dot-sourced '$target'."
-        } catch {
-            Write-Host "[Import-ScriptIfPresent] Failed to dot-source '$target': $($_.Exception.Message)"
-        }
-    } else {
-        Write-Host "[Import-ScriptIfPresent] Not found: '$FullPath'."
-    }
-}
-
 function Get-ConfigValue {
 <#
 .SYNOPSIS

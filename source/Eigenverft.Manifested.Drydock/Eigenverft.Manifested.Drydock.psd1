@@ -85,7 +85,6 @@ FunctionsToExport = @(
     'Update-ManifestModuleVersion',
 
     'Find-FilesByPattern',
-    'Import-ScriptIfPresent',
     'Ensure-Variable',
     'Get-RunEnvironment',
     'Get-ConfigValue'
@@ -114,7 +113,6 @@ AliasesToExport = @(
     'ummv',
 
     'ffbp',
-    'isip',
     'ev',
     'gre',
     'gcv'

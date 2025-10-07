@@ -379,7 +379,10 @@ Adds the repo to safe.directory before proceeding.
         Write-Host "[Invoke-GitAddCommitPush] Unable to determine repo root (TopLevelDirectory)."
         if ($ExitOnError) { exit 1 }; return
     }
-    try { $repoPath = (Resolve-Path -LiteralPath $TopLevelDirectory -ErrorAction Stop).ProviderPath }
+    try {
+        # PS5-safe: use Get-Item.FullName instead of Resolve-Path.ProviderPath
+        $repoPath = (Get-Item -LiteralPath $TopLevelDirectory -ErrorAction Stop).FullName
+    }
     catch {
         Write-Host "[Invoke-GitAddCommitPush] Repo root not found: '$TopLevelDirectory'."
         if ($ExitOnError) { exit 1 }; return
@@ -414,7 +417,10 @@ Adds the repo to safe.directory before proceeding.
     }
 
     # --- Determine branch if not provided ---------------------------------------------------------
-    if (-not $CurrentBranch) { $CurrentBranch = (git -C $repoPath rev-parse --abbrev-ref HEAD 2>$null).Trim() }
+    if (-not $CurrentBranch) {
+        $CurrentBranch = git -C $repoPath rev-parse --abbrev-ref HEAD 2>$null
+        if ($CurrentBranch) { $CurrentBranch = $CurrentBranch.Trim() }
+    }
     if ([string]::IsNullOrWhiteSpace($CurrentBranch)) {
         Write-Host "[Invoke-GitAddCommitPush] Unable to determine branch."
         if ($ExitOnError) { exit 1 }; return
@@ -430,14 +436,16 @@ Adds the repo to safe.directory before proceeding.
 
     # --- Tagging (optional): create annotated tags on HEAD and push -------------------------------
     if ($Tags -and $Tags.Count -gt 0) {
-        $head = (git -C $repoPath rev-parse HEAD 2>$null).Trim()
+        $head = git -C $repoPath rev-parse HEAD 2>$null
+        if ($head) { $head = $head.Trim() }
+
         if ([string]::IsNullOrWhiteSpace($head)) {
             Write-Host "[Invoke-GitAddCommitPush] Unable to resolve HEAD for tagging."
             if ($ExitOnError) { exit 1 }; return
         }
 
         foreach ($rawTag in $Tags) {
-            $tag = ($rawTag ?? '').Trim()
+            $tag = ([string]$rawTag).Trim()   # [string] casts $null -> ''
             if ([string]::IsNullOrWhiteSpace($tag)) { continue }
 
             & git -C $repoPath show-ref --tags --verify --quiet ("refs/tags/$tag")
@@ -475,6 +483,7 @@ Adds the repo to safe.directory before proceeding.
 
     Write-Host "[Invoke-GitAddCommitPush] Completed."
 }
+
 
 
 
@@ -1051,13 +1060,3 @@ Reviewer note: Host-type detection for Azure is heuristic by design; no single a
     }
 }
 
-#$now=(Get-Date).ToUniversalTime()
-#$e=Convert-DateTimeTo64SecVersionComponents -VersionBuild 1 -VersionMajor 0 -InputDate $now
-#$d=Convert-64SecVersionComponentsToDateTime -VersionBuild ([int]$e.VersionBuild) -VersionMajor ([int]$e.VersionMajor) -VersionMinor ([int]$e.VersionMinor) -VersionRevision ([int]$e.VersionRevision)
-#"Full=$($e.VersionFull)  Decoded=$($d.ComputedDateTime.ToString('o'))  Δs=$([int](($now - $d.ComputedDateTime).TotalSeconds))"
-
-
-#$nowx =(Get-Date).ToUniversalTime()
-#$ex=Convert-DateTimeTo64SecPowershellVersion -VersionBuild 1 -InputDate $nowx
-#$dx=Convert-64SecPowershellVersionToDateTime -VersionBuild ([int]$ex.VersionBuild) -VersionMajor ([int]$ex.VersionMajor) -VersionMinor ([int]$ex.VersionMinor)
-#"Full=$($ex.VersionFull)  Decoded=$($dx.ComputedDateTime.ToString('o'))  Δs=$([int](($now - $dx.ComputedDateTime).TotalSeconds))"

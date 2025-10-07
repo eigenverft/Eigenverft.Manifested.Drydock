@@ -939,6 +939,118 @@ function Ensure-Variable {
     Write-Output "Variable Name: $varName, Value: $displayValue"
 }
 
+function Get-RunEnvironment {
+<#
+.SYNOPSIS
+Determines whether this PowerShell session runs locally or under a CI system (GitHub Actions, Azure Pipelines, Jenkins) and classifies hosted vs self-hosted when possible.
+
+.DESCRIPTION
+Uses well-known CI environment variables:
+- GitHub Actions: GITHUB_ACTIONS=true (hosted images expose ImageOS/ImageVersion).
+- Azure Pipelines: TF_BUILD=true; heuristics on AGENT_NAME / machine name to infer Microsoft-hosted vs self-hosted.
+- Jenkins: JENKINS_URL / BUILD_ID.
+Falls back to CI=true as “UnknownCI”.
+
+.OUTPUTS
+[pscustomobject] by default; optionally a Hashtable or a concise String via -As.
+
+.PARAMETER As
+Output shape. One of: Object (default), Hashtable, String.
+[Mandatory: $false]
+
+.EXAMPLE
+Get-RunEnvironment
+# -> Provider/Hosting/IsCI plus Details and Evidence.
+
+.EXAMPLE
+Get-RunEnvironment -As String
+# -> "GitHubActions/Hosted (IsCI=True)"
+
+.NOTES
+Reviewer note: Host-type detection for Azure is heuristic by design; no single authoritative flag exists.
+#>
+    [CmdletBinding()]
+    [alias("gre")]
+    param(
+        [Parameter(Mandatory = $false, Position = 0)]
+        [ValidateSet('Object','Hashtable','String')]
+        [string]$As = 'Object'
+    )
+
+    # Build a mutable state with explicit fields.
+    $state = [ordered]@{
+        Provider = 'Local'
+        Hosting  = 'N/A'
+        IsCI     = $false
+        Details  = [ordered]@{}
+        Evidence = @()
+    }
+
+    # --- GitHub Actions ------------------------------------------------------
+    if ($env:GITHUB_ACTIONS -eq 'true') {
+        $state.Provider = 'GitHubActions'
+        $state.IsCI     = $true
+        $state.Details['RunnerOS']   = $env:RUNNER_OS
+        $state.Details['RunnerName'] = $env:RUNNER_NAME
+        $isHosted = [bool]$env:ImageOS -or [bool]$env:ImageVersion
+        $state.Hosting = if ($isHosted) { 'Hosted' } else { 'SelfHosted' }
+        $state.Evidence += 'GITHUB_ACTIONS'
+        if ($env:ImageOS)     { $state.Evidence += 'ImageOS' }
+        if ($env:ImageVersion){ $state.Evidence += 'ImageVersion' }
+    }
+    # --- Azure Pipelines -----------------------------------------------------
+    elseif (($env:TF_BUILD -as [string]) -match '^(?i:true)$' -or $env:AGENT_NAME -or $env:BUILD_BUILDID) {
+        $state.Provider = 'AzurePipelines'
+        $state.IsCI     = $true
+        $state.Details['AgentName']       = $env:AGENT_NAME
+        $state.Details['AgentOS']         = $env:AGENT_OS
+        $state.Details['AgentMachineName']= $env:AGENT_MACHINENAME
+
+        # Heuristic: Microsoft-hosted agents usually have Agent.Name like "Azure Pipelines <n>" or legacy "Hosted Agent",
+        # and ephemeral VM names starting with "fv-az".
+        $isHosted = ($env:AGENT_NAME -match '^(Azure Pipelines|Hosted Agent)') -or ($env:AGENT_MACHINENAME -like 'fv-az*')
+        $state.Hosting = if ($isHosted) { 'Hosted' } else { 'SelfHosted' }
+
+        foreach ($n in 'TF_BUILD','AGENT_NAME','BUILD_BUILDID','AGENT_MACHINENAME') {
+            if (Test-Path "Env:\$n") { $state.Evidence += $n }
+        }
+    }
+    # --- Jenkins -------------------------------------------------------------
+    elseif ($env:JENKINS_URL -or $env:BUILD_ID) {
+        $state.Provider = 'Jenkins'
+        $state.IsCI     = $true
+        $state.Details['NodeName'] = $env:NODE_NAME
+        $state.Details['HasJenkinsUrl'] = [bool]$env:JENKINS_URL
+
+        # Jenkins OSS is typically self-hosted. Mark hosted if URL hints a managed service (very rough).
+        if ($env:JENKINS_URL -match '(cloudbees|jenkins\.io)') { $state.Hosting = 'Hosted' } else { $state.Hosting = 'SelfHosted' }
+
+        foreach ($n in 'JENKINS_URL','BUILD_ID','NODE_NAME') {
+            if (Test-Path "Env:\$n") { $state.Evidence += $n }
+        }
+    }
+    # --- Unknown CI ----------------------------------------------------------
+    elseif ($env:CI -eq 'true') {
+        $state.Provider = 'UnknownCI'
+        $state.IsCI     = $true
+        $state.Hosting  = 'Unknown'
+        $state.Evidence += 'CI'
+    }
+
+    switch ($As) {
+        'String'    { "{0}/{1} (IsCI={2})" -f $state.Provider,$state.Hosting,$state.IsCI }
+        'Hashtable' { [hashtable]$state }
+        default     { [pscustomobject]@{
+                        Provider = $state.Provider
+                        Hosting  = $state.Hosting
+                        IsCI     = $state.IsCI
+                        Details  = [pscustomobject]$state.Details
+                        Evidence = $state.Evidence
+                      }
+        }
+    }
+}
+
 #$now=(Get-Date).ToUniversalTime()
 #$e=Convert-DateTimeTo64SecVersionComponents -VersionBuild 1 -VersionMajor 0 -InputDate $now
 #$d=Convert-64SecVersionComponentsToDateTime -VersionBuild ([int]$e.VersionBuild) -VersionMajor ([int]$e.VersionMajor) -VersionMinor ([int]$e.VersionMinor) -VersionRevision ([int]$e.VersionRevision)

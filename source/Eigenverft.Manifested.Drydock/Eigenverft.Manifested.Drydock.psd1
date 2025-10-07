@@ -15,10 +15,10 @@ RootModule = 'Eigenverft.Manifested.Drydock.psm1'
 ModuleVersion = '0.20255.49203'
 
 # Supported PSEditions
-#CompatiblePSEditions = 'Desktop'
+CompatiblePSEditions = @('Desktop','Core')
 
 # ID used to uniquely identify this module
-GUID = 'A976B807-45B4-4A10-9D1E-E8665F03E3FE'
+GUID = '8A19EC94-84E6-4029-B38E-188629E525C6'
 
 # Author of this module
 Author = 'Eigenverft'

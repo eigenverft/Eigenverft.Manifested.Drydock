@@ -7,11 +7,12 @@ Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Scop
 Use-Tls12
 
 $POWERSHELL_GALLERY = Get-ConfigValue -Check $POWERSHELL_GALLERY -FilePath (Join-Path $PSScriptRoot 'main_secrets.json') -Property 'POWERSHELL_GALLERY'
+Ensure-Variable -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideValue
 
 Write-Host "===> Get-RunEnvironment" -ForegroundColor Cyan
 Get-RunEnvironment
 
-Ensure-Variable -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideValue
+
 
 $generatedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
 $gitTopLevelDirectory = Get-GitTopLevelDirectory

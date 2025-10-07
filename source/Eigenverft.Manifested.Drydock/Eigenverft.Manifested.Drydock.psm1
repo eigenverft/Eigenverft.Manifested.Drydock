@@ -4,4 +4,5 @@
 
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Compatibility.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Git.ps1"
+. "$PSScriptRoot\Eigenverft.Manifested.Drydock.Version.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.ps1"

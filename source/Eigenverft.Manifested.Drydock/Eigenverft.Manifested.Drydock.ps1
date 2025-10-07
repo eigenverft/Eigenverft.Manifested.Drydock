@@ -556,7 +556,7 @@ function Convert-64SecVersionComponentsToDateTime {
   elseif ($high -gt 9) { $year += 1; $high -= 10 }
 
   if ($year -lt 1 -or $year -gt 9999) { throw "Decoded year $year out of 1..9999." }
-  if ($high -lt 0 -or $high -gt 7)    { throw "HighPart $high out of range 0..7 — not an encoded 64s version." }
+  if ($high -lt 0 -or $high -gt 7)    { throw "HighPart $high out of range 0..7 not an encoded 64s version." }
 
   $low = $VersionRevision -band 0xFFFF
   if ($VersionRevision -ne $low) { throw "VersionRevision $VersionRevision exceeds 16 bits." }
@@ -567,7 +567,7 @@ function Convert-64SecVersionComponentsToDateTime {
   $secondsInYear = if ($isLeap) { 31622400 } else { 31536000 }
   $maxShifted = [int][math]::Floor(($secondsInYear - 1) / 64)
   if ($shifted -gt $maxShifted) {
-    throw "ShiftedSeconds $shifted exceeds max $maxShifted for year $year — components invalid."
+    throw "ShiftedSeconds $shifted exceeds max $maxShifted for year $year components invalid."
   }
 
   $startOfYearUtc = New-Object datetime ($year,1,1,0,0,0,[datetimekind]::Utc)

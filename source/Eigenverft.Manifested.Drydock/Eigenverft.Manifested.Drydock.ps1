@@ -485,8 +485,6 @@ Adds the repo to safe.directory before proceeding.
 }
 
 
-
-
 ###############################################
 
 
@@ -850,6 +848,82 @@ Reviewer note: Uses Write-Host per requirement; avoid returning values to preven
         Write-Host "[Import-ScriptIfPresent] Not found: '$FullPath'."
     }
 }
+
+function Get-ConfigValue {
+<#
+.SYNOPSIS
+Return an existing value if provided; otherwise read a JSON file and return a property.
+
+.DESCRIPTION
+If -Check is non-empty, that value is returned (no file I/O). If -Check is null/empty,
+the JSON file at -FilePath is parsed and the value at -Property (supports dotted paths)
+is returned. Compatible with Windows PowerShell 5.x.
+
+.PARAMETER Check
+Existing value to prefer. If non-empty, it is returned as-is.
+
+.PARAMETER FilePath
+Path to the JSON secrets/config file.
+
+.PARAMETER Property
+Property name or dotted path within the JSON (e.g. "POWERSHELL_GALLERY" or "App.Settings.Token").
+
+.EXAMPLE
+$POWERSHELL_GALLERY = Get-ConfigValue -Check $POWERSHELL_GALLERY -FilePath (Join-Path $PSScriptRoot 'main_secrets.json') -Property 'POWERSHELL_GALLERY'
+
+.OUTPUTS
+[object]
+#>
+    [CmdletBinding()]
+    [alias("gcv")]
+    param(
+        [Parameter(Mandatory=$false)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Check,
+
+        [Parameter(Mandatory=$true)]
+        [string]$FilePath,
+
+        [Parameter(Mandatory=$true)]
+        [string]$Property
+    )
+
+    # Fast path: if Check has a non-empty value, return it without touching disk.
+    if ($PSBoundParameters.ContainsKey('Check') -and -not [string]::IsNullOrWhiteSpace($Check)) {
+        return $Check
+    }
+
+    if (-not (Test-Path -LiteralPath $FilePath)) {
+        throw "Get-ConfigValue: File not found: $FilePath"
+    }
+
+    $raw = Get-Content -LiteralPath $FilePath -Raw
+    try {
+        $obj = $raw | ConvertFrom-Json
+    } catch {
+        throw "Get-ConfigValue: Invalid JSON in file: $FilePath. $_"
+    }
+
+    $path = ($Property.Trim()).TrimStart('.')
+    if ([string]::IsNullOrEmpty($path)) {
+        throw "Get-ConfigValue: Property path is empty."
+    }
+
+    $current = $obj
+    foreach ($segment in $path -split '\.') {
+        if ($null -eq $current) { break }
+        $prop = $current.PSObject.Properties[$segment]
+        if ($null -eq $prop) {
+            throw "Get-ConfigValue: Property not found: $segment (path: $Property)"
+        }
+        $current = $prop.Value
+    }
+
+    return $current
+}
+
+
 
 function Ensure-Variable {
     # Suppress the use of unapproved verb in function name

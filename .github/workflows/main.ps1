@@ -4,10 +4,11 @@ param (
 
 Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
 
+#$POWERSHELL_GALLERY = Get-ConfigValue -Check $POWERSHELL_GALLERY -FilePath (Join-Path $PSScriptRoot 'main_secrets.json') -Property 'POWERSHELL_GALLERY'
+
 Write-Host "===> Get-RunEnvironment" -ForegroundColor Cyan
 Get-RunEnvironment
 
-Import-ScriptIfPresent -FullPath (Join-Path $PSScriptRoot 'main_secrets.ps1')
 Ensure-Variable -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideValue
 
 $generatedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0

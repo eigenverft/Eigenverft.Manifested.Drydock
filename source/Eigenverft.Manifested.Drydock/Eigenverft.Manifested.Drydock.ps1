@@ -1073,3 +1073,22 @@ Reviewer note: Host-type detection for Azure is heuristic by design; no single a
     }
 }
 
+function Use-Tls12 {
+<#
+.SYNOPSIS
+Ensures TLS 1.2 for outbound HTTPS in Windows PowerShell 5.x.
+
+.DESCRIPTION
+Adds TLS 1.2 to [Net.ServicePointManager]::SecurityProtocol for the current session.
+Prevents "Could not create SSL/TLS secure channel" when using PowerShellGet/NuGet.
+
+.EXAMPLE
+Use-Tls12
+#>
+    [CmdletBinding()]
+    param()
+    $tls12 = [Net.SecurityProtocolType]::Tls12
+    if (([Net.ServicePointManager]::SecurityProtocol -band $tls12) -eq 0) {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor $tls12
+    }
+}

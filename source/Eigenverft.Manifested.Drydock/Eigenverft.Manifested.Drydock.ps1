@@ -266,14 +266,18 @@ function Get-GitRemoteUrl {
 function Invoke-GitAddCommitPush {
 <#
 .SYNOPSIS
-Stages a module folder, configures safe.directory, commits with a transient identity, and pushes to origin.
+Stages a module folder, optionally configures safe.directory, commits with a transient identity, and pushes to origin. Optionally tags HEAD.
 
 .DESCRIPTION
-This wraps four Git calls, kept close to the original flags:
+Wraps these Git calls (kept close to your original flags):
   git -C "$TopLevelDirectory" add -v -A -- "$ModuleFolder"
-  git -C "$TopLevelDirectory" config --global --add safe.directory "$TopLevelDirectory"
+  (optional) git -C "$TopLevelDirectory" config --global --add safe.directory "$TopLevelDirectory"
   git -C "$TopLevelDirectory" -c user.name="..." -c user.email="..." commit -m "..."
   git -C "$TopLevelDirectory" push origin "$CurrentBranch"
+
+If -Tags are provided, creates annotated tags on HEAD and pushes them:
+  git -C "$TopLevelDirectory" tag -a <tag> -m "<msg>" <commit>
+  git -C "$TopLevelDirectory" push origin <tag>
 
 Writes status via Write-Host and emits no return value. Optionally exits the host on errors.
 
@@ -289,17 +293,23 @@ Target branch for push. If omitted, the current branch is detected.
 .PARAMETER CommitMessage
 Commit message. Default: 'Updated from Workflow [skip ci]'.
 
-PARAMETER UserName
+.PARAMETER UserName
 Transient user.name for the commit via 'git -c'. Default: 'github-actions[bot]'.
 
 .PARAMETER UserEmail
 Transient user.email for the commit via 'git -c'. Default matches GitHub Actions bot.
 
-.PARAMETER SkipSafeDirectory
-Skips the 'git config --global --add safe.directory' step.
+.PARAMETER SafeDirectory
+When set, adds the repo root to global safe.directory before committing/pushing.
 
-.PARAMETER NoPush
-Skips the push step.
+.PARAMETER Tags
+Optional array of tag names to create and push, e.g. @('v1.2.3','latest').
+
+.PARAMETER TagMessage
+Optional annotation message to use for each tag; defaults to "Tag <tag>".
+
+.PARAMETER ForceTagUpdate
+If set, existing tags with the same name are moved (force-updated) to the new commit.
 
 .PARAMETER ExitOnError
 On any failure, exits the PowerShell host with a non-zero code (atomic behavior).
@@ -308,51 +318,74 @@ On any failure, exits the PowerShell host with a non-zero code (atomic behavior)
 Invoke-GitAddCommitPush -TopLevelDirectory (Get-GitTopLevelDirectory) -ModuleFolder 'src/My.Module' -CurrentBranch 'main'
 
 .EXAMPLE
-Invoke-GitAddCommitPush -ModuleFolder 'src/My.Module' -ExitOnError
-Auto-detects repo root and branch; exits the session if any step fails.
+Invoke-GitAddCommitPush -ModuleFolder 'src/My.Module' -Tags @('v1.4.0','latest') -TagMessage 'Release 1.4.0'
+
+.EXAMPLE
+Invoke-GitAddCommitPush -ModuleFolder 'src/My.Module' -SafeDirectory
+Adds the repo to safe.directory before proceeding.
 
 .NOTES
 - Uses Write-Host per requirement; no objects returned.
-- Reviewer note: Avoids changing original flags; error handling added around each call.
+- Reviewer note: Keeps original flags and structure; pushes are always performed.
 #>
     [CmdletBinding()]
     [Alias('igacp')]
     param(
+        [Parameter(Mandatory=$false)]
         [string]$TopLevelDirectory,
-        [Parameter(Mandatory)][string]$ModuleFolder,
+
+        [Parameter(Mandatory=$true)]
+        [string]$ModuleFolder,
+
+        [Parameter(Mandatory=$false)]
         [string]$CurrentBranch,
+
+        [Parameter(Mandatory=$false)]
         [string]$CommitMessage = 'Updated from Workflow [skip ci]',
+
+        [Parameter(Mandatory=$false)]
         [string]$UserName  = 'github-actions[bot]',
+
+        [Parameter(Mandatory=$false)]
         [string]$UserEmail = '41898282+github-actions[bot]@users.noreply.github.com',
-        [switch]$SkipSafeDirectory,
-        [switch]$NoPush,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$SafeDirectory,
+
+        [Parameter(Mandatory=$false)]
+        [string[]]$Tags = @(),
+
+        [Parameter(Mandatory=$false)]
+        [string]$TagMessage,
+
+        [Parameter(Mandatory=$false)]
+        [switch]$ForceTagUpdate,
+
+        [Parameter(Mandatory=$false)]
         [switch]$ExitOnError
     )
 
-    # --- Preflight: Git availability ----------------------------------------------------------
+    # --- Preflight: Git availability (external reviewer note: keep user-facing feedback clear) ---
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-Host "[Invoke-GitAddCommitPush] Git not found in PATH."
         if ($ExitOnError) { exit 1 }; return
     }
 
-    # --- Resolve repo root: use provided path, or detect via rev-parse ------------------------
+    # --- Resolve repo root: provided or detect via rev-parse --------------------------------------
     if (-not $TopLevelDirectory) {
-        try {
-            $TopLevelDirectory = (git rev-parse --show-toplevel 2>$null).Trim()
-        } catch { $TopLevelDirectory = $null }
+        try { $TopLevelDirectory = (git rev-parse --show-toplevel 2>$null).Trim() } catch { $TopLevelDirectory = $null }
     }
     if ([string]::IsNullOrWhiteSpace($TopLevelDirectory)) {
         Write-Host "[Invoke-GitAddCommitPush] Unable to determine repo root (TopLevelDirectory)."
         if ($ExitOnError) { exit 1 }; return
     }
-    try {
-        $repoPath = (Resolve-Path -LiteralPath $TopLevelDirectory -ErrorAction Stop).ProviderPath
-    } catch {
+    try { $repoPath = (Resolve-Path -LiteralPath $TopLevelDirectory -ErrorAction Stop).ProviderPath }
+    catch {
         Write-Host "[Invoke-GitAddCommitPush] Repo root not found: '$TopLevelDirectory'."
         if ($ExitOnError) { exit 1 }; return
     }
 
-    # --- git add -v -A -- "$ModuleFolder" -----------------------------------------------------
+    # --- git add -v -A -- "$ModuleFolder" ---------------------------------------------------------
     Write-Host "[Invoke-GitAddCommitPush] git add -v -A -- '$ModuleFolder'"
     & git -C $repoPath add -v -A -- $ModuleFolder 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) {
@@ -360,8 +393,8 @@ Auto-detects repo root and branch; exits the session if any step fails.
         if ($ExitOnError) { exit $LASTEXITCODE }; return
     }
 
-    # --- git config --global --add safe.directory "$TopLevelDirectory" ------------------------
-    if (-not $SkipSafeDirectory) {
+    # --- Optional: safe.directory ----------------------------------------------------------------
+    if ($SafeDirectory) {
         Write-Host "[Invoke-GitAddCommitPush] git config --global --add safe.directory '$repoPath'"
         & git -C $repoPath config --global --add safe.directory $repoPath 2>&1 | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) {
@@ -370,10 +403,9 @@ Auto-detects repo root and branch; exits the session if any step fails.
         }
     }
 
-    # --- git commit with transient identity ---------------------------------------------------
+    # --- Commit with transient identity -----------------------------------------------------------
     Write-Host "[Invoke-GitAddCommitPush] git commit -m '$CommitMessage'"
-    & git -C $repoPath -c "user.name=$UserName" -c "user.email=$UserEmail" commit -m $CommitMessage 2>&1 `
-        | ForEach-Object { Write-Host $_ }
+    & git -C $repoPath -c "user.name=$UserName" -c "user.email=$UserEmail" commit -m $CommitMessage 2>&1 | ForEach-Object { Write-Host $_ }
     $commitCode = $LASTEXITCODE
     if ($commitCode -ne 0) {
         # Common case: nothing to commit -> nonzero exit with message. Treat as soft success unless atomic.
@@ -381,27 +413,69 @@ Auto-detects repo root and branch; exits the session if any step fails.
         if ($ExitOnError) { exit $commitCode }
     }
 
-    # --- Determine branch if not provided -----------------------------------------------------
-    if (-not $CurrentBranch) {
-        $CurrentBranch = (git -C $repoPath rev-parse --abbrev-ref HEAD 2>$null).Trim()
-    }
+    # --- Determine branch if not provided ---------------------------------------------------------
+    if (-not $CurrentBranch) { $CurrentBranch = (git -C $repoPath rev-parse --abbrev-ref HEAD 2>$null).Trim() }
     if ([string]::IsNullOrWhiteSpace($CurrentBranch)) {
         Write-Host "[Invoke-GitAddCommitPush] Unable to determine branch."
         if ($ExitOnError) { exit 1 }; return
     }
 
-    # --- git push origin "$CurrentBranch" -----------------------------------------------------
-    if (-not $NoPush) {
-        Write-Host "[Invoke-GitAddCommitPush] git push origin '$CurrentBranch'"
-        & git -C $repoPath push origin $CurrentBranch 2>&1 | ForEach-Object { Write-Host $_ }
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "[Invoke-GitAddCommitPush] git push failed (code $LASTEXITCODE)."
-            if ($ExitOnError) { exit $LASTEXITCODE }; return
+    # --- Always push branch -----------------------------------------------------------------------
+    Write-Host "[Invoke-GitAddCommitPush] git push origin '$CurrentBranch'"
+    & git -C $repoPath push origin $CurrentBranch 2>&1 | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[Invoke-GitAddCommitPush] git push failed (code $LASTEXITCODE)."
+        if ($ExitOnError) { exit $LASTEXITCODE }; return
+    }
+
+    # --- Tagging (optional): create annotated tags on HEAD and push -------------------------------
+    if ($Tags -and $Tags.Count -gt 0) {
+        $head = (git -C $repoPath rev-parse HEAD 2>$null).Trim()
+        if ([string]::IsNullOrWhiteSpace($head)) {
+            Write-Host "[Invoke-GitAddCommitPush] Unable to resolve HEAD for tagging."
+            if ($ExitOnError) { exit 1 }; return
         }
+
+        foreach ($rawTag in $Tags) {
+            $tag = ($rawTag ?? '').Trim()
+            if ([string]::IsNullOrWhiteSpace($tag)) { continue }
+
+            & git -C $repoPath show-ref --tags --verify --quiet ("refs/tags/$tag")
+            $exists = ($LASTEXITCODE -eq 0)
+
+            if ($exists -and -not $ForceTagUpdate) {
+                Write-Host "[Invoke-GitAddCommitPush] Tag '$tag' already exists; skipping (use -ForceTagUpdate to move it)."
+            } else {
+                $msg = if ($TagMessage) { $TagMessage } else { "Tag $tag" }
+                $tagArgs = @('-C', $repoPath, 'tag', '-a', $tag, $head, '-m', $msg)
+                if ($exists -and $ForceTagUpdate) { $tagArgs = @('-C', $repoPath, 'tag', '-f', '-a', $tag, $head, '-m', $msg) }
+
+                Write-Host ("[Invoke-GitAddCommitPush] {0} annotated tag '{1}' on {2}." -f ($(if ($exists) { 'Updating' } else { 'Creating' }), $tag, $head))
+                & git @tagArgs 2>&1 | ForEach-Object { Write-Host $_ }
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "[Invoke-GitAddCommitPush] git tag failed for '$tag' (code $LASTEXITCODE)."
+                    if ($ExitOnError) { exit $LASTEXITCODE }; continue
+                }
+            }
+
+            # Always push tag (force if moved)
+            $pushArgs = @('-C', $repoPath, 'push', 'origin', $tag)
+            if ($exists -and $ForceTagUpdate) { $pushArgs = @('-C', $repoPath, 'push', '--force', 'origin', $tag) }
+
+            Write-Host "[Invoke-GitAddCommitPush] Pushing tag '$tag' to 'origin'."
+            & git @pushArgs 2>&1 | ForEach-Object { Write-Host $_ }
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "[Invoke-GitAddCommitPush] git push for tag '$tag' failed (code $LASTEXITCODE)."
+                if ($ExitOnError) { exit $LASTEXITCODE }
+            }
+        }
+    } else {
+        Write-Host "[Invoke-GitAddCommitPush] No tags specified."
     }
 
     Write-Host "[Invoke-GitAddCommitPush] Completed."
 }
+
 
 
 ###############################################

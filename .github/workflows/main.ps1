@@ -2,7 +2,7 @@ param (
     [string]$POWERSHELL_GALLERY
 )
 
-Use-Tls12
+#Use-Tls12
 
 Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
 

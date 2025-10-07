@@ -2,7 +2,10 @@ param (
     [string]$POWERSHELL_GALLERY
 )
 
-Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Force -AllowClobber -ErrorAction Stop
+Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+
+Write-Host "===> Get-RunEnvironment" -ForegroundColor Cyan
+Get-RunEnvironment
 
 Import-ScriptIfPresent -FullPath (Join-Path $PSScriptRoot 'main_secrets.ps1')
 Ensure-Variable -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideValue

@@ -499,7 +499,7 @@ function Convert-DateTimeTo64SecVersionComponents {
   Minor = (Year * 10) + HighPart. Valid for years where Minor ≤ 65535.
 #>
   [CmdletBinding()]
-  [Alias('cdv64_2')]
+  [Alias('cdv64')]
   param(
     [Parameter(Mandatory=$true)][int]$VersionBuild,
     [Parameter(Mandatory=$true)][int]$VersionMajor,
@@ -538,7 +538,7 @@ function Convert-64SecVersionComponentsToDateTime {
   Robust year extraction (integer decade + normalization) to avoid rounding bugs.
 #>
   [CmdletBinding()]
-  [Alias('cdv64r_2')]
+  [Alias('cdv64r')]
   param(
     [Parameter(Mandatory=$true)][int]$VersionBuild,
     [Parameter(Mandatory=$true)][int]$VersionMajor,
@@ -546,7 +546,7 @@ function Convert-64SecVersionComponentsToDateTime {
     [Parameter(Mandatory=$true)][int]$VersionRevision
   )
 
-  if ($VersionMinor -lt 0) { throw "VersionMinor must be ≥ 0." }
+  if ($VersionMinor -lt 0) { throw "VersionMinor must be >= 0." }
 
   # --- Robust decade split (avoid rounding-to-nearest bugs) ---
   # Use integer truncation then normalize remainder into 0..9.

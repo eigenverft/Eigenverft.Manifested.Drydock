@@ -11,7 +11,7 @@ $POWERSHELL_GALLERY = Get-ConfigValue -Check $POWERSHELL_GALLERY -FilePath (Join
 Ensure-Variable -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideValue
 
 Write-Host "===> Get-RunEnvironment" -ForegroundColor Cyan
-Get-RunEnvironment
+$cicdEnvironment = $(Get-RunEnvironment).IsCI
 
 
 
@@ -22,7 +22,7 @@ $gitCurrentBranch = Get-GitCurrentBranch
 #$gitRepositoryName = Get-GitRepositoryName
 #$gitRemoteUrl = Get-GitRemoteUrl
 
-Write-Host "===> generatedPowershellVersion at: $($generatedPowershellVersion.VersionBuild).$($generatedPowershellVersion.VersionMajor).$($generatedPowershellVersion.VersionMinor)" -ForegroundColor Cyan
+Write-Host "===> generatedPowershellVersion at: $($generatedPowershellVersion.VersionFull)" -ForegroundColor Cyan
 Write-Host "===> gitTopLevelDirectory at: $gitTopLevelDirectory" -ForegroundColor Cyan
 Write-Host "===> gitCurrentBranch at: $gitCurrentBranch" -ForegroundColor Cyan
 #Write-Host "===> gitCurrentBranchRoot at: $gitCurrentBranchRoot" -ForegroundColor Cyan
@@ -31,7 +31,7 @@ Write-Host "===> gitCurrentBranch at: $gitCurrentBranch" -ForegroundColor Cyan
 
 
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" -ErrorAction Stop
-Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedPowershellVersion.VersionBuild).$($generatedPowershellVersion.VersionMajor).$($generatedPowershellVersion.VersionMinor)"
+Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedPowershellVersion.VersionFull)"
 Write-Host "===> Testing module manifest at: $($manifestFile.FullName)" -ForegroundColor Cyan
 Test-ModuleManifest -Path $($manifestFile.FullName)
 
@@ -42,5 +42,10 @@ catch {
     Write-Error "Failed to publish module: $_"
 }
 
-Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -ModuleFolder "$($manifestFile.DirectoryName)" -CurrentBranch "$gitCurrentBranch"
+if ($cicdEnvironment -eq $true) {
+    Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -ModuleFolder "$($manifestFile.DirectoryName)" -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Automated version bump to $($generatedPowershellVersion.VersionFull) [skip ci]" -ErrorAction Stop
+} else {
+    Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -ModuleFolder "$($manifestFile.DirectoryName)" -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Automated version bump to $($generatedPowershellVersion.VersionFull) [skip ci]" -ErrorAction Stop
+}
+
 

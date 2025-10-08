@@ -271,5 +271,5 @@ Offline bootstrap for PS5 from a file share: NuGet provider + modules (latest ve
 }
 
 
-Save-PSBootstrapPayload -ShareRoot C:\temp\psboot -Modules @('PowerShellGet','PackageManagement','Eigenverft.Manifested.Drydock') -IncludeNuGetProvider
-Install-PowerShellBitsFromShare -ShareRoot C:\temp\psboot
+#Save-PSBootstrapPayload -ShareRoot C:\temp\psboot -Modules @('PowerShellGet','PackageManagement','Eigenverft.Manifested.Drydock') -IncludeNuGetProvider
+#Install-PowerShellBitsFromShare -ShareRoot C:\temp\psboot

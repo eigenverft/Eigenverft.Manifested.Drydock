@@ -111,6 +111,8 @@ AliasesToExport = @(
     'cdv64r',
     'cdv64ps',
     'cdv64psr',
+
+    'iexec',
     
     'ummv',
 

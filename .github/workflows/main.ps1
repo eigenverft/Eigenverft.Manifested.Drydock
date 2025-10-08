@@ -16,7 +16,6 @@ Test-VariableValue -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideVal
 
 $cicdEnvironment = $(Get-RunEnvironment).IsCI
 
-
 $generatedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
 $gitTopLevelDirectory = Get-GitTopLevelDirectory
 $gitCurrentBranch = Get-GitCurrentBranch

@@ -273,72 +273,72 @@ function Test-VariableValue {
     Write-Output "Variable Name: $varName, Value: $displayValue"
 }
 
-function Test-AvailableCommand {
+function Test-CommandAvailable {
 <#
 .SYNOPSIS
-Returns a CommandInfo for a command name, or $null if not found. (Windows PowerShell 5.1 compatible)
+Returns a CommandInfo for a command, or $null if not found. (Windows PowerShell 5.1 compatible)
 
 .DESCRIPTION
 Resolves cmdlets, functions, aliases, external apps, or scripts via Get-Command.
 Returns the first matching [System.Management.Automation.CommandInfo] or $null.
-Optionally fail fast via -ThrowOnMissing or -ExitOnMissing (default exit code 127).
+Optionally fail fast via -ThrowIfNotFound or -ExitIfNotFound (default exit code 127).
 
-.PARAMETER Name
-The command name to resolve (e.g., 'git').
+.PARAMETER Command
+The command to resolve (e.g., 'git').
 
 .PARAMETER Type
 Optional filter for the command type. Valid: Any, Cmdlet, Function, Alias, Application, ExternalScript.
 
-.PARAMETER ThrowOnMissing
+.PARAMETER ThrowIfNotFound
 Throw a terminating error if the command is not found.
 
-.PARAMETER ExitOnMissing
+.PARAMETER ExitIfNotFound
 Exit the current PowerShell host if the command is not found.
 
 .PARAMETER ExitCode
-Exit code to use with -ExitOnMissing. Defaults to 127.
+Exit code to use with -ExitIfNotFound. Defaults to 127.
 
 .EXAMPLE
-PS> $git = Test-AvailableCommand git
+PS> $git = Test-CommandAvailable -Command git
 PS> if ($git) { "git at $($git.Definition)" } else { "git missing" }
 PS> # PS5 note: for external applications, .Definition is the full path.
 
 .EXAMPLE
-PS> if ($cmd = Test-AvailableCommand "pwsh") { "pwsh ok at $($cmd.Definition)" } else { "pwsh missing" }
+PS> if ($cmd = Test-CommandAvailable "pwsh") { "pwsh ok at $($cmd.Definition)" } else { "pwsh missing" }
 PS> # PS5-friendly inline assignment in the if; $null is falsey.
 
 .EXAMPLE
-PS> Test-AvailableCommand node -ThrowOnMissing
+PS> Test-CommandAvailable node -ThrowIfNotFound
 PS> # Throws a terminating error if 'node' cannot be resolved (script-level enforcement).
 
 .EXAMPLE
-PS> Test-AvailableCommand "az" -ExitOnMissing -ExitCode 127
+PS> Test-CommandAvailable "az" -ExitIfNotFound -ExitCode 127
 PS> # Unconditionally terminates the current host if 'az' is missing (CI-safe).
 
 .EXAMPLE
-PS> $exe = Test-AvailableCommand git -Type Application
+PS> $exe = Test-CommandAvailable git -Type Application
 PS> if ($exe) { "exe path: $($exe.Definition)" } else { "no Application match" }
-PS> # Filters by CommandType in PS5-compatible way.
+PS> # Filters by CommandType in a PS5-compatible way.
 
 .NOTES
-Reviewer note: Keep -ExitOnMissing for CI/bootstrap scripts; prefer -ThrowOnMissing for script/module flows where try/catch is desired.
+Reviewer note: Prefer -ExitIfNotFound for CI/bootstrap; use -ThrowIfNotFound where try/catch is desired.
 #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, Position=0)]
-        [string]$Name,
+        [string]$Command,
 
         [ValidateSet('Any','Cmdlet','Function','Alias','Application','ExternalScript')]
         [string]$Type = 'Any',
 
-        [switch]$ThrowOnMissing,
-        [switch]$ExitOnMissing,
+        [switch]$ThrowIfNotFound,
+        [switch]$ExitIfNotFound,
         [int]$ExitCode = 127
     )
 
-    # Resolve candidate(s) using PS5-safe constructs (no newer syntax).
+    # Resolve candidates (PS5-safe).
     try {
-        $resolved = Get-Command -Name $Name -ErrorAction Stop
+        $resolved = Get-Command -Name $Command -ErrorAction Stop
     } catch {
         $resolved = $null
     }
@@ -350,22 +350,23 @@ Reviewer note: Keep -ExitOnMissing for CI/bootstrap scripts; prefer -ThrowOnMiss
 
     # Select the first match (typical for PATH executables).
     $first = $resolved | Select-Object -First 1
-
     if ($null -ne $first) {
         return $first
     }
 
     # Not found: enforce chosen fail-fast behavior.
-    if ($ThrowOnMissing) {
-        throw "Required command '$Name' was not found in PATH (Type=$Type)."
+    if ($ThrowIfNotFound) {
+        throw "Required command '$Command' was not found in PATH (Type=$Type)."
     }
-    if ($ExitOnMissing) {
-        Write-Error "Required command '$Name' was not found in PATH (Type=$Type). Exiting with code $ExitCode."
+    if ($ExitIfNotFound) {
+        Write-Error "Required command '$Command' was not found in PATH (Type=$Type). Exiting with code $ExitCode."
         exit $ExitCode
     }
 
     return $null
 }
+
+
 
 
 function Get-RunEnvironment {

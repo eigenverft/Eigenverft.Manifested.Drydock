@@ -30,6 +30,7 @@ Write-Host "===> gitCurrentBranch at: $gitCurrentBranch" -ForegroundColor Cyan
 #Write-Host "===> gitRepositoryName at: $gitRepositoryName" -ForegroundColor Cyan
 #Write-Host "===> gitRemoteUrl at: $gitRemoteUrl" -ForegroundColor Cyan
 
+#if ($cmd = Test-CommandAvailable -Command "git" -ExitIfNotFound) { "git ok at $($cmd.Definition)" }
 
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" -ErrorAction Stop
 Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedPowershellVersion.VersionFull)"

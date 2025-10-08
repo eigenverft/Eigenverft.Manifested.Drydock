@@ -10,7 +10,7 @@ Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Scop
 # Required for updating PowerShellGet and PackageManagement providers in local PowerShell 5.x environments
 Initialize-PowerShellMiniBootstrap
 
-#In the case the screts are not passed as parameters, try to get them from the secrets file, local development or CI/CD environment
+#In the case the secrets are not passed as parameters, try to get them from the secrets file, local development or CI/CD environment
 $POWERSHELL_GALLERY = Get-ConfigValue -Check $POWERSHELL_GALLERY -FilePath (Join-Path $PSScriptRoot 'main_secrets.json') -Property 'POWERSHELL_GALLERY'
 Test-VariableValue -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideValue
 

@@ -14,6 +14,10 @@ Initialize-PowerShellMiniBootstrap
 $POWERSHELL_GALLERY = Get-ConfigValue -Check $POWERSHELL_GALLERY -FilePath (Join-Path $PSScriptRoot 'main_secrets.json') -Property 'POWERSHELL_GALLERY'
 Test-VariableValue -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideValue
 
+# Verify required commands are available
+if ($cmd = Test-CommandAvailable -Command "git") { Write-Host "Test-CommandAvailable: $($cmd.Name) $($cmd.Version) found at $($cmd.Source)" } else { Write-Error "git not found"; exit 1 }
+if ($cmd = Test-CommandAvailable -Command "dotnet") { Write-Host "Test-CommandAvailable: $($cmd.Name) $($cmd.Version) found at $($cmd.Source)" } else { Write-Error "dotnet not found"; exit 1 }
+
 $cicdEnvironment = $(Get-RunEnvironment).IsCI
 
 $generatedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
@@ -30,7 +34,7 @@ Write-Host "===> gitCurrentBranch at: $gitCurrentBranch" -ForegroundColor Cyan
 #Write-Host "===> gitRepositoryName at: $gitRepositoryName" -ForegroundColor Cyan
 #Write-Host "===> gitRemoteUrl at: $gitRemoteUrl" -ForegroundColor Cyan
 
-#if ($cmd = Test-CommandAvailable -Command "git" -ExitIfNotFound) { "git ok at $($cmd.Definition)" }
+
 
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" -ErrorAction Stop
 Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedPowershellVersion.VersionFull)"

@@ -270,7 +270,7 @@ function Test-VariableValue {
         }
     }
 
-    Write-Output "Variable Name: $varName, Value: $displayValue"
+    Write-Output "Test-VariableValue: $varName, Value: $displayValue"
 }
 
 function Test-CommandAvailable {

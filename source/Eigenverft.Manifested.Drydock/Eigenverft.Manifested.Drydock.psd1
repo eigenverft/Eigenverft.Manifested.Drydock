@@ -85,7 +85,7 @@ FunctionsToExport = @(
     'Update-ManifestModuleVersion',
 
     'Find-FilesByPattern',
-    'Ensure-Variable',
+    'Test-VariableValue',
     'Get-RunEnvironment',
     'Get-ConfigValue',
     'Initialize-PowerShellMiniBootstrap'
@@ -117,7 +117,7 @@ AliasesToExport = @(
     'ummv',
 
     'ffbp',
-    'ev',
+    'tvv',
     'gre',
     'gcv'
     )

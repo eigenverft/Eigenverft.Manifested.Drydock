@@ -176,7 +176,7 @@ $POWERSHELL_GALLERY = Get-ConfigValue -Check $POWERSHELL_GALLERY -FilePath (Join
     return $current
 }
 
-function Ensure-Variable {
+function Test-VariableValue {
     # Suppress the use of unapproved verb in function name
     [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
     <#
@@ -201,24 +201,24 @@ function Ensure-Variable {
 
     .EXAMPLE
     $currentBranch = "develop"
-    Ensure-Variable -Variable { $currentBranch }
+    Test-VariableValue -Variable { $currentBranch }
     # Output: Variable Name: currentBranch, Value: develop
 
     .EXAMPLE
     $currentBranch = ""
-    Ensure-Variable -Variable { $currentBranch } -ExitIfNullOrEmpty
+    Test-VariableValue -Variable { $currentBranch } -ExitIfNullOrEmpty
     # Outputs an error and exits with code 1.
 
     .EXAMPLE
     $myHash = @{ Key1 = "Value1"; Key2 = "Value2" }
-    Ensure-Variable -Variable { $myHash }
+    Test-VariableValue -Variable { $myHash }
     # Output: Variable Name: myHash, Value: {"Key1":"Value1","Key2":"Value2"}
 
     .NOTES
     The script block must contain a simple variable reference for the AST extraction to work correctly.
     #>
     [CmdletBinding()]
-    [alias("ev")]
+    [alias("tvv")]
     param (
         [Parameter(Mandatory = $true)]
         [ScriptBlock]$Variable,

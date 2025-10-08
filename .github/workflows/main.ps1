@@ -2,17 +2,19 @@ param (
     [string]$POWERSHELL_GALLERY
 )
 
+#Keep this script compatible with PowerShell 5.1 and PowerShell 7+
+
+#Install the required modules to run this script Eigenverft.Manifested.Drydock needs to be Powershell 5.1 and Powershell 7+ compatible
 Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
 
-#Required for Powershell in PowerShell 5.x local execution
+# Required for updating PowerShellGet and PackageManagement providers in local PowerShell 5.x environments
 Initialize-PowerShellMiniBootstrap
 
+#In the case the screts are not passed as parameters, try to get them from the secrets file, local development or CI/CD environment
 $POWERSHELL_GALLERY = Get-ConfigValue -Check $POWERSHELL_GALLERY -FilePath (Join-Path $PSScriptRoot 'main_secrets.json') -Property 'POWERSHELL_GALLERY'
-Ensure-Variable -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideValue
+Test-VariableValue -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideValue
 
-Write-Host "===> Get-RunEnvironment" -ForegroundColor Cyan
 $cicdEnvironment = $(Get-RunEnvironment).IsCI
-
 
 
 $generatedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0

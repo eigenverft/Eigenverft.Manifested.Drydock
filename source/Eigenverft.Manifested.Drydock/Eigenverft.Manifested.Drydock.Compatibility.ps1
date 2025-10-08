@@ -915,8 +915,14 @@ PS> Install-ModulesFromRepoFolder -Folder C:\repo -Name Pester,PSScriptAnalyzer
 
     ($functionText + "`r`n" + $usageLine + "`r`n") | Out-File -FilePath $installerPath -Encoding utf8 -Force
 
+    # NEW: emit a convenience CMD launcher in the root that runs the PS1
+    $cmdPath = Join-Path $Folder "Install-ModulesFromRepoFolder.cmd"
+    $cmdText = "@echo off`r`n" +
+               "setlocal`r`n" +
+               "powershell.exe -NoProfile -ExecutionPolicy Unrestricted -File ""%~dp0Install-ModulesFromRepoFolder.ps1""`r`n" +
+               "endlocal`r`n"
+    $cmdText | Out-File -FilePath $cmdPath -Encoding ASCII -Force
+
     # Return staged package paths for confirmation
     Get-ChildItem -LiteralPath $nugetDir -Filter *.nupkg | Select-Object -ExpandProperty FullName
 }
-
-

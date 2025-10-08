@@ -30,7 +30,7 @@ CompanyName = ''
 Copyright = 'Copyright (c) 2025 Eigenverft'
 
 # Description of the functionality provided by this module
-Description = 'PowerShell helper functions by the Eigenverft Manifested Drydock project. The module provides Git helpers, and a manifest version updater.'
+Description = 'PowerShell helper functions for the Eigenverft Manifested Drydock project, focused on building and deploying locally and in CI/CD; see .github/workflow/main.ps1 and .yml for how it works.'
 
 # Minimum version of the PowerShell engine required by this module
 PowerShellVersion = '5.1'
@@ -86,6 +86,7 @@ FunctionsToExport = @(
 
     'Find-FilesByPattern',
     'Test-VariableValue',
+    'Test-AvailableCommand',
     'Get-RunEnvironment',
     'Get-ConfigValue',
     'Initialize-PowerShellMiniBootstrap'

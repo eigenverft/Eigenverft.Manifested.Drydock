@@ -529,5 +529,5 @@ function Initialize-NugetRepositories {
 }
 
 
-Remove-OldModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
+
 

@@ -243,15 +243,15 @@ function Test-VariableValue {
     # Check if the value is null or empty and exit if required.
     if ($ExitIfNullOrEmpty) {
         if ($null -eq $value) {
-            Write-Error "Variable '$varName' is null."
+            Write-Error "Test-VariableValue: '$varName' is null."
             exit 1
         }
         if (($value -is [string]) -and [string]::IsNullOrEmpty($value)) {
-            Write-Error "Variable '$varName' is an empty string."
+            Write-Error "Test-VariableValue: '$varName' is an empty string."
             exit 1
         }
         if ($value -is [hashtable] -and ($value.Count -eq 0)) {
-            Write-Error "Variable '$varName' is an empty hashtable."
+            Write-Error "Test-VariableValue: '$varName' is an empty hashtable."
             exit 1
         }
     }
@@ -366,9 +366,6 @@ Reviewer note: Prefer -ExitIfNotFound for CI/bootstrap; use -ThrowIfNotFound whe
     return $null
 }
 
-
-
-
 function Get-RunEnvironment {
 <#
 .SYNOPSIS
@@ -412,6 +409,7 @@ Reviewer note: Host-type detection for Azure is heuristic by design; no single a
         Provider = 'Local'
         Hosting  = 'N/A'
         IsCI     = $false
+        IsLocal  = $true
         Details  = [ordered]@{}
         Evidence = @()
     }
@@ -420,6 +418,7 @@ Reviewer note: Host-type detection for Azure is heuristic by design; no single a
     if ($env:GITHUB_ACTIONS -eq 'true') {
         $state.Provider = 'GitHubActions'
         $state.IsCI     = $true
+        $state.IsLocal  = $false
         $state.Details['RunnerOS']   = $env:RUNNER_OS
         $state.Details['RunnerName'] = $env:RUNNER_NAME
         $isHosted = [bool]$env:ImageOS -or [bool]$env:ImageVersion
@@ -432,6 +431,7 @@ Reviewer note: Host-type detection for Azure is heuristic by design; no single a
     elseif (($env:TF_BUILD -as [string]) -match '^(?i:true)$' -or $env:AGENT_NAME -or $env:BUILD_BUILDID) {
         $state.Provider = 'AzurePipelines'
         $state.IsCI     = $true
+        $state.IsLocal  = $false
         $state.Details['AgentName']       = $env:AGENT_NAME
         $state.Details['AgentOS']         = $env:AGENT_OS
         $state.Details['AgentMachineName']= $env:AGENT_MACHINENAME
@@ -449,6 +449,7 @@ Reviewer note: Host-type detection for Azure is heuristic by design; no single a
     elseif ($env:JENKINS_URL -or $env:BUILD_ID) {
         $state.Provider = 'Jenkins'
         $state.IsCI     = $true
+        $state.IsLocal  = $false        
         $state.Details['NodeName'] = $env:NODE_NAME
         $state.Details['HasJenkinsUrl'] = [bool]$env:JENKINS_URL
 
@@ -463,6 +464,7 @@ Reviewer note: Host-type detection for Azure is heuristic by design; no single a
     elseif ($env:CI -eq 'true') {
         $state.Provider = 'UnknownCI'
         $state.IsCI     = $true
+        $state.IsLocal  = $false        
         $state.Hosting  = 'Unknown'
         $state.Evidence += 'CI'
     }
@@ -474,6 +476,7 @@ Reviewer note: Host-type detection for Azure is heuristic by design; no single a
                         Provider = $state.Provider
                         Hosting  = $state.Hosting
                         IsCI     = $state.IsCI
+                        IsLocal  = $state.IsLocal
                         Details  = [pscustomobject]$state.Details
                         Evidence = $state.Evidence
                       }

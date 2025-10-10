@@ -1,6 +1,6 @@
 param (
     [string]$POWERSHELL_GALLERY
-)
+) 
 
 # Keep this script compatible with PowerShell 5.1 and PowerShell 7+
 # Lean, pipeline-friendly style—simple, readable, and easy to modify, failfast on errors.
@@ -43,9 +43,9 @@ Test-VariableValue -Variable { $gitRemoteUrl } -ExitIfNullOrEmpty
 
 # Generates a version based on the current date time to verify the version functions work as expected
 $generatedVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
-$probeGeneratedNetVersion = Convert-64SecVersionComponentsToDateTime -VersionBuild $generatedVersion.VersionBuild -VersionMajor $generatedVersion.VersionMajor -VersionMinor $generatedVersion.VersionMinor -VersionRevision $generatedVersion.VersionRevision
+$probeGeneratedVersion = Convert-64SecVersionComponentsToDateTime -VersionBuild $generatedVersion.VersionBuild -VersionMajor $generatedVersion.VersionMajor -VersionMinor $generatedVersion.VersionMinor -VersionRevision $generatedVersion.VersionRevision
 Test-VariableValue -Variable { $generatedVersion } -ExitIfNullOrEmpty
-Test-VariableValue -Variable { $probeGeneratedNetVersion } -ExitIfNullOrEmpty
+Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
 
 #######
 

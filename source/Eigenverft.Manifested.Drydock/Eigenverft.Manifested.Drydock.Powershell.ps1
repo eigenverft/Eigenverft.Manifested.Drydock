@@ -658,11 +658,11 @@ Dot-invoke this function (leading '.') to ensure imported definitions land in th
         $expanded = $ExecutionContext.InvokeCommand.ExpandString($f)
 
         if (Test-Path -LiteralPath $expanded) {
-            Write-Verbose "Import-Script: dot-sourcing '$expanded'."
+            Write-Host "Import-Script: dot-sourcing '$expanded'."
             . $expanded
         }
         else {
-            Write-Verbose "Import-Script: not found, skipped -> '$expanded'."
+            Write-Host "Import-Script: not found, skipped -> '$expanded'."
             if ($ErrorIfMissing) { Write-Error "Import-Script: file not found: $expanded" }
         }
     }

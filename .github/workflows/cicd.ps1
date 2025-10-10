@@ -2,18 +2,23 @@ param (
     [string]$POWERSHELL_GALLERY
 )
 
-#Keep this script compatible with PowerShell 5.1 and PowerShell 7+
+# Keep this script compatible with PowerShell 5.1 and PowerShell 7+
+# Lean, pipeline-friendly style—simple, readable, and easy to modify, failfast on errors.
 
 Write-Host "Powershell script $(Split-Path -Leaf $PSCommandPath) has started."
 
-#Install the required modules to run this script Eigenverft.Manifested.Drydock needs to be Powershell 5.1 and Powershell 7+ compatible
+# Install the required modules to run this script, Eigenverft.Manifested.Drydock needs to be Powershell 5.1 and Powershell 7+ compatible
 Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
 
 # Required for updating PowerShellGet and PackageManagement providers in local PowerShell 5.x environments
 Initialize-PowerShellMiniBootstrap
 
-#In the case the secrets are not passed as parameters, try to get them from the secrets file, local development or CI/CD environment
-$POWERSHELL_GALLERY = Get-ConfigValue -Check $POWERSHELL_GALLERY -FilePath (Join-Path $PSScriptRoot 'main_secrets.json') -Property 'POWERSHELL_GALLERY'
+# Import optional migration script if it exists
+. Import-Script -File @("$PSScriptRoot\cicd.migration.ps1")
+. Import-Script -File @("$PSScriptRoot\cicd.specific.ps1")
+
+# In the case the secrets are not passed as parameters, try to get them from the secrets file, local development or CI/CD environment
+$POWERSHELL_GALLERY = Get-ConfigValue -Check $POWERSHELL_GALLERY -FilePath (Join-Path $PSScriptRoot 'cicd.secrets.json') -Property 'POWERSHELL_GALLERY'
 Test-VariableValue -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideValue
 
 # Verify required commands are available
@@ -56,11 +61,9 @@ catch {
     Write-Error "Failed to publish module: $_"
 }
 
-if ($cicdEnvironment -eq $true) {
-    #Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -ModuleFolder "$($manifestFile.DirectoryName)" -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Automated version bump to $($$generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
+if ($($runEnvironment.IsCI)) {
     Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Automated version bump to $($generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
 } else {
-    #Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -ModuleFolder "$($manifestFile.DirectoryName)" -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Automated version bump to $($$generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
     Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Automated version bump to $($generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
 }
 

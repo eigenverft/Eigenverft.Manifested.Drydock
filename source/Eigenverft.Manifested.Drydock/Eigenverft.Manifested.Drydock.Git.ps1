@@ -270,7 +270,8 @@ Stages a module folder, optionally configures safe.directory, commits with a tra
 
 .DESCRIPTION
 Wraps these Git calls (kept close to your original flags):
-  git -C "$TopLevelDirectory" add -v -A -- "$ModuleFolder"
+  For each item in $Folders:
+    git -C "$TopLevelDirectory" add -v -A -- "<item>"
   (optional) git -C "$TopLevelDirectory" config --global --add safe.directory "$TopLevelDirectory"
   git -C "$TopLevelDirectory" -c user.name="..." -c user.email="..." commit -m "..."
   git -C "$TopLevelDirectory" push origin "$CurrentBranch"
@@ -284,8 +285,8 @@ Writes status via Write-Host and emits no return value. Optionally exits the hos
 .PARAMETER TopLevelDirectory
 Git repository root to pass via -C. If omitted, the current repo root is detected.
 
-.PARAMETER ModuleFolder
-Pathspec/folder to stage (ideally relative to repo root). Passed after the pathspec separator: -- "$ModuleFolder".
+.PARAMETER Folders
+Pathspec/folder values to stage (ideally relative to repo root). Each value is passed after the pathspec separator: -- "<item>".
 
 .PARAMETER CurrentBranch
 Target branch for push. If omitted, the current branch is detected.
@@ -315,13 +316,13 @@ If set, existing tags with the same name are moved (force-updated) to the new co
 On any failure, exits the PowerShell host with a non-zero code (atomic behavior).
 
 .EXAMPLE
-Invoke-GitAddCommitPush -TopLevelDirectory (Get-GitTopLevelDirectory) -ModuleFolder 'src/My.Module' -CurrentBranch 'main'
+Invoke-GitAddCommitPush -TopLevelDirectory (Get-GitTopLevelDirectory) -Folders 'src/My.Module' -CurrentBranch 'main'
 
 .EXAMPLE
-Invoke-GitAddCommitPush -ModuleFolder 'src/My.Module' -Tags @('v1.4.0','latest') -TagMessage 'Release 1.4.0'
+Invoke-GitAddCommitPush -Folders 'src/My.Module','src/Another.Module' -Tags @('v1.4.0','latest') -TagMessage 'Release 1.4.0'
 
 .EXAMPLE
-Invoke-GitAddCommitPush -ModuleFolder 'src/My.Module' -SafeDirectory
+Invoke-GitAddCommitPush -Folders 'src/My.Module' -SafeDirectory
 Adds the repo to safe.directory before proceeding.
 
 .NOTES
@@ -335,7 +336,7 @@ Adds the repo to safe.directory before proceeding.
         [string]$TopLevelDirectory,
 
         [Parameter(Mandatory=$true)]
-        [string]$ModuleFolder,
+        [string[]]$Folders,
 
         [Parameter(Mandatory=$false)]
         [string]$CurrentBranch,
@@ -388,12 +389,16 @@ Adds the repo to safe.directory before proceeding.
         if ($ExitOnError) { exit 1 }; return
     }
 
-    # --- git add -v -A -- "$ModuleFolder" ---------------------------------------------------------
-    Write-Host "[Invoke-GitAddCommitPush] git add -v -A -- '$ModuleFolder'"
-    & git -C $repoPath add -v -A -- $ModuleFolder 2>&1 | ForEach-Object { Write-Host $_ }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[Invoke-GitAddCommitPush] git add failed (code $LASTEXITCODE)."
-        if ($ExitOnError) { exit $LASTEXITCODE }; return
+    # --- git add -v -A -- "<each folder>" ---------------------------------------------------------
+    foreach ($folder in $Folders) {
+        $f = ([string]$folder).Trim()
+        if ([string]::IsNullOrWhiteSpace($f)) { continue }
+        Write-Host "[Invoke-GitAddCommitPush] git add -v -A -- '$f'"
+        & git -C $repoPath add -v -A -- $f 2>&1 | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[Invoke-GitAddCommitPush] git add failed for '$f' (code $LASTEXITCODE)."
+            if ($ExitOnError) { exit $LASTEXITCODE }; return
+        }
     }
 
     # --- Optional: safe.directory ----------------------------------------------------------------

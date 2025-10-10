@@ -50,8 +50,10 @@ catch {
 
 if ($cicdEnvironment -eq $true) {
     Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -ModuleFolder "$($manifestFile.DirectoryName)" -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Automated version bump to $($generatedPowershellVersion.VersionFull) [skip ci]" -ErrorAction Stop
+    #Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Automated version bump to $($generatedPowershellVersion.VersionFull) [skip ci]" -ErrorAction Stop
 } else {
     Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -ModuleFolder "$($manifestFile.DirectoryName)" -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Automated version bump to $($generatedPowershellVersion.VersionFull) [skip ci]" -ErrorAction Stop
+    #Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Automated version bump to $($generatedPowershellVersion.VersionFull) [skip ci]" -ErrorAction Stop
 }
 
 

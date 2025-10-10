@@ -622,6 +622,52 @@ Performs a minimal, non-interactive bootstrap for Windows PowerShell 5.x (Curren
     $Install=@('PowerShellGet','PackageManagement');$Scope='CurrentUser';if($PSVersionTable.PSVersion.Major -ne 5){return};[Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; $minNuget=[Version]'2.8.5.201'; Install-PackageProvider -Name NuGet -MinimumVersion $minNuget -Scope $Scope -Force -ForceBootstrap | Out-Null; try { Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop } catch { Register-PSRepository -Name PSGallery -SourceLocation 'https://www.powershellgallery.com/api/v2' -ScriptSourceLocation 'https://www.powershellgallery.com/api/v2' -InstallationPolicy Trusted -ErrorAction Stop }; Find-Module -Name $Install -Repository PSGallery | Select-Object Name,Version | Where-Object { -not (Get-Module -ListAvailable -Name $_.Name | Sort-Object Version -Descending | Select-Object -First 1 | Where-Object Version -eq $_.Version) } | ForEach-Object { Install-Module -Name $_.Name -RequiredVersion $_.Version -Repository PSGallery -Scope $Scope -Force -AllowClobber; try { Remove-Module -Name $_.Name -ErrorAction SilentlyContinue } catch {}; Import-Module -Name $_.Name -MinimumVersion $_.Version -Force }
 }
 
+function Import-Script {
+<#
+.SYNOPSIS
+Optionally dot-sources one or more scripts if they exist (PowerShell 5 compatible).
+
+.DESCRIPTION
+Checks each provided path. If the file exists, it is dot-sourced so any functions/variables
+defined inside become available in the current scope. To place them in the caller (script) scope,
+dot-invoke this function.
+
+.PARAMETER File
+One or more script paths to import. Variables like $PSScriptRoot are expanded.
+
+.PARAMETER ErrorIfMissing
+If set, emits a non-terminating error for each missing file (continues processing others).
+
+.EXAMPLE
+. Import-Script -File "$PSScriptRoot\psutility\common.ps1","$PSScriptRoot\psutility\dotnetlist.ps1"
+
+.NOTES
+Dot-invoke this function (leading '.') to ensure imported definitions land in the caller's scope.
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true, Position=0)]
+        [string[]]$File,
+        [switch]$ErrorIfMissing
+    )
+
+    foreach ($f in $File) {
+        if ([string]::IsNullOrWhiteSpace($f)) { continue }
+
+        # External reviewer note: Expand variables (e.g., $PSScriptRoot) before existence check.
+        $expanded = $ExecutionContext.InvokeCommand.ExpandString($f)
+
+        if (Test-Path -LiteralPath $expanded) {
+            Write-Verbose "Import-Script: dot-sourcing '$expanded'."
+            . $expanded
+        }
+        else {
+            Write-Verbose "Import-Script: not found, skipped -> '$expanded'."
+            if ($ErrorIfMissing) { Write-Error "Import-Script: file not found: $expanded" }
+        }
+    }
+}
+
 function Export-OfflineModuleBundle {
 <#
 .SYNOPSIS

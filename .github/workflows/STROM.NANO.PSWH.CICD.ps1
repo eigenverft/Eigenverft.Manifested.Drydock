@@ -413,7 +413,6 @@ function Initialize-DotNet {
     }
 }
 
-
 function Initialize-NugetRepositorys {
     <#
     .SYNOPSIS

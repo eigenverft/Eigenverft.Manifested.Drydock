@@ -89,8 +89,9 @@ FunctionsToExport = @(
     'Test-CommandAvailable',
     'Get-RunEnvironment',
     'Get-ConfigValue',
-    'Initialize-PowerShellMiniBootstrap'
-    'Export-OfflineModuleBundle'
+    'Initialize-PowerShellMiniBootstrap',
+    'Import-Script',
+    'Export-OfflineModuleBundle',
     'Use-Tls12'
     )
 

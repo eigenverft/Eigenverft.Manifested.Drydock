@@ -4,6 +4,8 @@ param (
 
 #Keep this script compatible with PowerShell 5.1 and PowerShell 7+
 
+Write-Host "Powershell script $(Split-Path -Leaf $PSCommandPath) has started."
+
 #Install the required modules to run this script Eigenverft.Manifested.Drydock needs to be Powershell 5.1 and Powershell 7+ compatible
 Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
 
@@ -18,26 +20,32 @@ Test-VariableValue -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideVal
 if ($cmd = Test-CommandAvailable -Command "git") { Write-Host "Test-CommandAvailable: $($cmd.Name) $($cmd.Version) found at $($cmd.Source)" } else { Write-Error "git not found"; exit 1 }
 if ($cmd = Test-CommandAvailable -Command "dotnet") { Write-Host "Test-CommandAvailable: $($cmd.Name) $($cmd.Version) found at $($cmd.Source)" } else { Write-Error "dotnet not found"; exit 1 }
 
-$cicdEnvironment = $(Get-RunEnvironment).IsCI
-
-$generatedPowershellVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
+# Preload environment information
+$runEnvironment = Get-RunEnvironment
 $gitTopLevelDirectory = Get-GitTopLevelDirectory
 $gitCurrentBranch = Get-GitCurrentBranch
-#$gitCurrentBranchRoot = Get-GitCurrentBranchRoot
-#$gitRepositoryName = Get-GitRepositoryName
-#$gitRemoteUrl = Get-GitRemoteUrl
+$gitCurrentBranchRoot = Get-GitCurrentBranchRoot
+$gitRepositoryName = Get-GitRepositoryName
+$gitRemoteUrl = Get-GitRemoteUrl
 
-Write-Host "===> generatedPowershellVersion at: $($generatedPowershellVersion.VersionFull)" -ForegroundColor Cyan
-Write-Host "===> gitTopLevelDirectory at: $gitTopLevelDirectory" -ForegroundColor Cyan
-Write-Host "===> gitCurrentBranch at: $gitCurrentBranch" -ForegroundColor Cyan
-#Write-Host "===> gitCurrentBranchRoot at: $gitCurrentBranchRoot" -ForegroundColor Cyan
-#Write-Host "===> gitRepositoryName at: $gitRepositoryName" -ForegroundColor Cyan
-#Write-Host "===> gitRemoteUrl at: $gitRemoteUrl" -ForegroundColor Cyan
+# Failfast / guard if any of the required preloaded environment information is not available
+Test-VariableValue -Variable { $runEnvironment } -ExitIfNullOrEmpty
+Test-VariableValue -Variable { $gitTopLevelDirectory } -ExitIfNullOrEmpty
+Test-VariableValue -Variable { $gitCurrentBranch } -ExitIfNullOrEmpty
+Test-VariableValue -Variable { $gitCurrentBranchRoot } -ExitIfNullOrEmpty
+Test-VariableValue -Variable { $gitRepositoryName } -ExitIfNullOrEmpty
+Test-VariableValue -Variable { $gitRemoteUrl } -ExitIfNullOrEmpty
 
+# Generates a version based on the current date time to verify the version functions work as expected
+$generatedVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
+$probeGeneratedNetVersion = Convert-64SecVersionComponentsToDateTime -VersionBuild $generatedVersion.VersionBuild -VersionMajor $generatedVersion.VersionMajor -VersionMinor $generatedVersion.VersionMinor -VersionRevision $generatedVersion.VersionRevision
+Test-VariableValue -Variable { $generatedVersion } -ExitIfNullOrEmpty
+Test-VariableValue -Variable { $probeGeneratedNetVersion } -ExitIfNullOrEmpty
 
+#######
 
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" -ErrorAction Stop
-Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedPowershellVersion.VersionFull)"
+Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedVersion.VersionFull)"
 Write-Host "===> Testing module manifest at: $($manifestFile.FullName)" -ForegroundColor Cyan
 Test-ModuleManifest -Path $($manifestFile.FullName)
 
@@ -49,11 +57,11 @@ catch {
 }
 
 if ($cicdEnvironment -eq $true) {
-    Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -ModuleFolder "$($manifestFile.DirectoryName)" -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Automated version bump to $($generatedPowershellVersion.VersionFull) [skip ci]" -ErrorAction Stop
-    #Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Automated version bump to $($generatedPowershellVersion.VersionFull) [skip ci]" -ErrorAction Stop
+    #Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -ModuleFolder "$($manifestFile.DirectoryName)" -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Automated version bump to $($$generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
+    Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Automated version bump to $($generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
 } else {
-    Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -ModuleFolder "$($manifestFile.DirectoryName)" -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Automated version bump to $($generatedPowershellVersion.VersionFull) [skip ci]" -ErrorAction Stop
-    #Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Automated version bump to $($generatedPowershellVersion.VersionFull) [skip ci]" -ErrorAction Stop
+    #Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -ModuleFolder "$($manifestFile.DirectoryName)" -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Automated version bump to $($$generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
+    Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Automated version bump to $($generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
 }
 
 

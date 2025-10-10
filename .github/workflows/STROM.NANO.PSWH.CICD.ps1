@@ -369,7 +369,7 @@ function Initialize-NugetRepositorys {
                 break
             }
         }
-        if ($foundIndex -ne $null) {
+        if ($null -ne $foundIndex) {
             # Assume the preceding line contains the name and status, e.g., " 1.  nuget.org [Enabled]"
             $statusLine = if ($foundIndex -gt 0) { $lines[$foundIndex - 1] } else { "" }
             if ($statusLine -match '^\s*\d+\.\s*(?<Name>\S+)\s*\[(?<Status>\w+)\]') {
@@ -443,7 +443,4 @@ function Initialize-NugetRepositories {
         }
     }
 }
-
-
-
 

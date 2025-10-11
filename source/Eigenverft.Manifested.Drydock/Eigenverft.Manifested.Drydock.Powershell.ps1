@@ -1642,82 +1642,63 @@ function Update-ManifestPrerelease {
     $optsLine = $optsAll -bor [System.Text.RegularExpressions.RegexOptions]::Multiline
     $optsHere = $optsLine -bor [System.Text.RegularExpressions.RegexOptions]::Singleline
 
-    # Encoders for non-empty values
-    $enc_sq = ($NewPrerelease -replace "'", "''")
-    $tmp    = $NewPrerelease -replace '`','``'
-    $tmp    = $tmp -replace '"','`"'
-    $enc_dq = $tmp -replace '\$','`$'
+    # Precompute escapes for non-empty replacements
+    $encSQ = if ([string]::IsNullOrEmpty($NewPrerelease)) { '' } else { $NewPrerelease -replace "'", "''" }
+    $encDQ = if ([string]::IsNullOrEmpty($NewPrerelease)) { '' } else { $NewPrerelease -replace '(["`$])','`$1' }
 
-    $updated = $false
-
-    # --- EMPTY CASE: set to empty quoted string, keep key ---
-    if ([string]::IsNullOrEmpty($NewPrerelease)) {
-        # Prefer in-place update if already quoted
-        $rxSq = [regex]::new('(?<prefix>\bPrerelease\s*=\s*'')(?<content>(?:''''|[^''])*)(?<suffix>'')', $optsLine)
-        if ($rxSq.IsMatch($content)) {
-            $content = $rxSq.Replace($content, { param($m) $m.Groups['prefix'].Value + '' + $m.Groups['suffix'].Value }, 1)
-            $updated = $true
-        }
-        if (-not $updated) {
-            $rxDq = [regex]::new('(?<prefix>\bPrerelease\s*=\s*")(?<content>(?:``.|`"|[^"])*) (?<suffix>")', $optsLine)
-            $content = $rxDq.Replace($content, { param($m) $m.Groups['prefix'].Value + '' + $m.Groups['suffix'].Value }, 1)
-            $updated = $content -ne $original
-        }
-
-        # If it was a here-string, replace the whole assignment with: Prerelease = ''
-        if (-not $updated) {
-            $rxHsq = [regex]::new('^(?<indent>[ \t]*)\bPrerelease\s*=\s*@''.*?''@(?<trail>[ \t]*#.*)?(?<nl>\r?\n?)', $optsHere)
-            $content = $rxHsq.Replace($content, {
-                param($m)
-                $updated = $true
-                $m.Groups['indent'].Value + "Prerelease = ''" + $m.Groups['trail'].Value + $m.Groups['nl'].Value
-            }, 1)
-        }
-        if (-not $updated) {
-            $rxHdq = [regex]::new('^(?<indent>[ \t]*)\bPrerelease\s*=\s*@" .*? "@(?<trail>[ \t]*#.*)?(?<nl>\r?\n?)', $optsHere)
-            $content = $rxHdq.Replace($content, {
-                param($m)
-                $updated = $true
-                $m.Groups['indent'].Value + "Prerelease = ''" + $m.Groups['trail'].Value + $m.Groups['nl'].Value
-            }, 1)
-        }
-
-        if (-not $updated) {
-            throw "Could not locate a 'Prerelease' assignment to set it to an empty string."
-        }
-
-        if ($content -ne $original) { [System.IO.File]::WriteAllText($ManifestPath, $content) }
-        return
-    }
-
-    # --- NON-EMPTY CASE: preserve original quoting style and replace content ---
+    # Patterns in one list; we stop on the first match.
     $defs = @(
-        @{ Style='hsq'; Pattern='(?s)(?<prefix>\bPrerelease\s*=\s*@'')(?<content>.*?)(?<suffix>''@)' }
-        @{ Style='hdq'; Pattern='(?s)(?<prefix>\bPrerelease\s*=\s*@"")(?<content>.*?)(?<suffix>""@)' }
-        @{ Style='sq' ; Pattern='(?<prefix>\bPrerelease\s*=\s*'')(?<content>(?:''''|[^''])*)(?<suffix>'')' }
-        @{ Style='dq' ; Pattern='(?<prefix>\bPrerelease\s*=\s*")(?<content>(?:``.|`"|[^"])*?)(?<suffix>")' }
+        # Here-strings first (line-anchored)
+        @{ Style='hsq'; Options=$optsHere; Pattern='^(?<indent>[ \t]*)\bPrerelease\s*=\s*@''(?<content>.*?)''@(?<trail>[ \t]*#.*)?(?<nl>\r?\n?)' }
+        @{ Style='hdq'; Options=$optsHere; Pattern='^(?<indent>[ \t]*)\bPrerelease\s*=\s*@"(?<content>.*?)"@(?<trail>[ \t]*#.*)?(?<nl>\r?\n?)' }
+        # Quoted single-line
+        @{ Style='sq' ; Options=$optsLine; Pattern='(?<prefix>\bPrerelease\s*=\s*'')(?<content>(?:''''|[^''])*)(?<suffix>'')' }
+        @{ Style='dq' ; Options=$optsLine; Pattern='(?<prefix>\bPrerelease\s*=\s*")(?<content>(?:``.|`"|[^"])*)?(?<suffix>")' }
     )
+
     foreach ($d in $defs) {
-        $rx = [regex]::new($d.Pattern, $optsHere)
-        if ($rx.IsMatch($content)) {
-            $content = $rx.Replace($content, {
-                param($m)
-                switch ($d.Style) {
-                    'sq'  { $enc = $enc_sq }
-                    'dq'  { $enc = $enc_dq }
-                    'hsq' { $enc = $NewPrerelease } # here-string, no escaping
-                    'hdq' { $enc = $enc_dq }        # escape for double-quoted here-string
+        $rx = [regex]::new($d.Pattern, $d.Options)
+        if (-not $rx.IsMatch($content)) { continue }
+
+        $content = $rx.Replace($content, {
+            param($m)
+
+            switch ($d.Style) {
+                # Here-strings: if empty -> convert to single-quoted empty; else keep HS and inject content.
+                'hsq' {
+                    if ([string]::IsNullOrEmpty($NewPrerelease)) {
+                        $m.Groups['indent'].Value + "Prerelease = ''" + $m.Groups['trail'].Value + $m.Groups['nl'].Value
+                    }
+                    else {
+                        $m.Groups['indent'].Value + "Prerelease = @'"+ $m.Groups['content'].Value.GetType() | Out-Null
+                        "@"
+                    }
                 }
-                $m.Groups['prefix'].Value + $enc + $m.Groups['suffix'].Value
-            }, 1)
-            $updated = $true
-            break
-        }
+                'hdq' {
+                    if ([string]::IsNullOrEmpty($NewPrerelease)) {
+                        $m.Groups['indent'].Value + "Prerelease = ''" + $m.Groups['trail'].Value + $m.Groups['nl'].Value
+                    }
+                    else {
+                        $m.Groups['indent'].Value + "@"
+                        # We escape for double-quoted HS (expandable)
+                        "Prerelease = @""$encDQ""@" + $m.Groups['trail'].Value + $m.Groups['nl'].Value
+                    }
+                }
+                # Quoted forms: keep the quote style, replace inside the quotes.
+                'sq' { $m.Groups['prefix'].Value + $encSQ + $m.Groups['suffix'].Value }
+                'dq' { $m.Groups['prefix'].Value + $encDQ + $m.Groups['suffix'].Value }
+            }
+        }, 1)
+
+        break
     }
 
-    if (-not $updated) {
+    if ($content -eq $original) {
         throw "Could not locate a 'Prerelease' assignment (supported forms: quoted or here-string)."
     }
 
-    if ($content -ne $original) { [System.IO.File]::WriteAllText($ManifestPath, $content) }
+    if ($content -ne $original) {
+        [System.IO.File]::WriteAllText($ManifestPath, $content)
+    }
 }
+

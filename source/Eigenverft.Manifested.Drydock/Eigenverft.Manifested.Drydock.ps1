@@ -1,223 +1,3 @@
-function Update-ManifestModuleVersion {
-    <#
-    .SYNOPSIS
-        Updates the ModuleVersion in a PowerShell module manifest (psd1) file.
-
-    .DESCRIPTION
-        This function reads a PowerShell module manifest file as text, uses a regular expression to update the
-        ModuleVersion value while preserving the file's comments and formatting, and writes the updated content back
-        to the file. If a directory path is supplied, the function recursively searches for the first *.psd1 file and uses it.
-
-    .PARAMETER ManifestPath
-        The file or directory path to the module manifest (psd1) file. If a directory is provided, the function will
-        search recursively for the first *.psd1 file.
-
-    .PARAMETER NewVersion
-        The new version string to set for the ModuleVersion property.
-
-    .EXAMPLE
-        PS C:\> Update-ManifestModuleVersion -ManifestPath "C:\projects\MyDscModule" -NewVersion "2.0.0"
-        Updates the ModuleVersion of the first PSD1 manifest found in the given directory to "2.0.0".
-    #>
-    [CmdletBinding()]
-    [alias("ummv")]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ManifestPath,
-
-        [Parameter(Mandatory = $true)]
-        [string]$NewVersion
-    )
-
-    # Check if the provided path exists
-    if (-not (Test-Path $ManifestPath)) {
-        throw "The path '$ManifestPath' does not exist."
-    }
-
-    # If the path is a directory, search recursively for the first *.psd1 file.
-    $item = Get-Item $ManifestPath
-    if ($item.PSIsContainer) {
-        $psd1File = Get-ChildItem -Path $ManifestPath -Filter *.psd1 -Recurse | Select-Object -First 1
-        if (-not $psd1File) {
-            throw "No PSD1 manifest file found in directory '$ManifestPath'."
-        }
-        $ManifestPath = $psd1File.FullName
-    }
-
-    Write-Verbose "Using manifest file: $ManifestPath"
-
-    # Read the manifest file content as text using .NET method.
-    $content = [System.IO.File]::ReadAllText($ManifestPath)
-
-    # Define the regex pattern to locate the ModuleVersion value.
-    $pattern = "(?<=ModuleVersion\s*=\s*')[^']+(?=')"
-
-    # Replace the current version with the new version using .NET regex.
-    $updatedContent = [System.Text.RegularExpressions.Regex]::Replace($content, $pattern, $NewVersion)
-
-    # Write the updated content back to the manifest file.
-    [System.IO.File]::WriteAllText($ManifestPath, $updatedContent)
-}
-
-function Update-ManifestReleaseNotes {
-<#
-.SYNOPSIS
-    Updates the ReleaseNotes value in a PowerShell module manifest (psd1).
-
-.DESCRIPTION
-    Reads the manifest as raw text and replaces only the ReleaseNotes value inside PrivateData.PSData.
-    Supports single-quoted, double-quoted, and here-string forms while preserving comments and formatting.
-    No extra helpers; compatible with Windows PowerShell 5.1 and PowerShell 7+.
-
-.PARAMETER ManifestPath
-    File or directory path. If a directory is provided, the first *.psd1 found recursively is used.
-
-.PARAMETER NewReleaseNotes
-    The new ReleaseNotes text. Multiline supported.
-
-.EXAMPLE
-    Update-ManifestReleaseNotes -ManifestPath .\MyModule -NewReleaseNotes "Fixed bugs; improved logging."
-#>
-    [CmdletBinding()]
-    [Alias('umrn')]
-    param(
-        [Parameter(Mandatory)]
-        [string]$ManifestPath,
-        [Parameter(Mandatory)]
-        [string]$NewReleaseNotes
-    )
-
-    # Resolve a concrete psd1 path (inline; no helper functions)
-    if (-not (Test-Path -LiteralPath $ManifestPath)) {
-        throw "The path '$ManifestPath' does not exist."
-    }
-    $item = Get-Item -LiteralPath $ManifestPath
-    if ($item.PSIsContainer) {
-        $psd1 = Get-ChildItem -LiteralPath $ManifestPath -Filter *.psd1 -Recurse | Select-Object -First 1
-        if (-not $psd1) { throw "No PSD1 manifest file found under '$ManifestPath'." }
-        $ManifestPath = $psd1.FullName
-    }
-
-    # Read, replace, write (keep it simple to match your original style)
-    $content = [System.IO.File]::ReadAllText($ManifestPath)
-
-    # Define patterns that capture prefix/content/suffix so we can rebuild safely (avoids replacement-string $ pitfalls).
-    $opts = [System.Text.RegularExpressions.RegexOptions]::Singleline -bor
-            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase  -bor
-            [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
-
-    $defs = @(
-        @{ Style='hsq'; Pattern='(?s)(?<prefix>\bReleaseNotes\s*=\s*@'')(?<content>.*?)(?<suffix>''@)' }  # @' ... '@
-        @{ Style='hdq'; Pattern='(?s)(?<prefix>\bReleaseNotes\s*=\s*@"")(?<content>.*?)(?<suffix>""@)' }  # @" ... "@
-        @{ Style='sq' ; Pattern='(?<prefix>\bReleaseNotes\s*=\s*'')(?<content>(?:''''|[^''])*)(?<suffix>'')' } # '...'
-        @{ Style='dq' ; Pattern='(?<prefix>\bReleaseNotes\s*=\s*"")(?<content>(?:``.|`"|[^""])*?)(?<suffix>"")' } # "..."
-    )
-
-    $updated = $false
-    foreach ($d in $defs) {
-        $rx = [System.Text.RegularExpressions.Regex]::new($d.Pattern, $opts)
-        if ($rx.IsMatch($content)) {
-            $content = $rx.Replace($content, {
-                param($m)
-                switch ($d.Style) {
-                    'sq'  { $enc = $NewReleaseNotes -replace "'", "''" }               # Single-quoted: double single quotes
-                    'dq'  { $t = $NewReleaseNotes -replace '`','``'; $t = $t -replace '"','`"'; $enc = $t -replace '\$','`$' }
-                    'hsq' { $enc = $NewReleaseNotes }                                   # Single-quoted here-string: literal
-                    'hdq' { $t = $NewReleaseNotes -replace '`','``'; $t = $t -replace '"','`"'; $enc = $t -replace '\$','`$' }
-                }
-                # Rebuild exact structure to keep whitespace/comments intact
-                $m.Groups['prefix'].Value + $enc + $m.Groups['suffix'].Value
-            }, 1)
-            $updated = $true
-            break
-        }
-    }
-
-    if (-not $updated) {
-        throw "Could not locate a 'ReleaseNotes' assignment (supported forms: quoted or here-string)."
-    }
-
-    [System.IO.File]::WriteAllText($ManifestPath, $content)
-}
-
-function Update-ManifestPrerelease {
-<#
-.SYNOPSIS
-    Updates the Prerelease value in a PowerShell module manifest (psd1).
-
-.DESCRIPTION
-    Reads the manifest as raw text and replaces only the Prerelease value inside PrivateData.PSData.
-    Supports single-quoted, double-quoted, and here-string forms while preserving comments and formatting.
-    No extra helpers; compatible with Windows PowerShell 5.1 and PowerShell 7+.
-
-.PARAMETER ManifestPath
-    File or directory path. If a directory is provided, the first *.psd1 found recursively is used.
-
-.PARAMETER NewPrerelease
-    New prerelease label (e.g. "preview1", "beta.2", "rc.1"). Use empty string "" to clear.
-
-.EXAMPLE
-    Update-ManifestPrerelease -ManifestPath .\MyModule\MyModule.psd1 -NewPrerelease "beta.2"
-#>
-    [CmdletBinding()]
-    [Alias('umpr')]
-    param(
-        [Parameter(Mandatory)]
-        [string]$ManifestPath,
-        [Parameter(Mandatory)]
-        [string]$NewPrerelease
-    )
-
-    if (-not (Test-Path -LiteralPath $ManifestPath)) {
-        throw "The path '$ManifestPath' does not exist."
-    }
-    $item = Get-Item -LiteralPath $ManifestPath
-    if ($item.PSIsContainer) {
-        $psd1 = Get-ChildItem -LiteralPath $ManifestPath -Filter *.psd1 -Recurse | Select-Object -First 1
-        if (-not $psd1) { throw "No PSD1 manifest file found under '$ManifestPath'." }
-        $ManifestPath = $psd1.FullName
-    }
-
-    $content = [System.IO.File]::ReadAllText($ManifestPath)
-
-    $opts = [System.Text.RegularExpressions.RegexOptions]::Singleline -bor
-            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase  -bor
-            [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
-
-    $defs = @(
-        @{ Style='hsq'; Pattern='(?s)(?<prefix>\bPrerelease\s*=\s*@'')(?<content>.*?)(?<suffix>''@)' }
-        @{ Style='hdq'; Pattern='(?s)(?<prefix>\bPrerelease\s*=\s*@"")(?<content>.*?)(?<suffix>""@)' }
-        @{ Style='sq' ; Pattern='(?<prefix>\bPrerelease\s*=\s*'')(?<content>(?:''''|[^''])*)(?<suffix>'')' }
-        @{ Style='dq' ; Pattern='(?<prefix>\bPrerelease\s*=\s*"")(?<content>(?:``.|`"|[^""])*?)(?<suffix>"")' }
-    )
-
-    $updated = $false
-    foreach ($d in $defs) {
-        $rx = [System.Text.RegularExpressions.Regex]::new($d.Pattern, $opts)
-        if ($rx.IsMatch($content)) {
-            $content = $rx.Replace($content, {
-                param($m)
-                switch ($d.Style) {
-                    'sq'  { $enc = $NewPrerelease -replace "'", "''" }
-                    'dq'  { $t = $NewPrerelease -replace '`','``'; $t = $t -replace '"','`"'; $enc = $t -replace '\$','`$' }
-                    'hsq' { $enc = $NewPrerelease }
-                    'hdq' { $t = $NewPrerelease -replace '`','``'; $t = $t -replace '"','`"'; $enc = $t -replace '\$','`$' }
-                }
-                $m.Groups['prefix'].Value + $enc + $m.Groups['suffix'].Value
-            }, 1)
-            $updated = $true
-            break
-        }
-    }
-
-    if (-not $updated) {
-        throw "Could not locate a 'Prerelease' assignment (supported forms: quoted or here-string)."
-    }
-
-    [System.IO.File]::WriteAllText($ManifestPath, $content)
-}
-
-
 function Find-FilesByPattern {
     <#
     .SYNOPSIS
@@ -524,6 +304,160 @@ Reviewer note: Prefer -ExitIfNotFound for CI/bootstrap; use -ThrowIfNotFound whe
 
     return $null
 }
+
+function Test-ModuleAvailable {
+<#
+.SYNOPSIS
+    Returns a PSModuleInfo for a locally installed module (stable only by default), or $null if not found.
+
+.DESCRIPTION
+    Strictly local check:
+      - Considers already-loaded modules first, then installed modules via Get-Module -ListAvailable.
+      - By default, prerelease modules are excluded. Use -IncludePrerelease to allow them.
+      - Supports exact version (RequiredVersion) or a version range (MinimumVersion/MaximumVersion).
+    Returns the best matching [System.Management.Automation.PSModuleInfo] or $null.
+    Optional -ThrowIfNotFound / -ExitIfNotFound for CI-style enforcement.
+
+.PARAMETER Name
+    Module name to resolve (wildcards allowed; exact-name matches are preferred).
+
+.PARAMETER RequiredVersion
+    Exact version required. If set, Minimum/MaximumVersion are ignored.
+
+.PARAMETER MinimumVersion
+    Lowest acceptable version (inclusive) when RequiredVersion is not specified.
+
+.PARAMETER MaximumVersion
+    Highest acceptable version (inclusive) when RequiredVersion is not specified.
+
+.PARAMETER IncludePrerelease
+    Include prerelease modules in the candidate set (default behavior excludes them).
+
+.PARAMETER ThrowIfNotFound
+    Throw a terminating error when not found.
+
+.PARAMETER ExitIfNotFound
+    Exit the current PowerShell host when not found (default code 127).
+
+.PARAMETER ExitCode
+    Exit code used with -ExitIfNotFound.
+
+.EXAMPLE
+    if ($m = Test-ModuleAvailable Pester) { "$($m.Name) $($m.Version)" } else { "Pester (stable) missing" }
+
+.EXAMPLE
+    # Allow prerelease if only preview builds are installed
+    Test-ModuleAvailable Pester -IncludePrerelease -MinimumVersion 5.5
+
+.NOTES
+    Reviewer note: Purely local; no gallery/network calls. Prefers exact name, then highest version.
+#>
+    [CmdletBinding(DefaultParameterSetName='ByRange')]
+    [OutputType([System.Management.Automation.PSModuleInfo])]
+    param(
+        [Parameter(Mandatory, Position=0)]
+        [string]$Name,
+
+        [Parameter(ParameterSetName='ByRequired')]
+        [version]$RequiredVersion,
+
+        [Parameter(ParameterSetName='ByRange')]
+        [version]$MinimumVersion,
+
+        [Parameter(ParameterSetName='ByRange')]
+        [version]$MaximumVersion,
+
+        [switch]$IncludePrerelease,
+
+        [switch]$ThrowIfNotFound,
+        [switch]$ExitIfNotFound,
+        [int]$ExitCode = 127
+    )
+
+    # Helper: determine if a PSModuleInfo is prerelease.
+    # Uses common manifest metadata: PrivateData.PSData.Prerelease
+    function _IsPrerelease {
+        param([System.Management.Automation.PSModuleInfo]$m)
+        try {
+            if ($null -eq $m -or $null -eq $m.PrivateData) { return $false }
+            $psd = $m.PrivateData.PSData
+            if ($psd -is [hashtable]) {
+                $pre = $psd['Prerelease']
+            } else {
+                $pre = $psd.Prerelease
+            }
+            return -not [string]::IsNullOrEmpty([string]$pre)
+        } catch {
+            # Be conservative: if we can't read it, treat as stable.
+            return $false
+        }
+    }
+
+    # Helper: PS5-friendly version checks (no version-interval API here).
+    function _MeetsVersion {
+        param([version]$v)
+        if ($PSCmdlet.ParameterSetName -eq 'ByRequired' -and $RequiredVersion) { return ($v -eq $RequiredVersion) }
+        if ($MinimumVersion -and ($v -lt $MinimumVersion)) { return $false }
+        if ($MaximumVersion -and ($v -gt $MaximumVersion)) { return $false }
+        return $true
+    }
+
+    # Helper: apply default stable-only filter unless -IncludePrerelease is present.
+    function _FilterByStability {
+        param([System.Management.Automation.PSModuleInfo[]]$mods)
+        if ($IncludePrerelease) { return $mods }
+        return $mods | Where-Object { -not (_IsPrerelease $_) }
+    }
+
+    # 1) Prefer already-loaded modules that satisfy constraints and stability policy.
+    $loaded = Get-Module -Name $Name
+    if ($loaded) {
+        $candidates = _FilterByStability $loaded
+        $candidates = $candidates | Where-Object { _MeetsVersion $_.Version }
+        # Prefer exact name, then highest version; if including prerelease, highest wins regardless of label.
+        $sorted = if ($IncludePrerelease) {
+            $candidates | Sort-Object @{Expression={ if ($_.Name -ieq $Name) {0} else {1} }}, @{Expression='Version';Descending=$true}
+        } else {
+            $candidates | Sort-Object @{Expression={ if ($_.Name -ieq $Name) {0} else {1} }}, @{Expression='Version';Descending=$true}
+        }
+        $best = $sorted | Select-Object -First 1
+        if ($best) { return $best }
+    }
+
+    # 2) Scan locally installed modules (strictly local; no online contact).
+    try {
+        $avail = Get-Module -ListAvailable -Name $Name -ErrorAction Stop
+    } catch {
+        $avail = @()
+    }
+
+    if ($avail.Count -gt 0) {
+        $candidates = _FilterByStability $avail
+        $candidates = $candidates | Where-Object { _MeetsVersion $_.Version }
+        $sorted = if ($IncludePrerelease) {
+            # When including prerelease, choose the highest version across all candidates.
+            $candidates | Sort-Object @{Expression={ if ($_.Name -ieq $Name) {0} else {1} }}, @{Expression='Version';Descending=$true}
+        } else {
+            $candidates | Sort-Object @{Expression={ if ($_.Name -ieq $Name) {0} else {1} }}, @{Expression='Version';Descending=$true}
+        }
+        $best = $sorted | Select-Object -First 1
+        if ($best) { return $best }
+    }
+
+    # 3) Not found -> chosen enforcement.
+    $verMsg = if ($PSCmdlet.ParameterSetName -eq 'ByRequired' -and $RequiredVersion) {
+        "RequiredVersion=$RequiredVersion"
+    } else {
+        "MinimumVersion=$MinimumVersion, MaximumVersion=$MaximumVersion"
+    }
+    $stabMsg = if ($IncludePrerelease) { "stable+prerelease allowed" } else { "stable-only" }
+
+    if ($ThrowIfNotFound) { throw "Required module '$Name' not found locally ($verMsg, $stabMsg)." }
+    if ($ExitIfNotFound)  { Write-Error "Required module '$Name' not found locally ($verMsg, $stabMsg). Exiting with code $ExitCode."; exit $ExitCode }
+
+    return $null
+}
+
 
 function Get-RunEnvironment {
 <#

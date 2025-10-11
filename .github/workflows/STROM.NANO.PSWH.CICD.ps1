@@ -109,7 +109,6 @@ function Update-ManifestModuleVersion {
     [System.IO.File]::WriteAllText($ManifestPath, $updatedContent)
 }
 
-
 function Update-ModuleIfNewer {
     <#
     .SYNOPSIS

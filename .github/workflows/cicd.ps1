@@ -49,11 +49,11 @@ Test-VariableValue -Variable { $gitRepositoryName } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $gitRemoteUrl } -ExitIfNullOrEmpty
 
 # Generate deployment info based on the current branch name
-$deploymentInfo = Convert-BranchToDeploymentInfo -BranchName "$gitCurrentBranch" -LabelStyle "Long"
+$deploymentInfo = Convert-BranchToDeploymentInfo -BranchName "$gitCurrentBranch"
 
 # Generates a version based on the current date time to verify the version functions work as expected
 $generatedVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
-$probeGeneratedVersion = Convert-64SecVersionComponentsToDateTime -VersionBuild $generatedVersion.VersionBuild -VersionMajor $generatedVersion.VersionMajor -VersionMinor $generatedVersion.VersionMinor -VersionRevision $generatedVersion.VersionRevision
+$probeGeneratedVersion = Convert-64SecPowershellVersionToDateTime -VersionBuild $generatedVersion.VersionBuild -VersionMajor $generatedVersion.VersionMajor -VersionMinor $generatedVersion.VersionMinor 
 Test-VariableValue -Variable { $generatedVersion } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
 
@@ -61,7 +61,7 @@ Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
 
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" -ErrorAction Stop
 Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedVersion.VersionFull)"
-Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPrerelease "$(deploymentInfo.Label)"
+Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPrerelease "$($deploymentInfo.Affix.Label)"
 
 Write-Host "===> Testing module manifest at: $($manifestFile.FullName)" -ForegroundColor Cyan
 Test-ModuleManifest -Path $($manifestFile.FullName)

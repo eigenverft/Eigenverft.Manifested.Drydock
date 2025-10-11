@@ -2,15 +2,23 @@ param (
     [string]$POWERSHELL_GALLERY
 ) 
 
-
-
 # Keep this script compatible with PowerShell 5.1 and PowerShell 7+
 # Lean, pipeline-friendly style—simple, readable, and easy to modify, failfast on errors.
-
 Write-Host "Powershell script $(Split-Path -Leaf $PSCommandPath) has started."
 
-# Install the required modules to run this script, Eigenverft.Manifested.Drydock needs to be Powershell 5.1 and Powershell 7+ compatible
-Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+# Provides lightweight reachability guards for external services.
+# Detection only—no installs, imports, network changes, or pushes. (e.g Test-PSGalleryConnectivity)
+# Designed to short-circuit local and CI/CD workflows when dependencies are offline (e.g., skip a push if the Git host is unreachable).
+. "$PSScriptRoot\cicd.bootstrap.ps1"
+
+# Ensure connectivity to PowerShell Gallery before attempting module installation, if not assuming being offline, installation is present check existance with Test-ModuleAvailable
+if (Test-PSGalleryConnectivity)
+{
+    # Install the required modules to run this script, Eigenverft.Manifested.Drydock needs to be Powershell 5.1 and Powershell 7+ compatible
+    Install-Module -Name 'Eigenverft.Manifested.Drydock' -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber
+}
+
+#if ($m = Test-ModuleAvailable -Name 'Eigenverft.Manifested.Drydock') { "$($m.Name) $($m.Version)" } else { Write-Error "Eigenverft.Manifested.Drydock (stable) not found"; exit 1 }
 
 # Required for updating PowerShellGet and PackageManagement providers in local PowerShell 5.x environments
 Initialize-PowerShellMiniBootstrap
@@ -18,11 +26,9 @@ Initialize-PowerShellMiniBootstrap
 # Clean up previous versions of the module to avoid conflicts in local PowerShell environments
 Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
 
-# Import optional migration script if it exists
-Import-Script -File @("$PSScriptRoot\cicd.migration.ps1") -ErrorIfMissing
-Import-Script -File @("$PSScriptRoot\cicd.specific.ps1") -ErrorIfMissing
-
-Write-Foo -Message "Hello, World!"
+# Import optional integration script if it exists
+Import-Script -File @("$PSScriptRoot\cicd.integration.ps1") -ErrorIfMissing
+Write-IntegrationMsg -Message "This function is defined in the optional integration script. That should be integrated into this main module script."
 
 # In the case the secrets are not passed as parameters, try to get them from the secrets file, local development or CI/CD environment
 $POWERSHELL_GALLERY = Get-ConfigValue -Check $POWERSHELL_GALLERY -FilePath (Join-Path $PSScriptRoot 'cicd.secrets.json') -Property 'POWERSHELL_GALLERY'

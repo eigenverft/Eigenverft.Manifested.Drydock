@@ -1,110 +1,125 @@
-
 # Eigenverft.Manifested.Drydock
 
-PowerShell helper functions for the Eigenverft Manifested Drydock project, focused on building and deploying locally and in CI/CD; see .github/workflow/main.ps1 and .yml for how it works.
-
+PowerShell helper functions for the Eigenverft Manifested Drydock, optimized for lightning-fast iteration and reliable local + CI/CD workflows.
+Expect frequent releases—auto-versioning is built in. Tasks are parity-driven: the same commands run locally and in CI/CD, so local builds remain fully functional even if the pipeline is down.
 
 [Eigenverft.Manifested.Drydock – PowerShell Gallery](https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock)
 
 
 ## Installation
 
-Install Eigenverft.Manifested.Drydock install from windows commandline.
+Install `Eigenverft.Manifested.Drydock` from a Windows PowerShell or PowerShell 7+ prompt.
+
+PowerShell 7+ (recommended):
+
+```powershell
+Install-Module -Name Eigenverft.Manifested.Drydock -Repository PSGallery -Scope CurrentUser -Force
+Import-Module Eigenverft.Manifested.Drydock
+```
+
+Windows PowerShell 5.1 (legacy bootstrap):
 
 ```batch
 powershell -NoProfile -ExecutionPolicy Unrestricted -Command "& { $Install=@('PowerShellGet','PackageManagement','Eigenverft.Manifested.Drydock');$Scope='CurrentUser';if($PSVersionTable.PSVersion.Major -ne 5){return};Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Unrestricted -Force;[Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; $minNuget=[Version]'2.8.5.201'; Install-PackageProvider -Name NuGet -MinimumVersion $minNuget -Scope $Scope -Force -ForceBootstrap | Out-Null; try { Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop } catch { Register-PSRepository -Name PSGallery -SourceLocation 'https://www.powershellgallery.com/api/v2' -ScriptSourceLocation 'https://www.powershellgallery.com/api/v2' -InstallationPolicy Trusted -ErrorAction Stop }; Find-Module -Name $Install -Repository PSGallery | Select-Object Name,Version | Where-Object { -not (Get-Module -ListAvailable -Name $_.Name | Sort-Object Version -Descending | Select-Object -First 1 | Where-Object Version -eq $_.Version) } | ForEach-Object { Install-Module -Name $_.Name -RequiredVersion $_.Version -Repository PSGallery -Scope $Scope -Force -AllowClobber; try { Remove-Module -Name $_.Name -ErrorAction SilentlyContinue } catch {}; Import-Module -Name $_.Name -MinimumVersion $_.Version -Force }; Write-Host 'Done' }; "
 ```
 
-## Functions
+## Module function reference
 
-- Get-GitTopLevelDirectory (alias: ggtd)  
-  Purpose: Return the repository root (git rev-parse --show-toplevel).  
-  Parameters: none  
-  Returns: path string or $null on error  
-  Example: Get-GitTopLevelDirectory
+Below is a concise reference grouped by area. See built-in help for parameters and examples, e.g. `Get-Help Update-ManifestModuleVersion -Full`.
 
-- Get-GitCurrentBranch (alias: ggcb)  
-  Purpose: Get the current branch name; on detached HEAD tries branches containing HEAD or falls back to commit hash.  
-  Parameters: none  
-  Returns: branch name or commit hash  
-  Example: Get-GitCurrentBranch
+### Git helpers 
 
-- Get-GitCurrentBranchRoot (alias: ggcbr)  
-  Purpose: Return the root segment of the branch name (split on / or \). Useful for branch-root workflows (e.g., feature/xyz -> feature).  
-  Parameters: none  
-  Returns: branch root string  
-  Example: Get-GitCurrentBranchRoot
+- **Get-GitTopLevelDirectory (ggtd)** Return repository root using `git rev-parse --show-toplevel`.
+  Example: `Get-GitTopLevelDirectory`
+- **Get-GitCurrentBranch (ggcb)** Return current branch; on detached HEAD, try containing branches or fall back to commit hash.
+  Example: `Get-GitCurrentBranch`
+- **Get-GitCurrentBranchRoot (ggcbr)** Return the first path segment of the branch (e.g., `feature` from `feature/foo`).
+  Example: `Get-GitCurrentBranchRoot`
+- **Get-GitRepositoryName (ggrn)** Parse repository name from `remote.origin.url` (HTTPS/SSH supported).
+  Example: `Get-GitRepositoryName`
+- **Get-GitRemoteUrl (gru)** Return `remote.origin.url` as configured.
+  Example: `Get-GitRemoteUrl`
+- **Invoke-GitAddCommitPush (igacp)** Stage folders, commit with transient identity, push branch, optionally tag.
+  Example: `Invoke-GitAddCommitPush -TopLevelDirectory (Get-GitTopLevelDirectory) -Folders @('source/Eigenverft.Manifested.Drydock') -CurrentBranch (Get-GitCurrentBranch)`
 
-- Get-GitRepositoryName (alias: ggrn)  
-  Purpose: Extract repo name from remote.origin.url (handles HTTPS and SSH forms).  
-  Parameters: none  
-  Returns: repository name string  
-  Example: Get-GitRepositoryName
+### Versioning
+- **Convert-DateTimeTo64SecVersionComponents (cdv64)** Encode DateTime to `Build.Major.Minor.Revision` with 64s granularity.
+  Example: `Convert-DateTimeTo64SecVersionComponents -VersionBuild 1 -VersionMajor 0`
+- **Convert-64SecVersionComponentsToDateTime (cdv64r)** Decode four-part 64s-packed version back to approximate UTC DateTime.
+  Example: `Convert-64SecVersionComponentsToDateTime -VersionBuild 1 -VersionMajor 0 -VersionMinor 20250 -VersionRevision 1234`
+- **Convert-DateTimeTo64SecPowershellVersion (cdv64ps)** Map to simplified three-part `Build.NewMajor.NewMinor` version.
+  Example: `Convert-DateTimeTo64SecPowershellVersion -VersionBuild 1`
+- **Convert-64SecPowershellVersionToDateTime (cdv64psr)** Reverse the simplified mapping to reconstruct approximate DateTime.
+  Example: `Convert-64SecPowershellVersionToDateTime -VersionBuild 1 -VersionMajor 20250 -VersionMinor 1234`
 
-- Get-GitRemoteUrl (alias: gru)  
-  Purpose: Return remote.origin.url exactly as configured.  
-  Parameters: none  
-  Returns: remote URL string  
-  Example: Get-GitRemoteUrl
+### Deployment/channel mapping
 
-- Convert-DateTimeTo64SecVersionComponents (alias: cdv64)  
-  Purpose: Encode a DateTime into four version components with 64-second granularity suitable for NuGet/assembly versioning. Produces VersionFull and components (VersionBuild, VersionMajor, VersionMinor, VersionRevision).  
-  Parameters:
-    - VersionBuild (int, mandatory)
-    - VersionMajor (int, mandatory)
-    - InputDate (datetime, optional, defaults to now UTC)  
-  Returns: hashtable with VersionFull, VersionBuild, VersionMajor, VersionMinor, VersionRevision  
+- **Convert-BranchToDeploymentInfo** Validate/split branch, map first segment to channel, and generate label/prefix/suffix tokens.
+  Example: `Convert-BranchToDeploymentInfo -BranchName 'feature/awesome'`
+
+### CI/runtime utilities
+
+- **Invoke-Exec (iexec)** Run external command with per-call and common arguments; enforce allowed exit codes; optional timing/capture.
+  Example: `Invoke-Exec -Executable 'dotnet' -Arguments @('build','MyApp.csproj') -CommonArguments @('--configuration','Release')`
+- **Find-FilesByPattern (ffbp)** Recursively find files under a path by `-Filter` pattern.
+  Example: `Find-FilesByPattern -Path (Get-GitTopLevelDirectory) -Pattern '*.psd1'`
+- **Get-ConfigValue (gcv)** If -Check is empty, read JSON and resolve a dotted property path.
+  Example: `Get-ConfigValue -Check $env:POWERSHELL_GALLERY -FilePath '.github/workflows/cicd.secrets.json' -Property 'POWERSHELL_GALLERY'`
+- **Test-VariableValue (tvv)** Show variable name/value from a scriptblock; optional hide or exit-on-empty.
+  Example: ``$branch='main'; Test-VariableValue -Variable { $branch }``
+- **Test-CommandAvailable** Resolve a command (cmdlet/function/app/script); optionally throw or exit.
+  Example: `Test-CommandAvailable -Command 'git'`
+- **Get-RunEnvironment (gre)** Detect CI provider/hosting vs local.
+  Example: `Get-RunEnvironment`
+
+### PowerShell environment bootstrap
+
+- **Test-InstallationScopeCapability** Return `AllUsers` if elevated, otherwise `CurrentUser`.
+  Example: `Test-InstallationScopeCapability`
+- **Set-PSGalleryTrust** Ensure `PSGallery` exists and is trusted (PowerShellGet preferred).
+  Example: `Set-PSGalleryTrust`
+- **Use-Tls12** Enable TLS 1.2 for the current PS5.x session.
+  Example: `Use-Tls12`
+- **Test-PSGalleryConnectivity** HEAD→GET probe for PSGallery API (HTTP 200–399 is success).
+  Example: `Test-PSGalleryConnectivity`
+- **Initialize-NugetPackageProvider** Ensure NuGet provider (>= 2.8.5.201) for scope.
+  Example: `Initialize-NugetPackageProvider -Scope CurrentUser`
+- **Initialize-PowerShellGet** Ensure PowerShellGet (>= 2.2.5.1) with PSGallery trusted.
+  Example: `Initialize-PowerShellGet -Scope CurrentUser`
+- **Initialize-PackageManagement** Ensure PackageManagement (>= 1.4.8.1).
+  Example: `Initialize-PackageManagement -Scope CurrentUser`
+- **Initialize-PowerShellBootstrap** PS5.x-only bootstrap sequence.
+  Example: `Initialize-PowerShellBootstrap`
+- **Initialize-PowerShellMiniBootstrap** Minimal PS5.x bootstrap.
+  Example: `Initialize-PowerShellMiniBootstrap`
+- **Import-Script** Globalize and execute function/filter declarations from `.ps1` files.
+  Example: `Import-Script -File @('.github/workflows/cicd.migration.ps1') -ErrorIfMissing`
+- **Export-OfflineModuleBundle** Export PSGallery modules and provider for offline install.
+  Example: `Export-OfflineModuleBundle -Folder 'C:\Bundle' -Modules @('PowerShellGet','PackageManagement')`
+- **Uninstall-PreviousModuleVersions** Remove older versions of a module.
+  Example: `Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'`
+- **Find-ModuleScopeClutter** Detect modules installed in both user and system scopes.
+  Example: `Find-ModuleScopeClutter -ModuleName 'PowerShellGet'`
+- **Update-ManifestModuleVersion (ummv)** Update `ModuleVersion` in a `.psd1` manifest.
+  Example: `Update-ManifestModuleVersion -ManifestPath .\ -NewVersion '2.0.0'`
+- **Update-ManifestReleaseNotes (umrn)** Update `PSData.ReleaseNotes` in a `.psd1` manifest.
+  Example: `Update-ManifestReleaseNotes -ManifestPath .\ -NewReleaseNotes 'Fixed bugs; improved logging.'`
+- **Update-ManifestPrerelease (umpr)** Update `PSData.Prerelease` in a `.psd1` manifest.
+  Example: `Update-ManifestPrerelease -ManifestPath .\ -NewPrerelease 'rc.1'`
+
+### Scheduled Tasks
+
+- **New-CompatScheduledTask** Create/update a Windows Scheduled Task via COM with clear run context, triggers, and guidance.
   Example:
-  ```powershell
-  Convert-DateTimeTo64SecVersionComponents -VersionBuild 1 -VersionMajor 0
-  ```
+  ````powershell
+  New-CompatScheduledTask -TaskName 'MyDaily' -RunAsAccount System -DailyAtTime '02:00' `
+    -ActionPath "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" `
+    -ActionArguments '-NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\job.ps1"'
+  ````
 
-- Convert-64SecVersionComponentsToDateTime (alias: cdv64r)  
-  Purpose: Reconstruct an approximate DateTime from the four-part encoded version (lossy: 6 bits discarded).  
-  Parameters:
-    - VersionBuild (int)
-    - VersionMajor (int)
-    - VersionMinor (int) — encoded year*10 + highPart
-    - VersionRevision (int) — low 16 bits  
-  Returns: hashtable with VersionBuild, VersionMajor, ComputedDateTime  
-  Example:
-  ```powershell
-  Convert-64SecVersionComponentsToDateTime -VersionBuild 1 -VersionMajor 0 -VersionMinor 20250 -VersionRevision 1234
-  ```
-
-- Convert-DateTimeTo64SecPowershellVersion (alias: cdv64ps)  
-  Purpose: Simplified 3-part mapping of the 4-part encoding to "Build.NewMajor.NewMinor" for compact PowerShell-friendly versions.  
-  Parameters:
-    - VersionBuild (int, mandatory)
-    - InputDate (datetime, optional)  
-  Returns: hashtable with VersionFull, VersionBuild, VersionMajor, VersionMinor  
-  Example:
-  ```powershell
-  Convert-DateTimeTo64SecPowershellVersion -VersionBuild 1
-  ```
-
-- Convert-64SecPowershellVersionToDateTime (alias: cdv64psr)  
-  Purpose: Reconstruct approximate DateTime from the simplified 3-part version produced above. Assumes original VersionMajor was 0.  
-  Parameters:
-    - VersionBuild (int, mandatory)
-    - VersionMajor (int, mandatory) — mapped original VersionMinor
-    - VersionMinor (int, mandatory) — mapped original VersionRevision  
-  Returns: hashtable with VersionFull, VersionBuild, ComputedDateTime  
-  Example:
-  ```powershell
-  Convert-64SecPowershellVersionToDateTime -VersionBuild 1 -VersionMajor 20250 -VersionMinor 1234
-  ```
-
-- Update-ManifestModuleVersion (alias: ummv)  
-  Purpose: Update ModuleVersion in a PSD1 manifest file by text/regex replacement while preserving formatting and comments. If given a directory, recursively finds the first *.psd1.  
-  Parameters:
-    - ManifestPath (string, mandatory) — file or directory
-    - NewVersion (string, mandatory) — version to set (e.g., "1.2.3")  
-  Returns: writes changes back to the manifest file; throws on missing path or missing PSD1 in directory.  
-  Example:
-  ```powershell
-  Update-ManifestModuleVersion -ManifestPath .\ -NewVersion '2.0.0'
-  ```
+Notes:
+- Use `Get-Help <FunctionName> -Detailed` for parameters, examples, and notes.
+- Aliases are shown in parentheses where available.
 
 ## Usage tips
 
@@ -114,4 +129,4 @@ powershell -NoProfile -ExecutionPolicy Unrestricted -Command "& { $Install=@('Po
 
 ## License / Contact
 
-See repository metadata for license and contact information.
+See `LICENSE` for license details. For questions, open an issue in this repository.

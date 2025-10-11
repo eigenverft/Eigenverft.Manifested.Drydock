@@ -2,8 +2,6 @@ param (
     [string]$POWERSHELL_GALLERY
 ) 
 
-
-
 # Keep this script compatible with PowerShell 5.1 and PowerShell 7+
 # Lean, pipeline-friendly style—simple, readable, and easy to modify, failfast on errors.
 

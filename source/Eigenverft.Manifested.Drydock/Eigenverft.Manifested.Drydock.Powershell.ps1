@@ -852,7 +852,8 @@ Root folder containing Nuget and optionally Provider.
 Module names to install from Root\Nuget.
 
 .PARAMETER Scope
-CurrentUser (default) or AllUsers.
+CurrentUser, AllUsers, or Auto (default). Auto selects AllUsers when the current process is elevated;
+otherwise CurrentUser.
 
 .EXAMPLE
 PS> Install-ModulesFromRepoFolder -Folder C:\repo -Name Pester,PSScriptAnalyzer
@@ -863,8 +864,8 @@ PS> Install-ModulesFromRepoFolder -Folder C:\repo -Name Pester,PSScriptAnalyzer
         [string]$Folder,
         [Parameter(Mandatory, Position=1)]
         [string[]]$Name,
-        [ValidateSet("CurrentUser","AllUsers")]
-        [string]$Scope = "CurrentUser"
+        [ValidateSet("CurrentUser","AllUsers","Auto")]
+        [string]$Scope = "Auto"
     )
 
     Write-Host "[INFO] Starting offline installation..."
@@ -880,17 +881,37 @@ PS> Install-ModulesFromRepoFolder -Folder C:\repo -Name Pester,PSScriptAnalyzer
         throw "Required subfolder missing: $nugetDir"
     }
 
-    # Determine elevation and pick provider target accordingly
+    # Determine elevation of current process
     $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
                ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    $targetProviderRoot = if ($isAdmin -or $Scope -eq "AllUsers") {
+
+    # Resolve effective scope from requested Scope + elevation
+    $effectiveScope = if ($Scope -eq "Auto") {
+        if ($isAdmin) { "AllUsers" } else { "CurrentUser" }
+    } else {
+        $Scope
+    }
+    Write-Host ("[INFO] Effective installation scope: {0}" -f $effectiveScope)
+
+    # Pick provider target based on effective scope and elevation
+    $targetProviderRoot = if ($isAdmin -or $effectiveScope -eq "AllUsers") {
         Join-Path $Env:ProgramFiles "PackageManagement\ProviderAssemblies\NuGet"
     } else {
         Join-Path $Env:LOCALAPPDATA "PackageManagement\ProviderAssemblies\NuGet"
     }
 
+    $providerPresent =
+        @(Get-ChildItem -Path $Env:ProgramFiles,$Env:LOCALAPPDATA,$Env:ProgramData `
+        -Recurse -ErrorAction SilentlyContinue `
+        -Include 'Microsoft.PackageManagement.NuGetProvider.dll','NuGet*.dll').Count -gt 0
+
+    if (-not $providerPresent) {
+        if (-not (Test-Path $targetProviderRoot)) { New-Item -ItemType Directory -Force -Path $targetProviderRoot | Out-Null }
+        Copy-Item -Path (Join-Path $providerDir '*') -Destination $targetProviderRoot -Recurse -Force
+    }
+
     # Ensure NuGet provider from Provider if missing
-    $nuget = Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue
+    $nuget = Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
     if (-not $nuget) {
         Write-Host "[INFO] NuGet provider not found. Attempting offline bootstrap from Provider folder..."
         if (-not (Test-Path -LiteralPath $providerDir)) {
@@ -900,7 +921,7 @@ PS> Install-ModulesFromRepoFolder -Folder C:\repo -Name Pester,PSScriptAnalyzer
             New-Item -ItemType Directory -Path $targetProviderRoot -Force | Out-Null
         }
         Copy-Item -Path (Join-Path $providerDir "*") -Destination $targetProviderRoot -Recurse -Force -ErrorAction Stop
-        $nuget = Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue
+        $nuget = Get-PackageProvider -Name NuGet -ListAvailable -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
         if (-not $nuget) { throw "NuGet provider bootstrap failed after copy." }
         Write-Host ("[OK] NuGet provider bootstrapped to: {0}" -f $targetProviderRoot)
     } else {
@@ -925,7 +946,7 @@ PS> Install-ModulesFromRepoFolder -Folder C:\repo -Name Pester,PSScriptAnalyzer
             if (($Name -contains $m) -or (Test-PackagePresent -moduleName $m -rootNuget $nugetDir)) {
                 Write-Host ("[INFO] Installing priority module: {0}" -f $m)
                 try {
-                    Install-Module -Name $m -Repository $repoName -Scope $Scope -Force -AllowClobber -SkipPublisherCheck -ErrorAction Stop
+                    Install-Module -Name $m -Repository $repoName -Scope $effectiveScope -Force -AllowClobber -SkipPublisherCheck -ErrorAction Stop
                     Write-Host ("[OK] Installed: {0}" -f $m)
                 } catch {
                     Write-Error ("Failed to install priority module '{0}' from '{1}': {2}" -f $m, $nugetDir, $_.Exception.Message)
@@ -938,7 +959,7 @@ PS> Install-ModulesFromRepoFolder -Folder C:\repo -Name Pester,PSScriptAnalyzer
         foreach ($n in $remaining) {
             Write-Host ("[INFO] Installing module: {0}" -f $n)
             try {
-                Install-Module -Name $n -Repository $repoName -Scope $Scope -Force -AllowClobber -SkipPublisherCheck -ErrorAction Stop
+                Install-Module -Name $n -Repository $repoName -Scope $effectiveScope -Force -AllowClobber -SkipPublisherCheck -ErrorAction Stop
                 Write-Host ("[OK] Installed: {0}" -f $n)
             } catch {
                 Write-Error ("Failed to install '{0}' from '{1}': {2}" -f $n, $nugetDir, $_.Exception.Message)

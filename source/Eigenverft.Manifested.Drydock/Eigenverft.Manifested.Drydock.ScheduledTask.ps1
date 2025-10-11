@@ -235,9 +235,9 @@ Optional description.
     }
 
     if($Background -and $DoNotStorePassword){
-        $args = $ActionArguments
-        if($null -eq $args){ $args = '' }
-        if($ActionPath -like '\\*' -or $args -match '(?i)(^|[^A-Za-z0-9_])\\\\[A-Za-z0-9._-]+\\|(?i)\bsmb:'){
+        $arguments = $ActionArguments
+        if($null -eq $arguments){ $arguments = '' }
+        if($ActionPath -like '\\*' -or $arguments -match '(?i)(^|[^A-Za-z0-9_])\\\\[A-Za-z0-9._-]+\\|(?i)\bsmb:'){
             _writeHint "S4U selected: background token has no network access. If you need UNC/mapped shares, use -Credential instead."
         }
     }
@@ -256,7 +256,8 @@ Optional description.
     try{
         $svc = New-Object -ComObject 'Schedule.Service'
         $svc.Connect()
-        function Ensure-Folder([__comobject]$service,[string]$path){
+        function Resolve-TaskFolder([__comobject]$service,[string]$path){
+            
             $path = ($path -replace '/','\'); if([string]::IsNullOrWhiteSpace($path)){ $path='\' }
             if($path -eq '\'){ return $service.GetFolder('\') }
             $parts = $path.Trim('\').Split('\'); $cur = $service.GetFolder('\')
@@ -265,7 +266,7 @@ Optional description.
             }
             return $cur
         }
-        $folder = Ensure-Folder -service $svc -path $TaskFolder
+        $folder = Resolve-TaskFolder -service $svc -path $TaskFolder
         $def = $svc.NewTask(0)
 
         $def.RegistrationInfo.Description = $Description
@@ -434,7 +435,7 @@ Optional description.
 
 # 1) Current user at logon (visible; no password; no elevation)
 #    Use when your script needs the user's interactive desktop.
-New-CompatScheduledTask -TaskName 'MyApp-UserLogon' -ActionPath 'C:\Windows\regedit.exe' -LogonThisUser
-New-CompatScheduledTask -TaskName 'MyDaily-System-0200' `-RunAsAccount System -Highest -DailyAtTime '02:00' -ActionPath "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -ActionArguments '-NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\job.ps1"' -WorkingDirectory 'C:\Scripts'
+#New-CompatScheduledTask -TaskName 'MyApp-UserLogon' -ActionPath 'C:\Windows\regedit.exe' -LogonThisUser
+#New-CompatScheduledTask -TaskName 'MyDaily-System-0200' `-RunAsAccount System -Highest -DailyAtTime '02:00' -ActionPath "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -ActionArguments '-NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\job.ps1"' -WorkingDirectory 'C:\Scripts'
 
   

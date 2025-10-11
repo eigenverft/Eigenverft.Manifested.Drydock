@@ -1023,7 +1023,6 @@ PS> Install-ModulesFromRepoFolder -Folder C:\repo -Name Pester,PSScriptAnalyzer
     Get-ChildItem -LiteralPath $nugetDir -Filter *.nupkg | Select-Object -ExpandProperty FullName
 }
 
-
 function Uninstall-PreviousModuleVersions {
 <#
 .SYNOPSIS
@@ -1044,11 +1043,11 @@ Auto (default), CurrentUser, AllUsers, Both. In non-elevated sessions, AllUsers 
 Emit a summary of planned/performed actions as objects.
 
 .EXAMPLE
-Remove-OldModuleVersions -ModuleName 'Pester'
+Uninstall-PreviousModuleVersions -ModuleName 'Pester'
 Cleans old versions in Auto mode.
 
 .EXAMPLE
-Remove-OldModuleVersions -ModuleName 'Az' -WhatIf
+Uninstall-PreviousModuleVersions -ModuleName 'Az' -WhatIf
 Shows what would be removed without making changes.
 
 .OUTPUTS

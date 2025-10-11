@@ -51,7 +51,7 @@ PowerShellVersion = '5.1'
 # ProcessorArchitecture = ''
 
 # Modules that must be imported into the global environment prior to importing this module
-#RequiredModules = @(@{ModuleName = 'CoreePower.Lib'; ModuleVersion = '0.20255.54752'; })
+# RequiredModules = @(@{ModuleName = 'CoreePower.Lib'; ModuleVersion = '0.20255.54752'; })
 
 # Assemblies that must be loaded prior to importing this module
 # RequiredAssemblies = @()
@@ -95,7 +95,8 @@ FunctionsToExport = @(
     'Use-Tls12',
     'New-CompatScheduledTask',
     'Find-ModuleScopeClutter',
-    'Uninstall-PreviousModuleVersions'
+    'Uninstall-PreviousModuleVersions',
+    'Convert-BranchToDeploymentInfo'
     )
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -158,7 +159,7 @@ PrivateData = @{
         # ReleaseNotes = ''
 
         # Prerelease string of this module
-        #Prerelease = 'feature'
+        # Prerelease = 'feature'
 
         # Flag to indicate whether the module requires explicit user acceptance for install/update/save
         # RequireLicenseAcceptance = $false

@@ -431,8 +431,6 @@ Optional description.
     }
 }
 
-
-
 # 1) Current user at logon (visible; no password; no elevation)
 #    Use when your script needs the user's interactive desktop.
 #New-CompatScheduledTask -TaskName 'MyApp-UserLogon' -ActionPath 'C:\Windows\regedit.exe' -LogonThisUser

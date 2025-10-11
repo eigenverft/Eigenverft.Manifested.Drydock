@@ -12,7 +12,7 @@
 RootModule = 'Eigenverft.Manifested.Drydock.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.20255.54862'
+ModuleVersion = '0.20255.55263'
 
 # Supported PSEditions
 CompatiblePSEditions = @('Desktop','Core')
@@ -51,7 +51,7 @@ PowerShellVersion = '5.1'
 # ProcessorArchitecture = ''
 
 # Modules that must be imported into the global environment prior to importing this module
-# RequiredModules = @(@{ModuleName = 'CoreePower.Lib'; ModuleVersion = '0.20255.54862'; })
+# RequiredModules = @(@{ModuleName = 'CoreePower.Lib'; ModuleVersion = '0.20255.55263'; })
 
 # Assemblies that must be loaded prior to importing this module
 # RequiredAssemblies = @()
@@ -83,6 +83,8 @@ FunctionsToExport = @(
     'Convert-64SecPowershellVersionToDateTime',
 
     'Update-ManifestModuleVersion',
+    'Update-ManifestReleaseNotes',
+    'Update-ManifestPrerelease',
 
     'Find-FilesByPattern',
     'Test-VariableValue',
@@ -156,10 +158,10 @@ PrivateData = @{
         IconUri = 'https://raw.githubusercontent.com/eigenverft/Eigenverft.Manifested.Drydock/refs/heads/main/resources/eigenverft-logo-v7-harbor-square_128_128.png'
 
         # ReleaseNotes of this module
-        # ReleaseNotes = ''
+        ReleaseNotes = ''
 
         # Prerelease string of this module
-        # Prerelease = 'feature'
+        Prerelease = ''
 
         # Flag to indicate whether the module requires explicit user acceptance for install/update/save
         # RequireLicenseAcceptance = $false

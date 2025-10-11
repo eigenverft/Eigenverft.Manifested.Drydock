@@ -17,8 +17,10 @@ Initialize-PowerShellMiniBootstrap
 Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
 
 # Import optional migration script if it exists
-. Import-Script -File @("$PSScriptRoot\cicd.migration.ps1")
-. Import-Script -File @("$PSScriptRoot\cicd.specific.ps1")
+Import-Script -File @("$PSScriptRoot\cicd.migration.ps1")
+Import-Script -File @("$PSScriptRoot\cicd.specific.ps1")
+
+#Write-Foo -Message "Hello, World!"
 
 # In the case the secrets are not passed as parameters, try to get them from the secrets file, local development or CI/CD environment
 $POWERSHELL_GALLERY = Get-ConfigValue -Check $POWERSHELL_GALLERY -FilePath (Join-Path $PSScriptRoot 'cicd.secrets.json') -Property 'POWERSHELL_GALLERY'
@@ -45,7 +47,7 @@ Test-VariableValue -Variable { $gitRepositoryName } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $gitRemoteUrl } -ExitIfNullOrEmpty
 
 # Generate deployment info based on the current branch name
-$deploymentInfo = Convert-BranchToDeploymentInfo -BranchName "$gitCurrentBranch"
+$deploymentInfo = Convert-BranchToDeploymentInfo -BranchName "$gitCurrentBranch" -LabelStyle "Long"
 
 # Generates a version based on the current date time to verify the version functions work as expected
 $generatedVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
@@ -59,6 +61,8 @@ Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
 
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" -ErrorAction Stop
 Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedVersion.VersionFull)"
+#Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPrerelease "foo"
+
 Write-Host "===> Testing module manifest at: $($manifestFile.FullName)" -ForegroundColor Cyan
 Test-ModuleManifest -Path $($manifestFile.FullName)
 

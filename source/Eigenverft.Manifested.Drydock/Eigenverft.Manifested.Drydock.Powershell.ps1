@@ -625,28 +625,31 @@ Performs a minimal, non-interactive bootstrap for Windows PowerShell 5.x (Curren
 function Import-Script {
 <#
 .SYNOPSIS
-Optionally dot-sources one or more scripts if they exist (PowerShell 5 compatible).
+    Imports one or more scripts by globalizing their function and filter declarations, then executing them.
 
 .DESCRIPTION
-Checks each provided path. If the file exists, it is dot-sourced so any functions/variables
-defined inside become available in the current scope. To place them in the caller (script) scope,
-dot-invoke this function.
+    This function reads each .ps1 file, parses it with the PowerShell AST, and rewrites every
+    function/filter declaration to include the global: scope (replacing script:, local:, private: if present).
+    The transformed script is then executed so all such commands are available in the global/session scope.
+    Compatible with Windows PowerShell 5.1 and PowerShell 7+.
+    ASCII only.
 
 .PARAMETER File
-One or more script paths to import. Variables like $PSScriptRoot are expanded.
+    One or more script paths. Variables like $PSScriptRoot are expanded.
 
 .PARAMETER ErrorIfMissing
-If set, emits a non-terminating error for each missing file (continues processing others).
+    If set, writes a non-terminating error for each missing file and continues.
 
 .EXAMPLE
-. Import-Script -File "$PSScriptRoot\psutility\common.ps1","$PSScriptRoot\psutility\dotnetlist.ps1"
+    Import-Script -File @("$PSScriptRoot\cicd.migration.ps1")
 
 .NOTES
-Dot-invoke this function (leading '.') to ensure imported definitions land in the caller's scope.
+    Only function/filter declarations are globalized. If the source script must expose variables
+    globally, set them as $global:Var inside the source script.
 #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true, Position=0)]
+        [Parameter(Mandatory, Position=0)]
         [string[]]$File,
         [switch]$ErrorIfMissing
     )
@@ -654,17 +657,64 @@ Dot-invoke this function (leading '.') to ensure imported definitions land in th
     foreach ($f in $File) {
         if ([string]::IsNullOrWhiteSpace($f)) { continue }
 
-        # External reviewer note: Expand variables (e.g., $PSScriptRoot) before existence check.
+        # Expand variables (e.g., $PSScriptRoot) before checking.
         $expanded = $ExecutionContext.InvokeCommand.ExpandString($f)
 
-        if (Test-Path -LiteralPath $expanded) {
-            Write-Host "Import-Script: dot-sourcing '$expanded'."
-            . $expanded
-        }
-        else {
-            Write-Host "Import-Script: not found, skipped -> '$expanded'."
+        if (-not (Test-Path -LiteralPath $expanded)) {
             if ($ErrorIfMissing) { Write-Error "Import-Script: file not found: $expanded" }
+            continue
         }
+
+        # Read script as text
+        $code = [System.IO.File]::ReadAllText($expanded)
+
+        # Parse to AST (PS 5.1 and 7+)
+        $tokens = $null; $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput($code, [ref]$tokens, [ref]$errors)
+        if ($errors -and $errors.Count -gt 0) {
+            throw "Import-Script: parse errors in '$expanded'."
+        }
+
+        # Find all function/filter definitions
+        $funcAsts = $ast.FindAll({ param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
+
+        # Collect edits: make each declaration global:
+        $edits = @()
+        foreach ($fd in $funcAsts) {
+            $headerText = $fd.Extent.Text
+            $m = [regex]::Match(
+                $headerText,
+                '^(?im)\s*(?<kw>function|filter)\s+(?<scope>(?:global|script|local|private):)?(?<name>[A-Za-z_][\w-]*)'
+            )
+            if (-not $m.Success) { continue }
+
+            if ($m.Groups['scope'].Success -and $m.Groups['scope'].Value -eq 'global:') {
+                continue
+            }
+
+            $headerStart = $fd.Extent.StartOffset
+            if ($m.Groups['scope'].Success) {
+                # Replace existing non-global scope with global:
+                $start = $headerStart + $m.Groups['scope'].Index
+                $end   = $start + $m.Groups['scope'].Length
+                $edits += [pscustomobject]@{ Start=$start; End=$end; Text='global:' }
+            } else {
+                # Insert global: right before the function name
+                $insertAt = $headerStart + $m.Groups['name'].Index
+                $edits += [pscustomobject]@{ Start=$insertAt; End=$insertAt; Text='global:' }
+            }
+        }
+
+        if ($edits.Count -gt 0) {
+            foreach ($e in ($edits | Sort-Object Start -Descending)) {
+                $prefix = $code.Substring(0, $e.Start)
+                $suffix = $code.Substring($e.End)
+                $code = $prefix + $e.Text + $suffix
+            }
+        }
+
+        # Execute transformed script so global: declarations register in session scope
+        & ([scriptblock]::Create($code))
     }
 }
 
@@ -1393,4 +1443,223 @@ System.String (default) or System.Object (with -PassThru)
         # Emit names to pipeline (so caller can pipe into Remove-OldModuleVersions).
         $names
     }
+}
+
+function Update-ManifestModuleVersion {
+    <#
+    .SYNOPSIS
+        Updates the ModuleVersion in a PowerShell module manifest (psd1) file.
+
+    .DESCRIPTION
+        This function reads a PowerShell module manifest file as text, uses a regular expression to update the
+        ModuleVersion value while preserving the file's comments and formatting, and writes the updated content back
+        to the file. If a directory path is supplied, the function recursively searches for the first *.psd1 file and uses it.
+
+    .PARAMETER ManifestPath
+        The file or directory path to the module manifest (psd1) file. If a directory is provided, the function will
+        search recursively for the first *.psd1 file.
+
+    .PARAMETER NewVersion
+        The new version string to set for the ModuleVersion property.
+
+    .EXAMPLE
+        PS C:\> Update-ManifestModuleVersion -ManifestPath "C:\projects\MyDscModule" -NewVersion "2.0.0"
+        Updates the ModuleVersion of the first PSD1 manifest found in the given directory to "2.0.0".
+    #>
+    [CmdletBinding()]
+    [alias("ummv")]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ManifestPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$NewVersion
+    )
+
+    # Check if the provided path exists
+    if (-not (Test-Path $ManifestPath)) {
+        throw "The path '$ManifestPath' does not exist."
+    }
+
+    # If the path is a directory, search recursively for the first *.psd1 file.
+    $item = Get-Item $ManifestPath
+    if ($item.PSIsContainer) {
+        $psd1File = Get-ChildItem -Path $ManifestPath -Filter *.psd1 -Recurse | Select-Object -First 1
+        if (-not $psd1File) {
+            throw "No PSD1 manifest file found in directory '$ManifestPath'."
+        }
+        $ManifestPath = $psd1File.FullName
+    }
+
+    Write-Verbose "Using manifest file: $ManifestPath"
+
+    # Read the manifest file content as text using .NET method.
+    $content = [System.IO.File]::ReadAllText($ManifestPath)
+
+    # Define the regex pattern to locate the ModuleVersion value.
+    $pattern = "(?<=ModuleVersion\s*=\s*')[^']+(?=')"
+
+    # Replace the current version with the new version using .NET regex.
+    $updatedContent = [System.Text.RegularExpressions.Regex]::Replace($content, $pattern, $NewVersion)
+
+    # Write the updated content back to the manifest file.
+    [System.IO.File]::WriteAllText($ManifestPath, $updatedContent)
+}
+
+function Update-ManifestReleaseNotes {
+<#
+.SYNOPSIS
+    Updates the ReleaseNotes value in a PowerShell module manifest (psd1).
+
+.DESCRIPTION
+    Reads the manifest as raw text and replaces only the ReleaseNotes value inside PrivateData.PSData.
+    Supports single-quoted, double-quoted, and here-string forms while preserving comments and formatting.
+    No extra helpers; compatible with Windows PowerShell 5.1 and PowerShell 7+.
+
+.PARAMETER ManifestPath
+    File or directory path. If a directory is provided, the first *.psd1 found recursively is used.
+
+.PARAMETER NewReleaseNotes
+    The new ReleaseNotes text. Multiline supported.
+
+.EXAMPLE
+    Update-ManifestReleaseNotes -ManifestPath .\MyModule -NewReleaseNotes "Fixed bugs; improved logging."
+#>
+    [CmdletBinding()]
+    [Alias('umrn')]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ManifestPath,
+        [Parameter(Mandatory)]
+        [string]$NewReleaseNotes
+    )
+
+    # Resolve a concrete psd1 path (inline; no helper functions)
+    if (-not (Test-Path -LiteralPath $ManifestPath)) {
+        throw "The path '$ManifestPath' does not exist."
+    }
+    $item = Get-Item -LiteralPath $ManifestPath
+    if ($item.PSIsContainer) {
+        $psd1 = Get-ChildItem -LiteralPath $ManifestPath -Filter *.psd1 -Recurse | Select-Object -First 1
+        if (-not $psd1) { throw "No PSD1 manifest file found under '$ManifestPath'." }
+        $ManifestPath = $psd1.FullName
+    }
+
+    # Read, replace, write (keep it simple to match your original style)
+    $content = [System.IO.File]::ReadAllText($ManifestPath)
+
+    # Define patterns that capture prefix/content/suffix so we can rebuild safely (avoids replacement-string $ pitfalls).
+    $opts = [System.Text.RegularExpressions.RegexOptions]::Singleline -bor
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase  -bor
+            [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+
+    $defs = @(
+        @{ Style='hsq'; Pattern='(?s)(?<prefix>\bReleaseNotes\s*=\s*@'')(?<content>.*?)(?<suffix>''@)' }  # @' ... '@
+        @{ Style='hdq'; Pattern='(?s)(?<prefix>\bReleaseNotes\s*=\s*@"")(?<content>.*?)(?<suffix>""@)' }  # @" ... "@
+        @{ Style='sq' ; Pattern='(?<prefix>\bReleaseNotes\s*=\s*'')(?<content>(?:''''|[^''])*)(?<suffix>'')' } # '...'
+        @{ Style='dq' ; Pattern='(?<prefix>\bReleaseNotes\s*=\s*"")(?<content>(?:``.|`"|[^""])*?)(?<suffix>"")' } # "..."
+    )
+
+    $updated = $false
+    foreach ($d in $defs) {
+        $rx = [System.Text.RegularExpressions.Regex]::new($d.Pattern, $opts)
+        if ($rx.IsMatch($content)) {
+            $content = $rx.Replace($content, {
+                param($m)
+                switch ($d.Style) {
+                    'sq'  { $enc = $NewReleaseNotes -replace "'", "''" }               # Single-quoted: double single quotes
+                    'dq'  { $t = $NewReleaseNotes -replace '`','``'; $t = $t -replace '"','`"'; $enc = $t -replace '\$','`$' }
+                    'hsq' { $enc = $NewReleaseNotes }                                   # Single-quoted here-string: literal
+                    'hdq' { $t = $NewReleaseNotes -replace '`','``'; $t = $t -replace '"','`"'; $enc = $t -replace '\$','`$' }
+                }
+                # Rebuild exact structure to keep whitespace/comments intact
+                $m.Groups['prefix'].Value + $enc + $m.Groups['suffix'].Value
+            }, 1)
+            $updated = $true
+            break
+        }
+    }
+
+    if (-not $updated) {
+        throw "Could not locate a 'ReleaseNotes' assignment (supported forms: quoted or here-string)."
+    }
+
+    [System.IO.File]::WriteAllText($ManifestPath, $content)
+}
+
+function Update-ManifestPrerelease {
+<#
+.SYNOPSIS
+    Updates the Prerelease value in a PowerShell module manifest (psd1).
+
+.DESCRIPTION
+    Reads the manifest as raw text and replaces only the Prerelease value inside PrivateData.PSData.
+    Supports single-quoted, double-quoted, and here-string forms while preserving comments and formatting.
+    No extra helpers; compatible with Windows PowerShell 5.1 and PowerShell 7+.
+
+.PARAMETER ManifestPath
+    File or directory path. If a directory is provided, the first *.psd1 found recursively is used.
+
+.PARAMETER NewPrerelease
+    New prerelease label (e.g. "preview1", "beta.2", "rc.1"). Use empty string "" to clear.
+
+.EXAMPLE
+    Update-ManifestPrerelease -ManifestPath .\MyModule\MyModule.psd1 -NewPrerelease "beta.2"
+#>
+    [CmdletBinding()]
+    [Alias('umpr')]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ManifestPath,
+        [Parameter(Mandatory)]
+        [string]$NewPrerelease
+    )
+
+    if (-not (Test-Path -LiteralPath $ManifestPath)) {
+        throw "The path '$ManifestPath' does not exist."
+    }
+    $item = Get-Item -LiteralPath $ManifestPath
+    if ($item.PSIsContainer) {
+        $psd1 = Get-ChildItem -LiteralPath $ManifestPath -Filter *.psd1 -Recurse | Select-Object -First 1
+        if (-not $psd1) { throw "No PSD1 manifest file found under '$ManifestPath'." }
+        $ManifestPath = $psd1.FullName
+    }
+
+    $content = [System.IO.File]::ReadAllText($ManifestPath)
+
+    $opts = [System.Text.RegularExpressions.RegexOptions]::Singleline -bor
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase  -bor
+            [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+
+    $defs = @(
+        @{ Style='hsq'; Pattern='(?s)(?<prefix>\bPrerelease\s*=\s*@'')(?<content>.*?)(?<suffix>''@)' }
+        @{ Style='hdq'; Pattern='(?s)(?<prefix>\bPrerelease\s*=\s*@"")(?<content>.*?)(?<suffix>""@)' }
+        @{ Style='sq' ; Pattern='(?<prefix>\bPrerelease\s*=\s*'')(?<content>(?:''''|[^''])*)(?<suffix>'')' }
+        @{ Style='dq' ; Pattern='(?<prefix>\bPrerelease\s*=\s*"")(?<content>(?:``.|`"|[^""])*?)(?<suffix>"")' }
+    )
+
+    $updated = $false
+    foreach ($d in $defs) {
+        $rx = [System.Text.RegularExpressions.Regex]::new($d.Pattern, $opts)
+        if ($rx.IsMatch($content)) {
+            $content = $rx.Replace($content, {
+                param($m)
+                switch ($d.Style) {
+                    'sq'  { $enc = $NewPrerelease -replace "'", "''" }
+                    'dq'  { $t = $NewPrerelease -replace '`','``'; $t = $t -replace '"','`"'; $enc = $t -replace '\$','`$' }
+                    'hsq' { $enc = $NewPrerelease }
+                    'hdq' { $t = $NewPrerelease -replace '`','``'; $t = $t -replace '"','`"'; $enc = $t -replace '\$','`$' }
+                }
+                $m.Groups['prefix'].Value + $enc + $m.Groups['suffix'].Value
+            }, 1)
+            $updated = $true
+            break
+        }
+    }
+
+    if (-not $updated) {
+        throw "Could not locate a 'Prerelease' assignment (supported forms: quoted or here-string)."
+    }
+
+    [System.IO.File]::WriteAllText($ManifestPath, $content)
 }

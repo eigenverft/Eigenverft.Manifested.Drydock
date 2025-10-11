@@ -59,6 +59,165 @@ function Update-ManifestModuleVersion {
     [System.IO.File]::WriteAllText($ManifestPath, $updatedContent)
 }
 
+function Update-ManifestReleaseNotes {
+<#
+.SYNOPSIS
+    Updates the ReleaseNotes value in a PowerShell module manifest (psd1).
+
+.DESCRIPTION
+    Reads the manifest as raw text and replaces only the ReleaseNotes value inside PrivateData.PSData.
+    Supports single-quoted, double-quoted, and here-string forms while preserving comments and formatting.
+    No extra helpers; compatible with Windows PowerShell 5.1 and PowerShell 7+.
+
+.PARAMETER ManifestPath
+    File or directory path. If a directory is provided, the first *.psd1 found recursively is used.
+
+.PARAMETER NewReleaseNotes
+    The new ReleaseNotes text. Multiline supported.
+
+.EXAMPLE
+    Update-ManifestReleaseNotes -ManifestPath .\MyModule -NewReleaseNotes "Fixed bugs; improved logging."
+#>
+    [CmdletBinding()]
+    [Alias('umrn')]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ManifestPath,
+        [Parameter(Mandatory)]
+        [string]$NewReleaseNotes
+    )
+
+    # Resolve a concrete psd1 path (inline; no helper functions)
+    if (-not (Test-Path -LiteralPath $ManifestPath)) {
+        throw "The path '$ManifestPath' does not exist."
+    }
+    $item = Get-Item -LiteralPath $ManifestPath
+    if ($item.PSIsContainer) {
+        $psd1 = Get-ChildItem -LiteralPath $ManifestPath -Filter *.psd1 -Recurse | Select-Object -First 1
+        if (-not $psd1) { throw "No PSD1 manifest file found under '$ManifestPath'." }
+        $ManifestPath = $psd1.FullName
+    }
+
+    # Read, replace, write (keep it simple to match your original style)
+    $content = [System.IO.File]::ReadAllText($ManifestPath)
+
+    # Define patterns that capture prefix/content/suffix so we can rebuild safely (avoids replacement-string $ pitfalls).
+    $opts = [System.Text.RegularExpressions.RegexOptions]::Singleline -bor
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase  -bor
+            [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+
+    $defs = @(
+        @{ Style='hsq'; Pattern='(?s)(?<prefix>\bReleaseNotes\s*=\s*@'')(?<content>.*?)(?<suffix>''@)' }  # @' ... '@
+        @{ Style='hdq'; Pattern='(?s)(?<prefix>\bReleaseNotes\s*=\s*@"")(?<content>.*?)(?<suffix>""@)' }  # @" ... "@
+        @{ Style='sq' ; Pattern='(?<prefix>\bReleaseNotes\s*=\s*'')(?<content>(?:''''|[^''])*)(?<suffix>'')' } # '...'
+        @{ Style='dq' ; Pattern='(?<prefix>\bReleaseNotes\s*=\s*"")(?<content>(?:``.|`"|[^""])*?)(?<suffix>"")' } # "..."
+    )
+
+    $updated = $false
+    foreach ($d in $defs) {
+        $rx = [System.Text.RegularExpressions.Regex]::new($d.Pattern, $opts)
+        if ($rx.IsMatch($content)) {
+            $content = $rx.Replace($content, {
+                param($m)
+                switch ($d.Style) {
+                    'sq'  { $enc = $NewReleaseNotes -replace "'", "''" }               # Single-quoted: double single quotes
+                    'dq'  { $t = $NewReleaseNotes -replace '`','``'; $t = $t -replace '"','`"'; $enc = $t -replace '\$','`$' }
+                    'hsq' { $enc = $NewReleaseNotes }                                   # Single-quoted here-string: literal
+                    'hdq' { $t = $NewReleaseNotes -replace '`','``'; $t = $t -replace '"','`"'; $enc = $t -replace '\$','`$' }
+                }
+                # Rebuild exact structure to keep whitespace/comments intact
+                $m.Groups['prefix'].Value + $enc + $m.Groups['suffix'].Value
+            }, 1)
+            $updated = $true
+            break
+        }
+    }
+
+    if (-not $updated) {
+        throw "Could not locate a 'ReleaseNotes' assignment (supported forms: quoted or here-string)."
+    }
+
+    [System.IO.File]::WriteAllText($ManifestPath, $content)
+}
+
+function Update-ManifestPrerelease {
+<#
+.SYNOPSIS
+    Updates the Prerelease value in a PowerShell module manifest (psd1).
+
+.DESCRIPTION
+    Reads the manifest as raw text and replaces only the Prerelease value inside PrivateData.PSData.
+    Supports single-quoted, double-quoted, and here-string forms while preserving comments and formatting.
+    No extra helpers; compatible with Windows PowerShell 5.1 and PowerShell 7+.
+
+.PARAMETER ManifestPath
+    File or directory path. If a directory is provided, the first *.psd1 found recursively is used.
+
+.PARAMETER NewPrerelease
+    New prerelease label (e.g. "preview1", "beta.2", "rc.1"). Use empty string "" to clear.
+
+.EXAMPLE
+    Update-ManifestPrerelease -ManifestPath .\MyModule\MyModule.psd1 -NewPrerelease "beta.2"
+#>
+    [CmdletBinding()]
+    [Alias('umpr')]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ManifestPath,
+        [Parameter(Mandatory)]
+        [string]$NewPrerelease
+    )
+
+    if (-not (Test-Path -LiteralPath $ManifestPath)) {
+        throw "The path '$ManifestPath' does not exist."
+    }
+    $item = Get-Item -LiteralPath $ManifestPath
+    if ($item.PSIsContainer) {
+        $psd1 = Get-ChildItem -LiteralPath $ManifestPath -Filter *.psd1 -Recurse | Select-Object -First 1
+        if (-not $psd1) { throw "No PSD1 manifest file found under '$ManifestPath'." }
+        $ManifestPath = $psd1.FullName
+    }
+
+    $content = [System.IO.File]::ReadAllText($ManifestPath)
+
+    $opts = [System.Text.RegularExpressions.RegexOptions]::Singleline -bor
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase  -bor
+            [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+
+    $defs = @(
+        @{ Style='hsq'; Pattern='(?s)(?<prefix>\bPrerelease\s*=\s*@'')(?<content>.*?)(?<suffix>''@)' }
+        @{ Style='hdq'; Pattern='(?s)(?<prefix>\bPrerelease\s*=\s*@"")(?<content>.*?)(?<suffix>""@)' }
+        @{ Style='sq' ; Pattern='(?<prefix>\bPrerelease\s*=\s*'')(?<content>(?:''''|[^''])*)(?<suffix>'')' }
+        @{ Style='dq' ; Pattern='(?<prefix>\bPrerelease\s*=\s*"")(?<content>(?:``.|`"|[^""])*?)(?<suffix>"")' }
+    )
+
+    $updated = $false
+    foreach ($d in $defs) {
+        $rx = [System.Text.RegularExpressions.Regex]::new($d.Pattern, $opts)
+        if ($rx.IsMatch($content)) {
+            $content = $rx.Replace($content, {
+                param($m)
+                switch ($d.Style) {
+                    'sq'  { $enc = $NewPrerelease -replace "'", "''" }
+                    'dq'  { $t = $NewPrerelease -replace '`','``'; $t = $t -replace '"','`"'; $enc = $t -replace '\$','`$' }
+                    'hsq' { $enc = $NewPrerelease }
+                    'hdq' { $t = $NewPrerelease -replace '`','``'; $t = $t -replace '"','`"'; $enc = $t -replace '\$','`$' }
+                }
+                $m.Groups['prefix'].Value + $enc + $m.Groups['suffix'].Value
+            }, 1)
+            $updated = $true
+            break
+        }
+    }
+
+    if (-not $updated) {
+        throw "Could not locate a 'Prerelease' assignment (supported forms: quoted or here-string)."
+    }
+
+    [System.IO.File]::WriteAllText($ManifestPath, $content)
+}
+
+
 function Find-FilesByPattern {
     <#
     .SYNOPSIS

@@ -147,7 +147,7 @@ System.Object (PSCustomObject)
     if ($bn -match '\\')     { throw "Branch name cannot contain backslash '\'. Use '/' as separator." }
     if ($bn -match '[\x00-\x1F]') { throw "Branch name contains control characters." }
 
-    $segments = $bn -split '/' | Where-Object { $_ -ne '' }
+    $segments = @($bn -split '/' | Where-Object { $_ -ne '' })
 
     foreach ($seg in $segments) {
         if ($seg -eq '.' -or $seg -eq '..') { throw "Segment '$seg' is invalid ('.' or '..' not allowed)." }

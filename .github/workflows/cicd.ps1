@@ -41,11 +41,16 @@ Test-VariableValue -Variable { $gitCurrentBranchRoot } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $gitRepositoryName } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $gitRemoteUrl } -ExitIfNullOrEmpty
 
+# Generate deployment info based on the current branch name
+$deploymentInfo = Convert-BranchToDeploymentInfo -BranchName "$gitCurrentBranch"
+
 # Generates a version based on the current date time to verify the version functions work as expected
 $generatedVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0
 $probeGeneratedVersion = Convert-64SecVersionComponentsToDateTime -VersionBuild $generatedVersion.VersionBuild -VersionMajor $generatedVersion.VersionMajor -VersionMinor $generatedVersion.VersionMinor -VersionRevision $generatedVersion.VersionRevision
 Test-VariableValue -Variable { $generatedVersion } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
+
+
 
 #######
 

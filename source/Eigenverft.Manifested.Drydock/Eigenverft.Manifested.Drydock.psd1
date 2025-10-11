@@ -93,7 +93,9 @@ FunctionsToExport = @(
     'Import-Script',
     'Export-OfflineModuleBundle',
     'Use-Tls12',
-    'New-CompatScheduledTask'
+    'New-CompatScheduledTask',
+    'Find-ModuleScopeClutter',
+    'Uninstall-PreviousModuleVersions'
     )
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.

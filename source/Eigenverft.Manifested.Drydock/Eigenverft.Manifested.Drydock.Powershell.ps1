@@ -786,6 +786,28 @@ PS> Export-OfflineModuleBundle -Folder C:\temp\export -Name @('PowerShellGet','P
         foreach ($n in $Name) { $needed[$n] = $Version }
     }
 
+    # >>> CHANGE: ensure a stable (non-prerelease) version is pinned for every entry
+    foreach ($k in @($needed.Keys)) {
+        $ver = $needed[$k]
+        $looksPrerelease = $ver -and ($ver.ToString() -match '-')
+        if (-not $ver -or $looksPrerelease) {
+            try {
+                # Find-Module (no -AllowPrerelease) returns latest stable version
+                $resolved = Find-Module -Name $k -Repository $repo -ErrorAction Stop
+                if ($resolved -and $resolved.Version) {
+                    $needed[$k] = $resolved.Version
+                } else {
+                    # Leave as-is; Save-Package step will block to avoid prerelease
+                    $needed[$k] = $null
+                }
+            } catch {
+                # Leave null to trigger safe skip during Save-Package
+                $needed[$k] = $null
+            }
+        }
+    }
+    # <<< END CHANGE
+
     # Download each required module version via Save-Package (no IncludeDependencies for compatibility)
     foreach ($pair in $needed.GetEnumerator()) {
         $mn = $pair.Key
@@ -798,7 +820,14 @@ PS> Export-OfflineModuleBundle -Folder C:\temp\export -Name @('PowerShellGet','P
                 Source       = $feed
                 ErrorAction  = "Stop"
             }
-            if ($mv) { $p["RequiredVersion"] = $mv }
+            if ($mv) {
+                $p["RequiredVersion"] = $mv
+            } else {
+                # >>> CHANGE: skip to avoid accidentally pulling a prerelease
+                Write-Error "No stable version found for '$mn' on $repo. Skipping to avoid prerelease."
+                continue
+                # <<< END CHANGE
+            }
             [void](Save-Package @p)
         } catch {
             Write-Error "Failed to save '$mn' into '$nugetDir': $($_.Exception.Message)"
@@ -992,4 +1021,377 @@ PS> Install-ModulesFromRepoFolder -Folder C:\repo -Name Pester,PSScriptAnalyzer
 
     # Return staged package paths for confirmation
     Get-ChildItem -LiteralPath $nugetDir -Filter *.nupkg | Select-Object -ExpandProperty FullName
+}
+
+
+function Uninstall-PreviousModuleVersions {
+<#
+.SYNOPSIS
+Removes older versions of a PowerShell module, keeping only the latest per scope.
+
+.DESCRIPTION
+Default Mode=Auto. If the session is elevated (Administrator on Windows or root on Unix), it cleans both CurrentUser and AllUsers.
+If not elevated, it cleans only CurrentUser and reports AllUsers installs that cannot be removed.
+Works on Windows PowerShell 5.1 and PowerShell 7+ on Windows/Linux/macOS.
+
+.PARAMETER ModuleName
+Name of the module to clean. Older versions beyond the newest per scope are removed.
+
+.PARAMETER Mode
+Auto (default), CurrentUser, AllUsers, Both. In non-elevated sessions, AllUsers removals are skipped and reported.
+
+.PARAMETER PassThru
+Emit a summary of planned/performed actions as objects.
+
+.EXAMPLE
+Remove-OldModuleVersions -ModuleName 'Pester'
+Cleans old versions in Auto mode.
+
+.EXAMPLE
+Remove-OldModuleVersions -ModuleName 'Az' -WhatIf
+Shows what would be removed without making changes.
+
+.OUTPUTS
+System.Object (when -PassThru is used)
+
+.NOTES
+Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one latest version per scope.
+#>
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
+    [Alias('romv')]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ModuleName,
+
+        [ValidateSet('Auto','CurrentUser','AllUsers','Both')]
+        [string]$Mode = 'Auto',
+
+        [switch]$PassThru
+    )
+
+    # Fail fast if PowerShellGet isn't present (PS5-safe).
+    if (-not (Get-Command Get-InstalledModule -ErrorAction SilentlyContinue)) {
+        Write-Error "PowerShellGet is not available (Get-InstalledModule missing). Install/Import PowerShellGet first."
+        return
+    }
+
+    # --- Elevation + OS detection (names chosen to avoid $IsWindows collision on PS7) ---
+    $onWindowsOS = $false
+    try { $onWindowsOS = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT } catch { $onWindowsOS = $true }
+
+    $isElevated = $false
+    try {
+        if ($onWindowsOS) {
+            $id  = [Security.Principal.WindowsIdentity]::GetCurrent()
+            $pri = [Security.Principal.WindowsPrincipal]$id
+            $isElevated = $pri.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        } else {
+            $uid = & id -u 2>$null
+            if ($LASTEXITCODE -eq 0) { if ([int]$uid -eq 0) { $isElevated = $true } }
+        }
+    } catch { $isElevated = $false }
+
+    # --- Decide scopes based on Mode + elevation ---
+    $scopesToProcess = @()
+    switch ($Mode) {
+        'Auto'       { if ($isElevated) { $scopesToProcess = @('CurrentUser','AllUsers') } else { $scopesToProcess = @('CurrentUser') } }
+        'CurrentUser'{ $scopesToProcess = @('CurrentUser') }
+        'AllUsers'   { $scopesToProcess = @('AllUsers') }
+        'Both'       { if ($isElevated) { $scopesToProcess = @('CurrentUser','AllUsers') } else { $scopesToProcess = @('CurrentUser') } }
+    }
+
+    try {
+        $installed = Get-InstalledModule -Name $ModuleName -AllVersions -ErrorAction SilentlyContinue
+        if (-not $installed) {
+            Write-Host "No installed module found with the name '$ModuleName'." -ForegroundColor Yellow
+            return
+        }
+
+        # Build candidate user roots from PSModulePath and well-known doc paths (PS5-safe; cross-platform).
+        $pathSep = [IO.Path]::PathSeparator
+        $modulePaths = @()
+        if ($env:PSModulePath) { $modulePaths = $env:PSModulePath -split [regex]::Escape($pathSep) }
+
+        $userHomePath = if ($onWindowsOS) { $env:USERPROFILE } else { $env:HOME }
+        if (-not $userHomePath) { try { $userHomePath = [Environment]::GetFolderPath('UserProfile') } catch { $userHomePath = $null } }
+
+        $userDocsPath = $null
+        if ($onWindowsOS) { try { $userDocsPath = [Environment]::GetFolderPath('MyDocuments') } catch { $userDocsPath = $null } }
+
+        $candidateUserRoots = @()
+        if ($modulePaths) {
+            $candidateUserRoots += ($modulePaths | Where-Object { $_ -and $userHomePath -and $_.StartsWith($userHomePath, [System.StringComparison]::OrdinalIgnoreCase) })
+        }
+        if ($onWindowsOS -and $userDocsPath) {
+            $candidateUserRoots += (Join-Path $userDocsPath 'WindowsPowerShell\Modules')
+            $candidateUserRoots += (Join-Path $userDocsPath 'PowerShell\Modules')
+        }
+
+        $userRoots = @()
+        foreach ($r in $candidateUserRoots) {
+            if ($r) { try { $userRoots += [IO.Path]::GetFullPath($r) } catch { $userRoots += $r } }
+        }
+        $userRoots = $userRoots | Sort-Object -Unique
+
+        # Annotate each install with inferred scope (CurrentUser if under user roots; otherwise AllUsers).
+        $annotated = foreach ($m in $installed) {
+            $p = $m.InstalledLocation
+            try { if ($p) { $p = [IO.Path]::GetFullPath($p) } } catch { }
+
+            $isUserScope = $false
+            foreach ($ur in $userRoots) {
+                if ($ur -and $p -and $p.StartsWith($ur, $true, [Globalization.CultureInfo]::InvariantCulture)) {
+                    $isUserScope = $true
+                    break
+                }
+            }
+
+            # PS5-safe: compute value first (avoid inline 'if' in hashtable)
+            $scopeLabel = 'AllUsers'
+            if ($isUserScope) { $scopeLabel = 'CurrentUser' }
+
+            [pscustomobject]@{
+                Name              = $m.Name
+                Version           = $m.Version
+                InstalledLocation = $p
+                Scope             = $scopeLabel
+            }
+        }
+
+        # --- Extra report for AllUsers when that scope isn't processed (e.g., not elevated in Auto) ---
+        if ( ($annotated | Where-Object Scope -eq 'AllUsers') -and -not ($scopesToProcess -contains 'AllUsers') ) {
+            $allAU   = $annotated | Where-Object Scope -eq 'AllUsers' | Sort-Object Version -Descending
+            $auLatest = $allAU[0]
+            $auOld    = $allAU | Select-Object -Skip 1
+
+            $reason = if ($isElevated) { 'skipped by Mode' } else { 'not elevated' }
+
+            if ($auLatest) {
+                Write-Host ("[AllUsers] {0}: will retain latest v{1} at '{2}' (cannot modify AllUsers now)." -f $reason, $auLatest.Version, $auLatest.InstalledLocation) -ForegroundColor Yellow
+            }
+
+            if ($auOld) {
+                $versions = ($auOld | Select-Object -ExpandProperty Version) -join ', '
+                Write-Host ("[AllUsers] Skipped removals (require elevation): {0}" -f $versions) -ForegroundColor Yellow
+                foreach ($i in $auOld) {
+                    Write-Host ("  - v{0} at '{1}'" -f $i.Version, $i.InstalledLocation) -ForegroundColor DarkYellow
+                    if ($PassThru) { $summary += [pscustomobject]@{ Scope='AllUsers'; Version=$i.Version; Action='Skipped (NotProcessed)'; Path=$i.InstalledLocation } }
+                }
+                if ($PassThru -and $auLatest) {
+                    $summary += [pscustomobject]@{ Scope='AllUsers'; Version=$auLatest.Version; Action='Retained (Latest, NotProcessed)'; Path=$auLatest.InstalledLocation }
+                }
+            } else {
+                Write-Host "[AllUsers] Only one version present; nothing to remove in AllUsers." -ForegroundColor Yellow
+                if ($PassThru -and $auLatest) {
+                    $summary += [pscustomobject]@{ Scope='AllUsers'; Version=$auLatest.Version; Action='Retained (Only Version, NotProcessed)'; Path=$auLatest.InstalledLocation }
+                }
+            }
+        }
+
+        # Clear notice if we're non-elevated and not processing AllUsers, but such installs exist.
+        $hasAllUsers = ($annotated | Where-Object Scope -eq 'AllUsers')
+        if (-not $isElevated -and $hasAllUsers -and -not ($scopesToProcess -contains 'AllUsers')) {
+            $v = ($hasAllUsers | Sort-Object Version -Descending | Select-Object -ExpandProperty Version) -join ', '
+            Write-Host ("AllUsers installs detected for '{0}': {1}. Run elevated (Admin/root) to remove them." -f $ModuleName, $v) -ForegroundColor Yellow
+        }
+
+        $summary = @()
+
+        foreach ($scope in $scopesToProcess) {
+            $inScope = $annotated | Where-Object Scope -eq $scope
+            if (-not $inScope) {
+                Write-Host "[$scope] No installs found for '$ModuleName'." -ForegroundColor Yellow
+                continue
+            }
+
+            # Keep exactly the newest version in this scope; remove all others.
+            $sorted = $inScope | Sort-Object Version -Descending
+            $latest = $sorted[0]
+            $old    = $sorted | Select-Object -Skip 1
+
+            if (-not $old) {
+                Write-Host "[$scope] Only one version present (v$($latest.Version)). Nothing to remove in $scope." -ForegroundColor Green
+                continue
+            }
+
+            Write-Host ("[{0}] Retaining latest v{1} at '{2}'." -f $scope, $latest.Version, $latest.InstalledLocation) -ForegroundColor Cyan
+
+            foreach ($item in $old) {
+                $target = "{0} v{1} ({2})" -f $item.Name, $item.Version, $scope
+                if ($PSCmdlet.ShouldProcess($target, 'Uninstall-Module')) {
+                    try {
+                        Uninstall-Module -Name $item.Name -RequiredVersion $item.Version -Force -ErrorAction Stop
+                        Write-Host ("[{0}] Removed v{1} from '{2}'." -f $scope, $item.Version, $item.InstalledLocation) -ForegroundColor Green
+                        if ($PassThru) { $summary += [pscustomobject]@{ Scope=$scope; Version=$item.Version; Action='Removed'; Path=$item.InstalledLocation } }
+                    } catch {
+                        Write-Error ("[{0}] Failed to remove {1} v{2}: {3}" -f $scope, $item.Name, $item.Version, $_.Exception.Message)
+                        if ($PassThru) { $summary += [pscustomobject]@{ Scope=$scope; Version=$item.Version; Action='Error'; Path=$item.InstalledLocation; Error=$_.Exception.Message } }
+                    }
+                } else {
+                    if ($PassThru) { $summary += [pscustomobject]@{ Scope=$scope; Version=$item.Version; Action='Planned (WhatIf)'; Path=$item.InstalledLocation } }
+                }
+            }
+        }
+
+        Write-Host ("Cleanup complete (mode: {0}, elevated: {1}, processed scopes: {2})." -f $Mode, $isElevated, ($scopesToProcess -join ', ')) -ForegroundColor Green
+        if ($PassThru) { $summary }
+    }
+    catch {
+        Write-Error "An error occurred while removing old versions for '$ModuleName': $($_.Exception.Message)"
+    }
+}
+
+function Find-ModuleScopeClutter {
+<#
+.SYNOPSIS
+Detects modules that are installed in both user and system scopes.
+
+.DESCRIPTION
+Scans all discoverable modules (Get-Module -ListAvailable), classifies each module's path
+as CurrentUser or AllUsers by comparing against user-owned roots derived from PSModulePath
+and common platform locations, and outputs module names that appear in both scopes.
+Default output is just the module names (unique, sorted) for easy piping.
+
+.PARAMETER Detailed
+If set, also writes a human-readable table showing per-scope versions and paths.
+
+.PARAMETER PassThru
+If set, returns rich objects with Name and grouped details; otherwise writes names to the pipeline.
+
+.EXAMPLE
+Find-ModuleScopeClutter
+# Prints only module names that are installed in both scopes.
+
+.EXAMPLE
+Find-ModuleScopeClutter -Detailed
+# Prints a readable table with versions/paths per scope, plus the names to the pipeline.
+
+.OUTPUTS
+System.String (default) or System.Object (with -PassThru)
+
+.NOTES
+- PS5-compatible; no reliance on $IsWindows/$IsLinux/$IsMacOS.
+- External-reviewer note: Classification is heuristic (based on user-home prefixes); uncommon custom roots may classify as AllUsers.
+- Silent skip on Windows: PSReadLine and Pester are ignored to reduce noise from in-box modules.
+#>
+    [CmdletBinding()]
+    param(
+        [switch]$Detailed,
+        [switch]$PassThru
+    )
+
+    # Reviewer: Avoid helper functions per user's style; keep logic inline and PS5-safe.
+
+    # OS hint (avoid $IsWindows collision on PS7 by using our own name).
+    $onWindowsOS = $false
+    try { $onWindowsOS = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT } catch { $onWindowsOS = $true }
+
+    # Gather candidate "user roots" from PSModulePath + well-known locations.
+    $pathSep      = [IO.Path]::PathSeparator
+    $modulePaths  = @()
+    if ($env:PSModulePath) { $modulePaths = $env:PSModulePath -split [regex]::Escape($pathSep) }
+
+    # Derive user home in a PS5-friendly way.
+    $userHomePath = if ($onWindowsOS) { $env:USERPROFILE } else { $env:HOME }
+    if (-not $userHomePath) { try { $userHomePath = [Environment]::GetFolderPath('UserProfile') } catch { $userHomePath = $null } }
+
+    # Windows: include common Documents-based user module roots (these are typical on WinPS 5.1).
+    $userDocsPath = $null
+    if ($onWindowsOS) { try { $userDocsPath = [Environment]::GetFolderPath('MyDocuments') } catch { $userDocsPath = $null } }
+
+    $candidateUserRoots = @()
+    if ($modulePaths) {
+        # Any PSModulePath entry under the user's home is considered "user scope".
+        $candidateUserRoots += ($modulePaths | Where-Object {
+            $_ -and $userHomePath -and $_.StartsWith($userHomePath, [System.StringComparison]::OrdinalIgnoreCase)
+        })
+    }
+    if ($onWindowsOS -and $userDocsPath) {
+        $candidateUserRoots += (Join-Path $userDocsPath 'WindowsPowerShell\Modules')
+        $candidateUserRoots += (Join-Path $userDocsPath 'PowerShell\Modules')
+    }
+
+    # Normalize and distinct user roots.
+    $userRoots = @()
+    foreach ($r in $candidateUserRoots) {
+        if ($r) {
+            try { $userRoots += [IO.Path]::GetFullPath($r) } catch { $userRoots += $r }
+        }
+    }
+    $userRoots = $userRoots | Sort-Object -Unique
+
+    # Enumerate all available modules from every path.
+    $all = Get-Module -ListAvailable | Select-Object Name, Version, ModuleBase
+
+    # Annotate each with inferred scope (PS5-safe StartsWith overload).
+    $annotated = foreach ($m in $all) {
+        $base = $m.ModuleBase
+        try { if ($base) { $base = [IO.Path]::GetFullPath($base) } } catch { }
+
+        $isUser = $false
+        foreach ($ur in $userRoots) {
+            if ($ur -and $base -and $base.StartsWith($ur, $true, [Globalization.CultureInfo]::InvariantCulture)) {
+                $isUser = $true; break
+            }
+        }
+
+        # Note: if we can't map to a user root, treat as AllUsers by default.
+        $scopeLabel = if ($isUser) { 'CurrentUser' } else { 'AllUsers' }
+
+        # Select minimal fields; duplicates (same Name/Version/Path) are harmless.
+        [pscustomobject]@{
+            Name       = $m.Name
+            Version    = $m.Version
+            ModuleBase = $base
+            Scope      = $scopeLabel
+        }
+    }
+
+    # Group by name and keep only those that appear in both scopes.
+    $clutter = $annotated |
+        Group-Object Name |
+        Where-Object { ($_.Group.Scope | Select-Object -Unique).Count -ge 2 }
+
+    # --- Minimal change: silently ignore common in-box modules on Windows to avoid confusion.
+    if ($onWindowsOS) {
+        $skip = @('PSReadLine','Pester')
+        $clutter = $clutter | Where-Object { $skip -notcontains $_.Name }
+    }
+    # ---
+
+    if (-not $clutter) {
+        Write-Host "No modules found installed in both user and system scopes." -ForegroundColor Green
+        return
+    }
+
+    # Default output: just the names (unique, sorted).
+    $names = $clutter | Select-Object -ExpandProperty Name | Sort-Object -Unique
+
+    if ($Detailed) {
+        # Reviewer: Provide concise per-scope detail without overwhelming the user.
+        foreach ($g in $clutter) {
+            $userSide = $g.Group | Where-Object Scope -eq 'CurrentUser' | Sort-Object Version -Descending
+            $sysSide  = $g.Group | Where-Object Scope -eq 'AllUsers'   | Sort-Object Version -Descending
+
+            $uVers = if ($userSide) { ($userSide | Select-Object -Expand Version) -join ', ' } else { '-' }
+            $sVers = if ($sysSide)  { ($sysSide  | Select-Object -Expand Version) -join ', ' } else { '-' }
+
+            Write-Host ("{0}`n  CurrentUser: {1}`n  AllUsers   : {2}" -f $g.Name, $uVers, $sVers) -ForegroundColor Yellow
+        }
+    }
+
+    if ($PassThru) {
+        # Return rich objects if desired (useful for CI/pipelines).
+        $objects = foreach ($g in $clutter) {
+            [pscustomobject]@{
+                Name         = $g.Name
+                CurrentUser  = $g.Group | Where-Object Scope -eq 'CurrentUser' | Sort-Object Version -Descending | Select-Object Name,Version,ModuleBase,Scope
+                AllUsers     = $g.Group | Where-Object Scope -eq 'AllUsers'    | Sort-Object Version -Descending | Select-Object Name,Version,ModuleBase,Scope
+            }
+        }
+        $objects
+    } else {
+        # Emit names to pipeline (so caller can pipe into Remove-OldModuleVersions).
+        $names
+    }
 }

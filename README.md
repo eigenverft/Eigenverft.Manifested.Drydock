@@ -57,7 +57,8 @@ Below is a concise reference grouped by area. See built-in help for parameters a
 - **Convert-BranchToDeploymentInfo** Validate/split branch, map first segment to channel, and generate label/prefix/suffix tokens.
   Example: `Convert-BranchToDeploymentInfo -BranchName 'feature/awesome'`
 
-### CI/runtime utilities (`source/.../Eigenverft.Manifested.Drydock.ps1`)
+### CI/runtime utilities
+
 - **Invoke-Exec (iexec)** Run external command with per-call and common arguments; enforce allowed exit codes; optional timing/capture.
   Example: `Invoke-Exec -Executable 'dotnet' -Arguments @('build','MyApp.csproj') -CommonArguments @('--configuration','Release')`
 - **Find-FilesByPattern (ffbp)** Recursively find files under a path by `-Filter` pattern.

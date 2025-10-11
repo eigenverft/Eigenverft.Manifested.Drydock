@@ -7,12 +7,16 @@ param (
 Write-Host "Powershell script $(Split-Path -Leaf $PSCommandPath) has started."
 
 # Provides lightweight reachability guards for external services.
-# Detection only—no installs, imports, network changes, or pushes.
+# Detection only—no installs, imports, network changes, or pushes. (e.g Test-PSGalleryConnectivity)
 # Designed to short-circuit local and CI/CD workflows when dependencies are offline (e.g., skip a push if the Git host is unreachable).
 . "$PSScriptRoot\cicd.bootstrap.ps1"
 
-# Install the required modules to run this script, Eigenverft.Manifested.Drydock needs to be Powershell 5.1 and Powershell 7+ compatible
-Install-Module -Name 'Eigenverft.Manifested.Drydock' -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+# Ensure connectivity to PowerShell Gallery before attempting module installation, if not assuming being offline, installation is present check existance with Test-ModuleAvailable
+if (Test-PSGalleryConnectivity)
+{
+    # Install the required modules to run this script, Eigenverft.Manifested.Drydock needs to be Powershell 5.1 and Powershell 7+ compatible
+    Install-Module -Name 'Eigenverft.Manifested.Drydock' -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber
+}
 
 #if ($m = Test-ModuleAvailable -Name 'Eigenverft.Manifested.Drydock') { "$($m.Name) $($m.Version)" } else { Write-Error "Eigenverft.Manifested.Drydock (stable) not found"; exit 1 }
 

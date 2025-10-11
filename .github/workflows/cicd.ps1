@@ -2,6 +2,8 @@ param (
     [string]$POWERSHELL_GALLERY
 ) 
 
+
+
 # Keep this script compatible with PowerShell 5.1 and PowerShell 7+
 # Lean, pipeline-friendly style—simple, readable, and easy to modify, failfast on errors.
 
@@ -17,10 +19,10 @@ Initialize-PowerShellMiniBootstrap
 Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
 
 # Import optional migration script if it exists
-Import-Script -File @("$PSScriptRoot\cicd.migration.ps1")
-Import-Script -File @("$PSScriptRoot\cicd.specific.ps1")
+Import-Script -File @("$PSScriptRoot\cicd.migration.ps1") -ErrorIfMissing
+Import-Script -File @("$PSScriptRoot\cicd.specific.ps1") -ErrorIfMissing
 
-#Write-Foo -Message "Hello, World!"
+Write-Foo -Message "Hello, World!"
 
 # In the case the secrets are not passed as parameters, try to get them from the secrets file, local development or CI/CD environment
 $POWERSHELL_GALLERY = Get-ConfigValue -Check $POWERSHELL_GALLERY -FilePath (Join-Path $PSScriptRoot 'cicd.secrets.json') -Property 'POWERSHELL_GALLERY'
@@ -61,7 +63,7 @@ Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
 
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" -ErrorAction Stop
 Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedVersion.VersionFull)"
-#Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPrerelease "foo"
+Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPrerelease "foo"
 
 Write-Host "===> Testing module manifest at: $($manifestFile.FullName)" -ForegroundColor Cyan
 Test-ModuleManifest -Path $($manifestFile.FullName)

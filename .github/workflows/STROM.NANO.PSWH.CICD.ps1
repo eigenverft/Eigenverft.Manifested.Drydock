@@ -110,8 +110,6 @@ function Update-ManifestModuleVersion {
 }
 
 
-
-
 function Update-ModuleIfNewer {
     <#
     .SYNOPSIS
@@ -174,62 +172,6 @@ function Update-ModuleIfNewer {
     }
     catch {
         Write-Error "An error occurred: $_"
-    }
-}
-
-function Remove-OldModuleVersions {
-    <#
-    .SYNOPSIS
-        Removes older versions of an installed PowerShell module, keeping only the latest version.
-
-    .DESCRIPTION
-        This function retrieves all installed versions of a specified module, sorts them by version in descending
-        order (so that the latest version is first), and removes all versions except the latest one.
-        It helps clean up local installations accumulated from repeated updates.
-
-    .PARAMETER ModuleName
-        The name of the module for which to remove older versions. Only versions beyond the latest one are removed.
-
-    .EXAMPLE
-        PS C:\> Remove-OldModuleVersions -ModuleName 'STROM.NANO.PSWH.CICD'
-        Removes all installed versions of 'STROM.NANO.PSWH.CICD' except for the latest version.
-    #>
-    [CmdletBinding()]
-    [alias("romv")]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ModuleName
-    )
-
-    try {
-        # Retrieve all installed versions of the module.
-        $installedModules = Get-InstalledModule -Name $ModuleName -AllVersions -ErrorAction SilentlyContinue
-
-        if (-not $installedModules) {
-            Write-Host "No installed module found with the name '$ModuleName'." -ForegroundColor Yellow
-            return
-        }
-
-        # Sort installed versions descending; latest version comes first.
-        $sortedModules = $installedModules | Sort-Object -Property Version -Descending
-
-        # Retain the latest version (first item) and select all older versions.
-        $latestModule = $sortedModules[0]
-        $oldModules = $sortedModules | Select-Object -Skip 1
-
-        if (-not $oldModules) {
-            Write-Host "Only one version of '$ModuleName' is installed. Nothing to remove." -ForegroundColor Green
-            return
-        }
-
-        foreach ($module in $oldModules) {
-            Write-Host "Removing $ModuleName version $($module.Version)..." -ForegroundColor Cyan
-            Uninstall-Module -Name $ModuleName -RequiredVersion $module.Version -Force
-        }
-        Write-Host "Old versions of '$ModuleName' have been removed. Latest version $($latestModule.Version) is retained." -ForegroundColor Green
-    }
-    catch {
-        Write-Error "An error occurred while removing old versions: $_"
     }
 }
 

@@ -1,7 +1,7 @@
 # Eigenverft.Manifested.Drydock
 
-PowerShell helper functions for the Eigenverft Manifested Drydock project, focused on building and deploying locally and in CI/CD; see .github/workflow/main.ps1 and .yml for how it works.
-
+PowerShell helper functions for the Eigenverft Manifested Drydock, optimized for lightning-fast iteration and reliable local + CI/CD workflows.
+Expect frequent releases—auto-versioning is built in. Tasks are parity-driven: the same commands run locally and in CI/CD, so local builds remain fully functional even if the pipeline is down.
 
 [Eigenverft.Manifested.Drydock – PowerShell Gallery](https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock)
 

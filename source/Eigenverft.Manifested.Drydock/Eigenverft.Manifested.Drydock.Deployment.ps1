@@ -117,7 +117,6 @@ System.Object (PSCustomObject)
         [hashtable]$LabelMap,
         [ValidateSet('Short','Long')]
         [string]$LabelStyle = 'Short',
-        [AllowNull()]
         [string]$DefaultLabel = $null,
         [ValidateSet('Lower','Upper','Preserve')]
         [string]$LabelCase = 'Lower',
@@ -147,6 +146,7 @@ System.Object (PSCustomObject)
     if ($bn -match '\\')     { throw "Branch name cannot contain backslash '\'. Use '/' as separator." }
     if ($bn -match '[\x00-\x1F]') { throw "Branch name contains control characters." }
 
+    # Ensure we always have a string[] even for single-segment branches
     $segments = @($bn -split '/' | Where-Object { $_ -ne '' })
 
     foreach ($seg in $segments) {
@@ -182,7 +182,7 @@ System.Object (PSCustomObject)
     $invalid = [System.IO.Path]::GetInvalidFileNameChars()
     for ($i = 0; $i -lt $pathSegments.Count; $i++) {
         foreach ($ch in $invalid) {
-            $pathSegments[$i] = $pathSegments[$i] -replace ([regex]::Escape($ch)), '_'
+            $pathSegments[$i] = $pathSegments[$i] -replace ([regex]::Escape([string]$ch)), '_'
         }
         $pathSegments[$i] = $pathSegments[$i] -replace ' ', '_'
     }
@@ -232,7 +232,12 @@ System.Object (PSCustomObject)
     $channelSource = 'Default'
     if ($channelMapEff.ContainsKey($firstSegmentLower)) {
         $channel = [string]$channelMapEff[$firstSegmentLower]
-        if ($ChannelMap -and $ChannelMap.ContainsKey($firstSegmentLower)) { $channelSource = 'Override' }
+
+        # Detect user override case-insensitively
+        if ($ChannelMap) {
+            $userKeysLower = @($ChannelMap.Keys | ForEach-Object { $_.ToLowerInvariant() })
+            if ($userKeysLower -contains $firstSegmentLower) { $channelSource = 'Override' }
+        }
     } else {
         if ($ErrorOnMissingChannel) { throw ("No channel mapping for first segment '{0}'." -f $firstSegmentLower) }
         $channel = $DefaultChannel
@@ -337,4 +342,5 @@ System.Object (PSCustomObject)
         Affix   = $affixSection
     }
 }
+
 

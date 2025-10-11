@@ -13,6 +13,9 @@ Install-Module -Name Eigenverft.Manifested.Drydock -Repository "PSGallery" -Scop
 # Required for updating PowerShellGet and PackageManagement providers in local PowerShell 5.x environments
 Initialize-PowerShellMiniBootstrap
 
+# Clean up previous versions of the module to avoid conflicts in local PowerShell environments
+Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
+
 # Import optional migration script if it exists
 . Import-Script -File @("$PSScriptRoot\cicd.migration.ps1")
 . Import-Script -File @("$PSScriptRoot\cicd.specific.ps1")
@@ -42,7 +45,7 @@ Test-VariableValue -Variable { $gitRepositoryName } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $gitRemoteUrl } -ExitIfNullOrEmpty
 
 # Generate deployment info based on the current branch name
-#$deploymentInfo = Convert-BranchToDeploymentInfo -BranchName "$gitCurrentBranch"
+$deploymentInfo = Convert-BranchToDeploymentInfo -BranchName "$gitCurrentBranch"
 
 # Generates a version based on the current date time to verify the version functions work as expected
 $generatedVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 0

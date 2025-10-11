@@ -57,13 +57,11 @@ $probeGeneratedVersion = Convert-64SecVersionComponentsToDateTime -VersionBuild 
 Test-VariableValue -Variable { $generatedVersion } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
 
-
-
 #######
 
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" -ErrorAction Stop
 Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedVersion.VersionFull)"
-Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPrerelease "foo"
+Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPrerelease "$(deploymentInfo.Label)"
 
 Write-Host "===> Testing module manifest at: $($manifestFile.FullName)" -ForegroundColor Cyan
 Test-ModuleManifest -Path $($manifestFile.FullName)

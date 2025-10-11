@@ -11,8 +11,10 @@ Write-Host "Powershell script $(Split-Path -Leaf $PSCommandPath) has started."
 # Designed to short-circuit local and CI/CD workflows when dependencies are offline (e.g., skip a push if the Git host is unreachable).
 . "$PSScriptRoot\cicd.bootstrap.ps1"
 
+$remoteRessourcesOk = Test-RemoteRessourcesAvailable -Quiet
+
 # Ensure connectivity to PowerShell Gallery before attempting module installation, if not assuming being offline, installation is present check existance with Test-ModuleAvailable
-if (Test-PSGalleryConnectivity)
+if ($remoteRessourcesOk)
 {
     # Install the required modules to run this script, Eigenverft.Manifested.Drydock needs to be Powershell 5.1 and Powershell 7+ compatible
     Install-Module -Name 'Eigenverft.Manifested.Drydock' -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber
@@ -72,17 +74,25 @@ Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPre
 Write-Host "===> Testing module manifest at: $($manifestFile.FullName)" -ForegroundColor Cyan
 Test-ModuleManifest -Path $($manifestFile.FullName)
 
-try {
-    Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$POWERSHELL_GALLERY" -ErrorAction Stop    
-}
-catch {
-    Write-Error "Failed to publish module: $_"
+if ($remoteRessourcesOk)
+{
+    try {
+        Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$POWERSHELL_GALLERY" -ErrorAction Stop    
+    }
+    catch {
+        Write-Error "Failed to publish module: $_"
+    }
 }
 
-if ($($runEnvironment.IsCI)) {
-    Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Automated version bump to $($generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
-} else {
-    Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Automated version bump to $($generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
+
+if ($remoteRessourcesOk)
+{
+    if ($($runEnvironment.IsCI)) {
+        Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Automated version bump to $($generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
+    } else {
+        Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Automated version bump to $($generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
+    }
 }
+
 
 

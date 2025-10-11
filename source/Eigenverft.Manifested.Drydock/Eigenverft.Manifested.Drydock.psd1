@@ -51,7 +51,7 @@ PowerShellVersion = '5.1'
 # ProcessorArchitecture = ''
 
 # Modules that must be imported into the global environment prior to importing this module
-# RequiredModules = @(@{ModuleName = 'CoreePower.Lib'; ModuleVersion = '0.20255.55310'; })
+# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20255.55310'; })
 
 # Assemblies that must be loaded prior to importing this module
 # RequiredAssemblies = @()

@@ -89,6 +89,7 @@ FunctionsToExport = @(
     'Find-FilesByPattern',
     'Test-VariableValue',
     'Test-CommandAvailable',
+    'Test-ModuleAvailable',
     'Get-RunEnvironment',
     'Get-ConfigValue',
     'Initialize-PowerShellMiniBootstrap',

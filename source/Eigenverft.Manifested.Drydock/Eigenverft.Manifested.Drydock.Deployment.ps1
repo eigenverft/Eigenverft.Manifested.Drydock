@@ -170,7 +170,7 @@ System.Object (PSCustomObject)
     # Required first segment (case-insensitive)
     if ($segments.Count -ge 1) {
         $allowedFirst = $RequiredFirstSegments | ForEach-Object { $_.ToLowerInvariant() }
-        $firstRawLower = $segments[0].ToLowerInvariant()
+        $firstRawLower = ([string]$segments[0]).ToLowerInvariant()
         if ($allowedFirst.Count -gt 0 -and $allowedFirst -notcontains $firstRawLower) {
             $list = ($RequiredFirstSegments -join "', '")
             throw "First segment '$($segments[0])' is not allowed. Allowed first segments: '$list'."
@@ -187,7 +187,7 @@ System.Object (PSCustomObject)
         $pathSegments[$i] = $pathSegments[$i] -replace ' ', '_'
     }
 
-    $firstSegmentLower = if ($segments.Count -ge 1) { $segments[0].ToLowerInvariant() } else { "" }
+    $firstSegmentLower = if ($segments.Count -ge 1) { ([string]$segments[0]).ToLowerInvariant() } else { "" }
 
     # =========================
     # 2) Channel resolution (case-insensitive)

@@ -1161,33 +1161,62 @@ Emit objects describing planned/performed actions.
     }
 
     # --- Helpers (SemVer-like parser; avoids [version]) ----------------------
-    function Parse-SemVerLike([string]$s) {
-        # Matches: 1.2.3[-pre][+build] ; also supports 4th "revision" segment commonly used in PS modules
-        $rx = '^(?<maj>\d+)\.(?<min>\d+)\.(?<pat>\d+)(?:\.(?<rev>\d+))?(?:-(?<pre>[0-9A-Za-z\.-]+))?(?:\+[0-9A-Za-z\.-]+)?$'
-        $m = [regex]::Match($s, $rx)
-        if (-not $m.Success) {
-            # Fallback: best-effort numeric split; missing parts -> 0
-            $base,$pre = $s.Split('-',2)
-            $parts = ($base -split '\.') + @('0','0','0','0')
-            return [pscustomobject]@{
-                Major        = [int]$parts[0]
-                Minor        = [int]$parts[1]
-                Patch        = [int]$parts[2]
-                Revision     = [int]$parts[3]
+    function Parse-SemVerLike {
+    [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+    <#
+    .SYNOPSIS
+    Parse a SemVer-like version string into numeric parts and prerelease metadata.
+
+    .DESCRIPTION
+    Accepts versions like 1.2.3, 1.2.3.4, 1.2.3-dev, or 1.2.3.4-beta+build.
+    Returns an object with Major, Minor, Patch, Revision, PreRelease, and IsPrerelease.
+    No [version] casting is used, so prerelease identifiers are handled safely.
+
+    .PARAMETER s
+    The version string to parse.
+
+    .OUTPUTS
+    pscustomobject
+
+    .EXAMPLE
+    Parse-SemVerLike -s '1.2.3'
+    #>
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory, Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+            [Alias('Version')]
+            [ValidateNotNullOrEmpty()]
+            [string]$s
+        )
+        process {
+            # Matches: 1.2.3[-pre][+build] ; supports optional 4th "revision" segment
+            $rx = '^(?<maj>\d+)\.(?<min>\d+)\.(?<pat>\d+)(?:\.(?<rev>\d+))?(?:-(?<pre>[0-9A-Za-z\.-]+))?(?:\+[0-9A-Za-z\.-]+)?$'
+            $m = [regex]::Match($s, $rx)
+            if (-not $m.Success) {
+                # Fallback: best-effort numeric split; missing parts -> 0
+                $base, $pre = $s.Split('-', 2)
+                $parts = ($base -split '\.') + @('0','0','0','0')
+                return [pscustomobject]@{
+                    Major        = [int]$parts[0]
+                    Minor        = [int]$parts[1]
+                    Patch        = [int]$parts[2]
+                    Revision     = [int]$parts[3]
+                    PreRelease   = $pre
+                    IsPrerelease = [bool]$pre
+                }
+            }
+            $pre = $m.Groups['pre'].Value
+            [pscustomobject]@{
+                Major        = [int]$m.Groups['maj'].Value
+                Minor        = [int]$m.Groups['min'].Value
+                Patch        = [int]$m.Groups['pat'].Value
+                Revision     = if ($m.Groups['rev'].Success) { [int]$m.Groups['rev'].Value } else { -1 }  # missing rev < any explicit rev
                 PreRelease   = $pre
                 IsPrerelease = [bool]$pre
             }
         }
-        $pre = $m.Groups['pre'].Value
-        [pscustomobject]@{
-            Major        = [int]$m.Groups['maj'].Value
-            Minor        = [int]$m.Groups['min'].Value
-            Patch        = [int]$m.Groups['pat'].Value
-            Revision     = if ($m.Groups['rev'].Success) { [int]$m.Groups['rev'].Value } else { -1 }  # missing rev < any explicit rev
-            PreRelease   = $pre
-            IsPrerelease = [bool]$pre
-        }
     }
+
 
     function Get-InferredScope([string]$path) {
         $homex = if ([Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) { $env:USERPROFILE } else { $env:HOME }

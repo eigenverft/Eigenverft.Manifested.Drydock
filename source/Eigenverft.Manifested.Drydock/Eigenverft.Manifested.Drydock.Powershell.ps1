@@ -1333,7 +1333,6 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one version per
     }
 }
 
-
 function Find-ModuleScopeClutter {
 <#
 .SYNOPSIS

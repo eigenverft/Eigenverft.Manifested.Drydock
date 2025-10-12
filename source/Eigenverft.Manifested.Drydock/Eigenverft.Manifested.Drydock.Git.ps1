@@ -277,7 +277,7 @@ Wraps these Git calls (kept close to your original flags):
   git -C "$TopLevelDirectory" push origin "$CurrentBranch"
 
 If -Tags are provided, creates annotated tags on HEAD and pushes them:
-  git -C "$TopLevelDirectory" tag -a <tag> -m "<msg>" <commit>
+  git -C "$TopLevelDirectory" -c user.name="..." -c user.email="..." tag -a <tag> -m "<msg>" <commit>
   git -C "$TopLevelDirectory" push origin <tag>
 
 Writes status via Write-Host and emits no return value. Optionally exits the host on errors.
@@ -366,13 +366,13 @@ Adds the repo to safe.directory before proceeding.
         [switch]$ExitOnError
     )
 
-    # --- Preflight: Git availability (external reviewer note: keep user-facing feedback clear) ---
+    # --- Preflight: Git availability ---
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-Host "[Invoke-GitAddCommitPush] Git not found in PATH."
         if ($ExitOnError) { exit 1 }; return
     }
 
-    # --- Resolve repo root: provided or detect via rev-parse --------------------------------------
+    # --- Resolve repo root ---
     if (-not $TopLevelDirectory) {
         try { $TopLevelDirectory = (git rev-parse --show-toplevel 2>$null).Trim() } catch { $TopLevelDirectory = $null }
     }
@@ -381,7 +381,6 @@ Adds the repo to safe.directory before proceeding.
         if ($ExitOnError) { exit 1 }; return
     }
     try {
-        # PS5-safe: use Get-Item.FullName instead of Resolve-Path.ProviderPath
         $repoPath = (Get-Item -LiteralPath $TopLevelDirectory -ErrorAction Stop).FullName
     }
     catch {
@@ -389,7 +388,7 @@ Adds the repo to safe.directory before proceeding.
         if ($ExitOnError) { exit 1 }; return
     }
 
-    # --- git add -v -A -- "<each folder>" ---------------------------------------------------------
+    # --- git add -v -A -- "<each folder>" ---
     foreach ($folder in $Folders) {
         $f = ([string]$folder).Trim()
         if ([string]::IsNullOrWhiteSpace($f)) { continue }
@@ -401,7 +400,7 @@ Adds the repo to safe.directory before proceeding.
         }
     }
 
-    # --- Optional: safe.directory ----------------------------------------------------------------
+    # --- Optional: safe.directory ---
     if ($SafeDirectory) {
         Write-Host "[Invoke-GitAddCommitPush] git config --global --add safe.directory '$repoPath'"
         & git -C $repoPath config --global --add safe.directory $repoPath 2>&1 | ForEach-Object { Write-Host $_ }
@@ -411,17 +410,16 @@ Adds the repo to safe.directory before proceeding.
         }
     }
 
-    # --- Commit with transient identity -----------------------------------------------------------
+    # --- Commit with transient identity ---
     Write-Host "[Invoke-GitAddCommitPush] git commit -m '$CommitMessage'"
     & git -C $repoPath -c "user.name=$UserName" -c "user.email=$UserEmail" commit -m $CommitMessage 2>&1 | ForEach-Object { Write-Host $_ }
     $commitCode = $LASTEXITCODE
     if ($commitCode -ne 0) {
-        # Common case: nothing to commit -> nonzero exit with message. Treat as soft success unless atomic.
         Write-Host "[Invoke-GitAddCommitPush] git commit returned $commitCode (possibly nothing to commit)."
         if ($ExitOnError) { exit $commitCode }
     }
 
-    # --- Determine branch if not provided ---------------------------------------------------------
+    # --- Determine branch if not provided ---
     if (-not $CurrentBranch) {
         $CurrentBranch = git -C $repoPath rev-parse --abbrev-ref HEAD 2>$null
         if ($CurrentBranch) { $CurrentBranch = $CurrentBranch.Trim() }
@@ -431,7 +429,7 @@ Adds the repo to safe.directory before proceeding.
         if ($ExitOnError) { exit 1 }; return
     }
 
-    # --- Always push branch -----------------------------------------------------------------------
+    # --- Always push branch ---
     Write-Host "[Invoke-GitAddCommitPush] git push origin '$CurrentBranch'"
     & git -C $repoPath push origin $CurrentBranch 2>&1 | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) {
@@ -439,7 +437,7 @@ Adds the repo to safe.directory before proceeding.
         if ($ExitOnError) { exit $LASTEXITCODE }; return
     }
 
-    # --- Tagging (optional): create annotated tags on HEAD and push -------------------------------
+    # --- Tagging (optional): create annotated tags on HEAD and push ---
     if ($Tags -and $Tags.Count -gt 0) {
         $head = git -C $repoPath rev-parse HEAD 2>$null
         if ($head) { $head = $head.Trim() }
@@ -450,7 +448,7 @@ Adds the repo to safe.directory before proceeding.
         }
 
         foreach ($rawTag in $Tags) {
-            $tag = ([string]$rawTag).Trim()   # [string] casts $null -> ''
+            $tag = ([string]$rawTag).Trim()
             if ([string]::IsNullOrWhiteSpace($tag)) { continue }
 
             & git -C $repoPath show-ref --tags --verify --quiet ("refs/tags/$tag")
@@ -460,8 +458,12 @@ Adds the repo to safe.directory before proceeding.
                 Write-Host "[Invoke-GitAddCommitPush] Tag '$tag' already exists; skipping (use -ForceTagUpdate to move it)."
             } else {
                 $msg = if ($TagMessage) { $TagMessage } else { "Tag $tag" }
-                $tagArgs = @('-C', $repoPath, 'tag', '-a', $tag, $head, '-m', $msg)
-                if ($exists -and $ForceTagUpdate) { $tagArgs = @('-C', $repoPath, 'tag', '-f', '-a', $tag, $head, '-m', $msg) }
+
+                # >>> CHANGE: include transient identity for tag object creation/update
+                $tagArgs = @('-C', $repoPath, '-c', "user.name=$UserName", '-c', "user.email=$UserEmail", 'tag', '-a', $tag, $head, '-m', $msg)
+                if ($exists -and $ForceTagUpdate) {
+                    $tagArgs = @('-C', $repoPath, '-c', "user.name=$UserName", '-c', "user.email=$UserEmail", 'tag', '-f', '-a', $tag, $head, '-m', $msg)
+                }
 
                 Write-Host ("[Invoke-GitAddCommitPush] {0} annotated tag '{1}' on {2}." -f ($(if ($exists) { 'Updating' } else { 'Creating' }), $tag, $head))
                 & git @tagArgs 2>&1 | ForEach-Object { Write-Host $_ }
@@ -471,7 +473,7 @@ Adds the repo to safe.directory before proceeding.
                 }
             }
 
-            # Always push tag (force if moved)
+            # Push tag (force if moved)
             $pushArgs = @('-C', $repoPath, 'push', 'origin', $tag)
             if ($exists -and $ForceTagUpdate) { $pushArgs = @('-C', $repoPath, 'push', '--force', 'origin', $tag) }
 
@@ -488,3 +490,4 @@ Adds the repo to safe.directory before proceeding.
 
     Write-Host "[Invoke-GitAddCommitPush] Completed."
 }
+

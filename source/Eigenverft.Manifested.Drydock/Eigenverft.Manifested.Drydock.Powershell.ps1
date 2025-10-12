@@ -1076,15 +1076,15 @@ PS> Install-ModulesFromRepoFolder -Folder C:\repo -Name Pester,PSScriptAnalyzer
 function Uninstall-PreviousModuleVersions {
 <#
 .SYNOPSIS
-Remove older versions of a PowerShell module while keeping exactly one per scope and ensure the kept version is active in the session.
+Remove older versions of a PowerShell module while keeping exactly one per scope, and ensure the kept version is active.
 
 .DESCRIPTION
-- Elevation-aware scope handling (Auto/CurrentUser/AllUsers/Both).
-- Keep policy: Any/Stable/Prerelease (SemVer-like parsing; no [version] casts).
-- Uses Uninstall-Module only (no filesystem deletes).
-- Unloads the exact to-be-removed version before uninstall.
-- Ensures the globally kept version is loaded at the end when a version was loaded initially or a different version is still loaded.
-- Uses only Write-Host for messaging. No param splatting.
+- Elevation-aware scopes (Auto/CurrentUser/AllUsers/Both).
+- Keep policy: Any/Stable/Prerelease.
+- Uses only Uninstall-Module; no filesystem deletes.
+- Orders versions using Module manifest metadata (ModuleVersion + PrivateData.PSData.Prerelease) with [System.Version]::TryParse (no regex, no string splitting).
+- If a manifest is missing, uses TryParse over the part before a '-' (found via IndexOf/Substring) and treats presence of '-' as prerelease.
+- Ensures the kept version is loaded if any version was loaded before.
 
 .PARAMETER ModuleName
 Module name to clean.
@@ -1148,102 +1148,25 @@ Emit objects describing planned/performed actions.
         default       { if ($isElevated) { $scopes = @('CurrentUser','AllUsers') } else { $scopes = @('CurrentUser') } } # Auto
     }
 
-    # Inventory (explicit, no splatting)
-    $installed = $null
-    if ($getSupportsAllowPre) {
-        $installed = Get-InstalledModule -Name $ModuleName -AllVersions -AllowPrerelease -ErrorAction SilentlyContinue
+    # Inventory
+    $installed = if ($getSupportsAllowPre) {
+        Get-InstalledModule -Name $ModuleName -AllVersions -AllowPrerelease -ErrorAction SilentlyContinue
     } else {
-        $installed = Get-InstalledModule -Name $ModuleName -AllVersions -ErrorAction SilentlyContinue
+        Get-InstalledModule -Name $ModuleName -AllVersions -ErrorAction SilentlyContinue
     }
     if (-not $installed) {
         Write-Host "No installed versions found for '$ModuleName'." -ForegroundColor Yellow
         return
     }
 
-    # --- Helpers (SemVer-like parser; avoids [version]) ----------------------
-    function Parse-SemVerLike {
-    [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
-    <#
-    .SYNOPSIS
-    Parse a SemVer-like version string into numeric parts and prerelease metadata.
-
-    .DESCRIPTION
-    Accepts versions like 1.2.3, 1.2.3.4, 1.2.3-dev, or 1.2.3.4-beta+build.
-    Returns an object with Major, Minor, Patch, Revision, PreRelease, and IsPrerelease.
-    No [version] casting is used, so prerelease identifiers are handled safely.
-
-    .PARAMETER s
-    The version string to parse.
-
-    .OUTPUTS
-    pscustomobject
-
-    .EXAMPLE
-    Parse-SemVerLike -s '1.2.3'
-    #>
-        [CmdletBinding()]
-        param(
-            [Parameter(Mandatory, Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
-            [Alias('Version')]
-            [ValidateNotNullOrEmpty()]
-            [string]$s
-        )
-        process {
-            # Matches: 1.2.3[-pre][+build] ; supports optional 4th "revision" segment
-            $rx = '^(?<maj>\d+)\.(?<min>\d+)\.(?<pat>\d+)(?:\.(?<rev>\d+))?(?:-(?<pre>[0-9A-Za-z\.-]+))?(?:\+[0-9A-Za-z\.-]+)?$'
-            $m = [regex]::Match($s, $rx)
-            if (-not $m.Success) {
-                # Fallback: best-effort numeric split; missing parts -> 0
-                $base, $pre = $s.Split('-', 2)
-                $parts = ($base -split '\.') + @('0','0','0','0')
-                return [pscustomobject]@{
-                    Major        = [int]$parts[0]
-                    Minor        = [int]$parts[1]
-                    Patch        = [int]$parts[2]
-                    Revision     = [int]$parts[3]
-                    PreRelease   = $pre
-                    IsPrerelease = [bool]$pre
-                }
-            }
-            $pre = $m.Groups['pre'].Value
-            [pscustomobject]@{
-                Major        = [int]$m.Groups['maj'].Value
-                Minor        = [int]$m.Groups['min'].Value
-                Patch        = [int]$m.Groups['pat'].Value
-                Revision     = if ($m.Groups['rev'].Success) { [int]$m.Groups['rev'].Value } else { -1 }  # missing rev < any explicit rev
-                PreRelease   = $pre
-                IsPrerelease = [bool]$pre
-            }
-        }
-    }
-
-
+    # Small helpers (no regex / no string split)
     function Get-InferredScope([string]$path) {
         $homex = if ([Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) { $env:USERPROFILE } else { $env:HOME }
         try {
             $full = if ($path) { [IO.Path]::GetFullPath($path) } else { $null }
-            if ( $homex -and $full -and $full.StartsWith( $homex, $true, [Globalization.CultureInfo]::InvariantCulture)) { 'CurrentUser' } else { 'AllUsers' }
+            if ($homex -and $full -and $full.StartsWith($homex, $true, [Globalization.CultureInfo]::InvariantCulture)) { 'CurrentUser' } else { 'AllUsers' }
         } catch { 'AllUsers' }
     }
-
-    function Get-Preferred([object[]]$items, [string]$policy) {
-        $sorted = $items | Sort-Object `
-            @{Expression = { $_.Sem.Major    }; Descending = $true}, `
-            @{Expression = { $_.Sem.Minor    }; Descending = $true}, `
-            @{Expression = { $_.Sem.Patch    }; Descending = $true}, `
-            @{Expression = { $_.Sem.Revision }; Descending = $true}, `
-            @{Expression = { if ($_.Sem.IsPrerelease) { 0 } else { 1 } }; Descending = $true}  # stable wins only on equal numbers
-        if ($policy -eq 'Stable') {
-            $st = $sorted | Where-Object { -not $_.Sem.IsPrerelease }
-            if ($st -and $st.Count -gt 0) { return $st[0] } else { return $sorted[0] }
-        } elseif ($policy -eq 'Prerelease') {
-            $pr = $sorted | Where-Object { $_.Sem.IsPrerelease }
-            if ($pr -and $pr.Count -gt 0) { return $pr[0] } else { return $sorted[0] }
-        } else {
-            return $sorted[0]
-        }
-    }
-
     function Get-ImportTargetPath([string]$moduleBase, [string]$name) {
         $psd1 = Join-Path $moduleBase ($name + '.psd1')
         $psm1 = Join-Path $moduleBase ($name + '.psm1')
@@ -1252,35 +1175,98 @@ Emit objects describing planned/performed actions.
         return $moduleBase
     }
 
-    # Annotate without [version] casts
+    # Manifest-driven annotation (preferred), safe fallback if manifest missing
     $annotated = foreach ($m in $installed) {
-        $verStr = [string]$m.Version
-        $sem = Parse-SemVerLike $verStr
+        $verStr = [string]$m.Version               # exact string as reported (may include prerelease)
+        $leaf   = $null
+        try { $leaf = Split-Path -Path $m.InstalledLocation -Leaf } catch {}
+
+        # Defaults
+        $maj = 0; $min = 0; $pat = -1; $rev = -1
+        $isPre = $false
+
+        # Try manifest first (built-in parser, no regex)
+        $manifest = $null
+        $psd1 = Join-Path $m.InstalledLocation ($m.Name + '.psd1')
+        if (-not (Test-Path -LiteralPath $psd1)) {
+            # fallback: first .psd1 in folder (rare layout)
+            $cand = Get-ChildItem -LiteralPath $m.InstalledLocation -Filter *.psd1 -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($cand) { $psd1 = $cand.FullName }
+        }
+        if (Test-Path -LiteralPath $psd1) {
+            try { $manifest = Import-PowerShellDataFile -LiteralPath $psd1 -ErrorAction Stop } catch { $manifest = $null }
+        }
+
+        if ($manifest) {
+            # Version numbers via .NET Version.TryParse (safe; no throws)
+            $vRef = $null
+            $ok = [Version]::TryParse([string]$manifest.ModuleVersion, [ref]$vRef)
+            if ($ok -and $vRef) {
+                $maj = $vRef.Major
+                $min = $vRef.Minor
+                $pat = $vRef.Build    # -1 if not present
+                $rev = $vRef.Revision # -1 if not present
+            }
+            # prerelease via PrivateData.PSData.Prerelease
+            try {
+                $pr = $manifest.PrivateData.PSData.Prerelease
+                if ($pr) { $isPre = $true }
+            } catch { }
+        }
+        else {
+            # Fallback: TryParse the portion before '-' (found via IndexOf) — no Split/regex
+            $base = $verStr
+            $dash = $verStr.IndexOf('-')
+            if ($dash -ge 0) {
+                $base  = $verStr.Substring(0, $dash)
+                $isPre = $true
+            }
+            $vRef = $null
+            if ([Version]::TryParse($base, [ref]$vRef) -and $vRef) {
+                $maj = $vRef.Major
+                $min = $vRef.Minor
+                $pat = $vRef.Build
+                $rev = $vRef.Revision
+            }
+        }
+
         [pscustomobject]@{
             Name              = $m.Name
-            VersionString     = $verStr           # keep original (may include -pre)
+            VersionString     = $verStr                      # used for Uninstall-Module -RequiredVersion
             InstalledLocation = $m.InstalledLocation
             Scope             = Get-InferredScope $m.InstalledLocation
-            Sem               = $sem              # numeric sort keys + prerelease flag
+            Sem               = [pscustomobject]@{
+                                   Major=$maj; Minor=$min; Patch=$pat; Revision=$rev; IsPrerelease=$isPre
+                               }
         }
     }
 
     # Inform about AllUsers not processed
     if ( ($annotated | Where-Object Scope -eq 'AllUsers') -and -not ($scopes -contains 'AllUsers') ) {
         $au = $annotated | Where-Object Scope -eq 'AllUsers' | Sort-Object `
-                @{e={$_.Sem.Major};Descending=$true}, @{e={$_.Sem.Minor};Descending=$true}, `
-                @{e={$_.Sem.Patch};Descending=$true}, @{e={$_.Sem.Revision};Descending=$true}, `
-                @{e={ if ($_.Sem.IsPrerelease){0}else{1} };Descending=$true}
+              @{e={$_.Sem.Major};Descending=$true}, @{e={$_.Sem.Minor};Descending=$true}, `
+              @{e={$_.Sem.Patch};Descending=$true}, @{e={$_.Sem.Revision};Descending=$true}, `
+              @{e={ if ($_.Sem.IsPrerelease){0}else{1} };Descending=$true}
         $auVersions = ($au | Select-Object -ExpandProperty VersionString) -join ', '
         Write-Host "AllUsers installs detected for '$ModuleName': $auVersions. Run elevated to remove them." -ForegroundColor Yellow
     }
 
-    # Compute global keep
-    $globalKeep = Get-Preferred ($annotated) $Keep
+    # Sort keys & global keep (pure numeric + prerelease bit; no parsing)
+    $sortKeys = @(
+        @{e={$_.Sem.Major};Descending=$true},
+        @{e={$_.Sem.Minor};Descending=$true},
+        @{e={$_.Sem.Patch};Descending=$true},
+        @{e={$_.Sem.Revision};Descending=$true},
+        @{e={ if ($_.Sem.IsPrerelease){0}else{1} };Descending=$true} # stable wins when numbers equal
+    )
+    $sortedAll  = $annotated | Sort-Object @sortKeys
+    $globalKeep = switch ($Keep) {
+        'Stable'     { ($sortedAll | Where-Object { -not $_.Sem.IsPrerelease })[0]  ?? $sortedAll[0] }
+        'Prerelease' { ($sortedAll | Where-Object {      $_.Sem.IsPrerelease })[0]  ?? $sortedAll[0] }
+        default      { $sortedAll[0] }
+    }
 
-    # Track initial load state
     $wasLoadedInitially = [bool](Get-Module -Name $ModuleName)
-
     $summary = @()
 
     # Per-scope cleanup
@@ -1289,24 +1275,19 @@ Emit objects describing planned/performed actions.
         if (-not $inScope) { continue }
 
         if (-not ($scopes -contains $scope)) {
-            $skips = $inScope | Sort-Object `
-                @{e={$_.Sem.Major};Descending=$true}, @{e={$_.Sem.Minor};Descending=$true}, `
-                @{e={$_.Sem.Patch};Descending=$true}, @{e={$_.Sem.Revision};Descending=$true}, `
-                @{e={ if ($_.Sem.IsPrerelease){0}else{1} };Descending=$true} | Select-Object -Skip 1
+            $skips = $inScope | Sort-Object @sortKeys | Select-Object -Skip 1
             foreach ($s in $skips) {
-                if ($PassThru) {
-                    $summary += [pscustomobject]@{ Scope=$scope; Version=$s.VersionString; Action='Skipped (NotElevated/Mode)'; Path=$s.InstalledLocation }
-                }
+                if ($PassThru) { $summary += [pscustomobject]@{ Scope=$scope; Version=$s.VersionString; Action='Skipped (NotElevated/Mode)'; Path=$s.InstalledLocation } }
             }
             continue
         }
 
-        $sorted = $inScope | Sort-Object `
-            @{e={$_.Sem.Major};Descending=$true}, @{e={$_.Sem.Minor};Descending=$true}, `
-            @{e={$_.Sem.Patch};Descending=$true}, @{e={$_.Sem.Revision};Descending=$true}, `
-            @{e={ if ($_.Sem.IsPrerelease){0}else{1} };Descending=$true}
-
-        $keepItem = Get-Preferred $sorted $Keep
+        $sorted   = $inScope | Sort-Object @sortKeys
+        $keepItem = switch ($Keep) {
+            'Stable'     { ($sorted | Where-Object { -not $_.Sem.IsPrerelease })[0]  ?? $sorted[0] }
+            'Prerelease' { ($sorted | Where-Object {      $_.Sem.IsPrerelease })[0]  ?? $sorted[0] }
+            default      { $sorted[0] }
+        }
         if (-not $keepItem) { continue }
 
         $toRemove = $sorted | Where-Object { $_.InstalledLocation -ne $keepItem.InstalledLocation }
@@ -1339,7 +1320,7 @@ Emit objects describing planned/performed actions.
             # Uninstall (explicit, prerelease-aware)
             $removed = $false
             try {
-                if ($item.Sem.IsPrerelease -and $uninstallSupportsAllowPre) {
+                if ($uninstallSupportsAllowPre -and ($item.Sem.IsPrerelease)) {
                     Uninstall-Module -Name $item.Name -RequiredVersion $item.VersionString -AllowPrerelease -Force -ErrorAction Stop
                 } else {
                     Uninstall-Module -Name $item.Name -RequiredVersion $item.VersionString -Force -ErrorAction Stop
@@ -1358,8 +1339,8 @@ Emit objects describing planned/performed actions.
         }
     }
 
-    # Ensure the globally kept version is loaded at the end (when relevant)
-    $currentLoaded = Get-Module -Name $ModuleName
+    # Ensure the kept version is loaded at the end (when relevant)
+    $currentLoaded  = Get-Module -Name $ModuleName
     $needEnsureLoad = $false
     if ($wasLoadedInitially) { $needEnsureLoad = $true }
     elseif ($currentLoaded) {
@@ -1387,7 +1368,6 @@ Emit objects describing planned/performed actions.
     Write-Host ("Cleanup complete (mode: {0}, keep: {1}, elevated: {2})." -f $Mode, $Keep, $isElevated) -ForegroundColor Green
     if ($PassThru) { $summary }
 }
-
 
 function Find-ModuleScopeClutter {
 <#

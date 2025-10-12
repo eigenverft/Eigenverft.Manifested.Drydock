@@ -458,7 +458,6 @@ function Test-ModuleAvailable {
     return $null
 }
 
-
 function Get-RunEnvironment {
 <#
 .SYNOPSIS

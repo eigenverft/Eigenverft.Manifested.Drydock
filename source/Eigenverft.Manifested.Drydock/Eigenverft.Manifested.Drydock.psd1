@@ -77,6 +77,8 @@ FunctionsToExport = @(
     'Get-GitRemoteUrl',
     'Invoke-GitAddCommitPush',
 
+    'Write-ConsoleLog',
+
     'Convert-DateTimeTo64SecVersionComponents',
     'Convert-64SecVersionComponentsToDateTime',
     'Convert-DateTimeTo64SecPowershellVersion',

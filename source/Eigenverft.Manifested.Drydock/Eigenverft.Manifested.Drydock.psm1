@@ -2,6 +2,7 @@
     Eigenverft.Manifested.Drydock root module
 #>
 
+. "$PSScriptRoot\Eigenverft.Manifested.Drydock.Logging.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Powershell.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Execution.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Deployment.ps1"

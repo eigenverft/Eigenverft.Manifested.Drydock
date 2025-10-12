@@ -12,7 +12,7 @@
 RootModule = 'Eigenverft.Manifested.Drydock.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.20255.56697'
+ModuleVersion = '0.20255.56698'
 
 # Supported PSEditions
 CompatiblePSEditions = @('Desktop','Core')
@@ -51,7 +51,7 @@ PowerShellVersion = '5.1'
 # ProcessorArchitecture = ''
 
 # Modules that must be imported into the global environment prior to importing this module
-# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20255.56697'; })
+# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20255.56698'; })
 
 # Assemblies that must be loaded prior to importing this module
 # RequiredAssemblies = @()

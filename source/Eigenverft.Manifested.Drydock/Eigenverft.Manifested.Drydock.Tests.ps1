@@ -200,6 +200,7 @@ function Test-ModuleAvailable {
       - Supports exact version (RequiredVersion) or a version range (MinimumVersion/MaximumVersion).
     Returns the best matching [System.Management.Automation.PSModuleInfo] or $null.
     Optional -ThrowIfNotFound / -ExitIfNotFound for CI-style enforcement.
+    Optional -Quiet to return only a boolean (True/False) without emitting PSModuleInfo.
 
 .PARAMETER Name
     Module name to resolve (wildcards allowed; exact-name matches are preferred).
@@ -225,18 +226,23 @@ function Test-ModuleAvailable {
 .PARAMETER ExitCode
     Exit code used with -ExitIfNotFound.
 
-.EXAMPLE
-    if ($m = Test-ModuleAvailable Pester) { "$($m.Name) $($m.Version)" } else { "Pester (stable) missing" }
+.PARAMETER Quiet
+    Return only True/False and suppress emitting PSModuleInfo. With -ExitIfNotFound, exits silently (no error line).
 
 .EXAMPLE
-    # Allow prerelease if only preview builds are installed
-    Test-ModuleAvailable Pester -IncludePrerelease -MinimumVersion 5.5
+    # Boolean check only; prints True/False
+    Test-ModuleAvailable Pester -Quiet
+
+.EXAMPLE
+    # CI-style enforcement, silent on success, exits 127 if missing
+    Test-ModuleAvailable -Name Eigenverft.Manifested.Drydock -IncludePrerelease -ExitIfNotFound -Quiet
 
 .NOTES
     Reviewer note: Purely local; no gallery/network calls. Prefers exact name, then highest version.
 #>
     [CmdletBinding(DefaultParameterSetName='ByRange')]
     [OutputType([System.Management.Automation.PSModuleInfo])]
+    [OutputType([bool])]
     param(
         [Parameter(Mandatory, Position=0)]
         [string]$Name,
@@ -254,29 +260,21 @@ function Test-ModuleAvailable {
 
         [switch]$ThrowIfNotFound,
         [switch]$ExitIfNotFound,
-        [int]$ExitCode = 127
+        [int]$ExitCode = 127,
+
+        [switch]$Quiet
     )
 
-    # Helper: determine if a PSModuleInfo is prerelease.
-    # Uses common manifest metadata: PrivateData.PSData.Prerelease
     function _IsPrerelease {
         param([System.Management.Automation.PSModuleInfo]$m)
         try {
             if ($null -eq $m -or $null -eq $m.PrivateData) { return $false }
             $psd = $m.PrivateData.PSData
-            if ($psd -is [hashtable]) {
-                $pre = $psd['Prerelease']
-            } else {
-                $pre = $psd.Prerelease
-            }
+            if ($psd -is [hashtable]) { $pre = $psd['Prerelease'] } else { $pre = $psd.Prerelease }
             return -not [string]::IsNullOrEmpty([string]$pre)
-        } catch {
-            # Be conservative: if we can't read it, treat as stable.
-            return $false
-        }
+        } catch { return $false }
     }
 
-    # Helper: PS5-friendly version checks (no version-interval API here).
     function _MeetsVersion {
         param([version]$v)
         if ($PSCmdlet.ParameterSetName -eq 'ByRequired' -and $RequiredVersion) { return ($v -eq $RequiredVersion) }
@@ -285,58 +283,36 @@ function Test-ModuleAvailable {
         return $true
     }
 
-    # Helper: apply default stable-only filter unless -IncludePrerelease is present.
     function _FilterByStability {
         param([System.Management.Automation.PSModuleInfo[]]$mods)
         if ($IncludePrerelease) { return $mods }
         return $mods | Where-Object { -not (_IsPrerelease $_) }
     }
 
-    # 1) Prefer already-loaded modules that satisfy constraints and stability policy.
+    # 1) Prefer already-loaded modules
     $loaded = Get-Module -Name $Name
     if ($loaded) {
-        $candidates = _FilterByStability $loaded
-        $candidates = $candidates | Where-Object { _MeetsVersion $_.Version }
-        # Prefer exact name, then highest version; if including prerelease, highest wins regardless of label.
-        $sorted = if ($IncludePrerelease) {
-            $candidates | Sort-Object @{Expression={ if ($_.Name -ieq $Name) {0} else {1} }}, @{Expression='Version';Descending=$true}
-        } else {
-            $candidates | Sort-Object @{Expression={ if ($_.Name -ieq $Name) {0} else {1} }}, @{Expression='Version';Descending=$true}
-        }
+        $candidates = _FilterByStability $loaded | Where-Object { _MeetsVersion $_.Version }
+        $sorted = $candidates | Sort-Object @{Expression={ if ($_.Name -ieq $Name) {0} else {1} }}, @{Expression='Version';Descending=$true}
         $best = $sorted | Select-Object -First 1
-        if ($best) { return $best }
+        if ($best) { if ($Quiet) { return $true } else { return $best } }
     }
 
-    # 2) Scan locally installed modules (strictly local; no online contact).
-    try {
-        $avail = Get-Module -ListAvailable -Name $Name -ErrorAction Stop
-    } catch {
-        $avail = @()
-    }
-
+    # 2) Locally installed (no network)
+    try { $avail = Get-Module -ListAvailable -Name $Name -ErrorAction Stop } catch { $avail = @() }
     if ($avail.Count -gt 0) {
-        $candidates = _FilterByStability $avail
-        $candidates = $candidates | Where-Object { _MeetsVersion $_.Version }
-        $sorted = if ($IncludePrerelease) {
-            # When including prerelease, choose the highest version across all candidates.
-            $candidates | Sort-Object @{Expression={ if ($_.Name -ieq $Name) {0} else {1} }}, @{Expression='Version';Descending=$true}
-        } else {
-            $candidates | Sort-Object @{Expression={ if ($_.Name -ieq $Name) {0} else {1} }}, @{Expression='Version';Descending=$true}
-        }
+        $candidates = _FilterByStability $avail | Where-Object { _MeetsVersion $_.Version }
+        $sorted = $candidates | Sort-Object @{Expression={ if ($_.Name -ieq $Name) {0} else {1} }}, @{Expression='Version';Descending=$true}
         $best = $sorted | Select-Object -First 1
-        if ($best) { return $best }
+        if ($best) { if ($Quiet) { return $true } else { return $best } }
     }
 
-    # 3) Not found -> chosen enforcement.
-    $verMsg = if ($PSCmdlet.ParameterSetName -eq 'ByRequired' -and $RequiredVersion) {
-        "RequiredVersion=$RequiredVersion"
-    } else {
-        "MinimumVersion=$MinimumVersion, MaximumVersion=$MaximumVersion"
-    }
+    # 3) Not found
+    $verMsg = if ($PSCmdlet.ParameterSetName -eq 'ByRequired' -and $RequiredVersion) { "RequiredVersion=$RequiredVersion" } else { "MinimumVersion=$MinimumVersion, MaximumVersion=$MaximumVersion" }
     $stabMsg = if ($IncludePrerelease) { "stable+prerelease allowed" } else { "stable-only" }
 
     if ($ThrowIfNotFound) { throw "Required module '$Name' not found locally ($verMsg, $stabMsg)." }
-    if ($ExitIfNotFound)  { Write-Error "Required module '$Name' not found locally ($verMsg, $stabMsg). Exiting with code $ExitCode."; exit $ExitCode }
+    if ($ExitIfNotFound)  { if (-not $Quiet) { Write-Error "Required module '$Name' not found locally ($verMsg, $stabMsg). Exiting with code $ExitCode." }; exit $ExitCode }
 
-    return $null
+    if ($Quiet) { return $false } else { return $null }
 }

@@ -1099,11 +1099,9 @@ Emit a summary of planned/performed actions as objects.
 
 .EXAMPLE
 Uninstall-PreviousModuleVersions -ModuleName 'Pester'
-Cleans old versions in Auto mode, keeping the absolute latest (stable or prerelease).
 
 .EXAMPLE
 Uninstall-PreviousModuleVersions -ModuleName 'Az' -Keep Stable -WhatIf
-Shows what would be removed, preferring to keep the latest stable version.
 
 .OUTPUTS
 System.Object (when -PassThru is used)
@@ -1172,6 +1170,11 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one version per
             return
         }
 
+        # Detect if Uninstall-Module supports -AllowPrerelease (PS5-safe).
+        $unCmd = Get-Command Uninstall-Module -ErrorAction SilentlyContinue
+        $unHasAllowPre = $false
+        if ($unCmd) { $unHasAllowPre = $unCmd.Parameters.ContainsKey('AllowPrerelease') }
+
         # Build candidate user roots from PSModulePath and well-known doc paths (PS5-safe; cross-platform).
         $pathSep = [IO.Path]::PathSeparator
         $modulePaths = @()
@@ -1232,7 +1235,7 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one version per
             }
         }
 
-        # --- Extra report for AllUsers when that scope isn't processed (e.g., not elevated in Auto) ---
+        # --- Extra report for AllUsers when that scope isn't processed ---
         if ( ($annotated | Where-Object Scope -eq 'AllUsers') -and -not ($scopesToProcess -contains 'AllUsers') ) {
             $allAU    = $annotated | Where-Object Scope -eq 'AllUsers' | Sort-Object Version -Descending
             $auLatest = $allAU[0]
@@ -1312,7 +1315,18 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one version per
                     try {
                         # Use folder-version string when available (supports prerelease labels like 1.2.3-beta1).
                         $reqVer = if ($item.RequiredVersion) { $item.RequiredVersion } else { [string]$item.Version }
-                        Uninstall-Module -Name $item.Name -RequiredVersion $reqVer -Force -ErrorAction Stop
+
+                        # PS5-compatible: add -AllowPrerelease when supported (fixes error on prerelease RequiredVersion).
+                        $uninstallParams = @{
+                            Name            = $item.Name
+                            RequiredVersion = $reqVer
+                            Force           = $true
+                            ErrorAction     = 'Stop'
+                        }
+                        if ($unHasAllowPre -and $item.IsPrerelease) { $uninstallParams['AllowPrerelease'] = $true }
+
+                        Uninstall-Module @uninstallParams
+
                         Write-Host ("[{0}] Removed v{1} from '{2}'." -f $scope, $item.Version, $item.InstalledLocation) -ForegroundColor Green
                         if ($PassThru) { $summary += [pscustomobject]@{ Scope=$scope; Version=$item.Version; Action='Removed'; Path=$item.InstalledLocation } }
                     } catch {

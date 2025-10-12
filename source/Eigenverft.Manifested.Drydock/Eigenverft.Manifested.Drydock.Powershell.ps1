@@ -1076,15 +1076,17 @@ PS> Install-ModulesFromRepoFolder -Folder C:\repo -Name Pester,PSScriptAnalyzer
 function Uninstall-PreviousModuleVersions {
 <#
 .SYNOPSIS
-Remove older versions of a PowerShell module while keeping exactly one per scope, and ensure the kept version is active.
+Remove older versions of a PowerShell module while keeping exactly one per scope and ensure the kept version is active in the session.
 
 .DESCRIPTION
-- Elevation-aware scopes (Auto/CurrentUser/AllUsers/Both).
+- Elevation-aware scope handling (Auto/CurrentUser/AllUsers/Both).
 - Keep policy: Any/Stable/Prerelease.
-- Uses only Uninstall-Module; no filesystem deletes.
-- Orders versions using Module manifest metadata (ModuleVersion + PrivateData.PSData.Prerelease) with [System.Version]::TryParse (no regex, no string splitting).
-- If a manifest is missing, uses TryParse over the part before a '-' (found via IndexOf/Substring) and treats presence of '-' as prerelease.
-- Ensures the kept version is loaded if any version was loaded before.
+- Ranking is manifest-first (ModuleVersion + PrivateData.PSData.Prerelease), otherwise fallback to safe
+  detection: ASCII '-' presence (prerelease) + [System.Version]::TryParse on the prefix via IndexOf/Substring.
+- Uses Uninstall-Module only (no filesystem deletes).
+- Unloads the exact to-be-removed version before uninstall.
+- Ensures the globally kept version is loaded at the end when a version was loaded initially or a different version is still loaded.
+- Uses only Write-Host for messaging. No parameter splatting. PowerShell 5.x compatible.
 
 .PARAMETER ModuleName
 Module name to clean.
@@ -1097,6 +1099,22 @@ Any (default), Stable, Prerelease.
 
 .PARAMETER PassThru
 Emit objects describing planned/performed actions.
+
+.EXAMPLE
+Uninstall-PreviousModuleVersions -ModuleName Pester
+
+.EXAMPLE
+Uninstall-PreviousModuleVersions -ModuleName Az -Keep Stable -WhatIf
+
+.OUTPUTS
+pscustomobject (when -PassThru)
+
+.REQUIREMENTS
+- PowerShellGet available: Get-InstalledModule, Uninstall-Module, Import-PowerShellDataFile.
+- Output via Write-Host only (no Write-Error/Verbose).
+- No filesystem deletion fallback; rely solely on Uninstall-Module.
+- No regex/dot-splitting for version ordering; prefer manifest ModuleVersion, otherwise TryParse on prefix before ASCII '-' (via IndexOf/Substring).
+- No parameter splatting anywhere.
 #>
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
     param(
@@ -1149,17 +1167,18 @@ Emit objects describing planned/performed actions.
     }
 
     # Inventory
-    $installed = if ($getSupportsAllowPre) {
-        Get-InstalledModule -Name $ModuleName -AllVersions -AllowPrerelease -ErrorAction SilentlyContinue
+    $installed = $null
+    if ($getSupportsAllowPre) {
+        $installed = Get-InstalledModule -Name $ModuleName -AllVersions -AllowPrerelease -ErrorAction SilentlyContinue
     } else {
-        Get-InstalledModule -Name $ModuleName -AllVersions -ErrorAction SilentlyContinue
+        $installed = Get-InstalledModule -Name $ModuleName -AllVersions -ErrorAction SilentlyContinue
     }
     if (-not $installed) {
         Write-Host "No installed versions found for '$ModuleName'." -ForegroundColor Yellow
         return
     }
 
-    # Small helpers (no regex / no string split)
+    # Helpers (no regex, no -split)
     function Get-InferredScope([string]$path) {
         $homex = if ([Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) { $env:USERPROFILE } else { $env:HOME }
         try {
@@ -1175,95 +1194,88 @@ Emit objects describing planned/performed actions.
         return $moduleBase
     }
 
-    # Manifest-driven annotation (preferred), safe fallback if manifest missing
+    # Annotate (manifest-first; fallback IndexOf/Substring + [Version]::TryParse)
     $annotated = foreach ($m in $installed) {
-        $verStr = [string]$m.Version               # exact string as reported (may include prerelease)
-        $leaf   = $null
-        try { $leaf = Split-Path -Path $m.InstalledLocation -Leaf } catch {}
+        $verStr = [string]$m.Version
+        $maj = 0; $min = 0; $pat = -1; $rev = -1; $isPre = $false; $parseOk = $false
 
-        # Defaults
-        $maj = 0; $min = 0; $pat = -1; $rev = -1
-        $isPre = $false
-
-        # Try manifest first (built-in parser, no regex)
-        $manifest = $null
+        # Manifest
         $psd1 = Join-Path $m.InstalledLocation ($m.Name + '.psd1')
         if (-not (Test-Path -LiteralPath $psd1)) {
-            # fallback: first .psd1 in folder (rare layout)
             $cand = Get-ChildItem -LiteralPath $m.InstalledLocation -Filter *.psd1 -File -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($cand) { $psd1 = $cand.FullName }
         }
         if (Test-Path -LiteralPath $psd1) {
-            try { $manifest = Import-PowerShellDataFile -LiteralPath $psd1 -ErrorAction Stop } catch { $manifest = $null }
-        }
-
-        if ($manifest) {
-            # Version numbers via .NET Version.TryParse (safe; no throws)
-            $vRef = $null
-            $ok = [Version]::TryParse([string]$manifest.ModuleVersion, [ref]$vRef)
-            if ($ok -and $vRef) {
-                $maj = $vRef.Major
-                $min = $vRef.Minor
-                $pat = $vRef.Build    # -1 if not present
-                $rev = $vRef.Revision # -1 if not present
-            }
-            # prerelease via PrivateData.PSData.Prerelease
             try {
-                $pr = $manifest.PrivateData.PSData.Prerelease
-                if ($pr) { $isPre = $true }
-            } catch { }
+                $manifest = Import-PowerShellDataFile -LiteralPath $psd1 -ErrorAction Stop
+                $vRef = $null
+                if ([Version]::TryParse([string]$manifest.ModuleVersion, [ref]$vRef) -and $vRef) {
+                    $maj = $vRef.Major; $min = $vRef.Minor; $pat = $vRef.Build; $rev = $vRef.Revision
+                    $parseOk = $true
+                }
+                try { if ($manifest.PrivateData.PSData.Prerelease) { $isPre = $true } } catch {}
+            } catch {}
         }
-        else {
-            # Fallback: TryParse the portion before '-' (found via IndexOf) — no Split/regex
+        # Fallback if needed
+        if (-not $parseOk) {
             $base = $verStr
             $dash = $verStr.IndexOf('-')
             if ($dash -ge 0) {
-                $base  = $verStr.Substring(0, $dash)
+                $base = $verStr.Substring(0, $dash)
                 $isPre = $true
             }
-            $vRef = $null
-            if ([Version]::TryParse($base, [ref]$vRef) -and $vRef) {
-                $maj = $vRef.Major
-                $min = $vRef.Minor
-                $pat = $vRef.Build
-                $rev = $vRef.Revision
+            $vRef2 = $null
+            if ([Version]::TryParse($base, [ref]$vRef2) -and $vRef2) {
+                $maj = $vRef2.Major; $min = $vRef2.Minor; $pat = $vRef2.Build; $rev = $vRef2.Revision
+                $parseOk = $true
             }
         }
 
         [pscustomobject]@{
             Name              = $m.Name
-            VersionString     = $verStr                      # used for Uninstall-Module -RequiredVersion
+            VersionString     = $verStr
             InstalledLocation = $m.InstalledLocation
             Scope             = Get-InferredScope $m.InstalledLocation
             Sem               = [pscustomobject]@{
-                                   Major=$maj; Minor=$min; Patch=$pat; Revision=$rev; IsPrerelease=$isPre
+                                   Major=$maj; Minor=$min; Patch=$pat; Revision=$rev; IsPrerelease=$isPre; ParseOk=$parseOk
                                }
         }
     }
 
-    # Inform about AllUsers not processed
-    if ( ($annotated | Where-Object Scope -eq 'AllUsers') -and -not ($scopes -contains 'AllUsers') ) {
-        $au = $annotated | Where-Object Scope -eq 'AllUsers' | Sort-Object `
-              @{e={$_.Sem.Major};Descending=$true}, @{e={$_.Sem.Minor};Descending=$true}, `
-              @{e={$_.Sem.Patch};Descending=$true}, @{e={$_.Sem.Revision};Descending=$true}, `
-              @{e={ if ($_.Sem.IsPrerelease){0}else{1} };Descending=$true}
-        $auVersions = ($au | Select-Object -ExpandProperty VersionString) -join ', '
-        Write-Host "AllUsers installs detected for '$ModuleName': $auVersions. Run elevated to remove them." -ForegroundColor Yellow
+    # Heads-up if we won't process AllUsers
+    $hasAllUsers = $false
+    foreach ($x in $annotated) { if ($x.Scope -eq 'AllUsers') { $hasAllUsers = $true; break } }
+    if ($hasAllUsers -and -not ($scopes -contains 'AllUsers')) {
+        $vlist = ($annotated | Where-Object { $_.Scope -eq 'AllUsers' } | Select-Object -ExpandProperty VersionString) -join ', '
+        Write-Host "AllUsers installs detected for '$ModuleName': $vlist. Run elevated to remove them." -ForegroundColor Yellow
     }
 
-    # Sort keys & global keep (pure numeric + prerelease bit; no parsing)
+    # Sorting keys (stable preferred when numeric equal)
     $sortKeys = @(
-        @{e={$_.Sem.Major};Descending=$true},
-        @{e={$_.Sem.Minor};Descending=$true},
-        @{e={$_.Sem.Patch};Descending=$true},
-        @{e={$_.Sem.Revision};Descending=$true},
-        @{e={ if ($_.Sem.IsPrerelease){0}else{1} };Descending=$true} # stable wins when numbers equal
+        @{Expression = { $_.Sem.Major    }; Descending = $true},
+        @{Expression = { $_.Sem.Minor    }; Descending = $true},
+        @{Expression = { $_.Sem.Patch    }; Descending = $true},
+        @{Expression = { $_.Sem.Revision }; Descending = $true},
+        @{Expression = { if ($_.Sem.IsPrerelease) { 0 } else { 1 } }; Descending = $true}
     )
-    $sortedAll  = $annotated | Sort-Object @sortKeys
-    $globalKeep = switch ($Keep) {
-        'Stable'     { ($sortedAll | Where-Object { -not $_.Sem.IsPrerelease })[0]  ?? $sortedAll[0] }
-        'Prerelease' { ($sortedAll | Where-Object {      $_.Sem.IsPrerelease })[0]  ?? $sortedAll[0] }
-        default      { $sortedAll[0] }
+
+    # Global keep (guard empties)
+    $sortedAll = $annotated | Sort-Object -Property $sortKeys
+    if (-not $sortedAll -or $sortedAll.Count -eq 0) {
+        Write-Host "No candidates found after inventory for '$ModuleName'." -ForegroundColor Yellow
+        return
+    }
+    $globalKeep = $null
+    if ($Keep -eq 'Stable') {
+        $cands = $sortedAll | Where-Object { -not $_.Sem.IsPrerelease -and $_.Sem.ParseOk }
+        if (-not $cands -or $cands.Count -eq 0) { $cands = $sortedAll }
+        $globalKeep = $cands | Select-Object -First 1
+    } elseif ($Keep -eq 'Prerelease') {
+        $cands = $sortedAll | Where-Object { $_.Sem.IsPrerelease -and $_.Sem.ParseOk }
+        if (-not $cands -or $cands.Count -eq 0) { $cands = $sortedAll }
+        $globalKeep = $cands | Select-Object -First 1
+    } else {
+        $globalKeep = $sortedAll | Select-Object -First 1
     }
 
     $wasLoadedInitially = [bool](Get-Module -Name $ModuleName)
@@ -1271,33 +1283,63 @@ Emit objects describing planned/performed actions.
 
     # Per-scope cleanup
     foreach ($scope in @('CurrentUser','AllUsers')) {
-        $inScope = $annotated | Where-Object Scope -eq $scope
-        if (-not $inScope) { continue }
+        $inScope = $annotated | Where-Object { $_.Scope -eq $scope }
+        if (-not $inScope -or $inScope.Count -eq 0) { continue }
 
         if (-not ($scopes -contains $scope)) {
-            $skips = $inScope | Sort-Object @sortKeys | Select-Object -Skip 1
+            $skips = $inScope | Sort-Object -Property $sortKeys | Select-Object -Skip 1
             foreach ($s in $skips) {
                 if ($PassThru) { $summary += [pscustomobject]@{ Scope=$scope; Version=$s.VersionString; Action='Skipped (NotElevated/Mode)'; Path=$s.InstalledLocation } }
             }
             continue
         }
 
-        $sorted   = $inScope | Sort-Object @sortKeys
-        $keepItem = switch ($Keep) {
-            'Stable'     { ($sorted | Where-Object { -not $_.Sem.IsPrerelease })[0]  ?? $sorted[0] }
-            'Prerelease' { ($sorted | Where-Object {      $_.Sem.IsPrerelease })[0]  ?? $sorted[0] }
-            default      { $sorted[0] }
+        $rankable = $inScope | Where-Object { $_.Sem.ParseOk }
+        if (-not $rankable -or $rankable.Count -eq 0) {
+            Write-Host "[$scope] No rankable versions (manifest missing or unparsable). Nothing will be removed." -ForegroundColor Yellow
+            if ($PassThru) {
+                foreach ($x in $inScope) { $summary += [pscustomobject]@{ Scope=$scope; Version=$x.VersionString; Action='Skipped (Unrankable)'; Path=$x.InstalledLocation } }
+            }
+            continue
         }
-        if (-not $keepItem) { continue }
 
-        $toRemove = $sorted | Where-Object { $_.InstalledLocation -ne $keepItem.InstalledLocation }
+        $sorted   = $rankable | Sort-Object -Property $sortKeys
+        if (-not $sorted -or $sorted.Count -eq 0) {
+            Write-Host "[$scope] Nothing to sort." -ForegroundColor Yellow
+            continue
+        }
+
+        $keepItem = $null
+        if ($Keep -eq 'Stable') {
+            $ks = $sorted | Where-Object { -not $_.Sem.IsPrerelease }
+            if (-not $ks -or $ks.Count -eq 0) { $ks = $sorted }
+            $keepItem = $ks | Select-Object -First 1
+        } elseif ($Keep -eq 'Prerelease') {
+            $kp = $sorted | Where-Object { $_.Sem.IsPrerelease }
+            if (-not $kp -or $kp.Count -eq 0) { $kp = $sorted }
+            $keepItem = $kp | Select-Object -First 1
+        } else {
+            $keepItem = $sorted | Select-Object -First 1
+        }
+        if (-not $keepItem) { Write-Host "[$scope] No keep candidate found." -ForegroundColor Yellow; continue }
+
+        $toRemove = @()
+        foreach ($cand in $inScope) {
+            if ($cand.InstalledLocation -ne $keepItem.InstalledLocation) {
+                if ($cand.Sem.ParseOk) { $toRemove += $cand }
+                else {
+                    Write-Host ("[{0}] Protecting ambiguous '{1}'; not rankable -> skip removal." -f $scope, $cand.VersionString) -ForegroundColor Yellow
+                    if ($PassThru) { $summary += [pscustomobject]@{ Scope=$scope; Version=$cand.VersionString; Action='Skipped (Unrankable)'; Path=$cand.InstalledLocation } }
+                }
+            }
+        }
 
         if (-not $toRemove -or $toRemove.Count -eq 0) {
             Write-Host "[$scope] Nothing to remove. Keeping v$($keepItem.VersionString) (Keep=$Keep)." -ForegroundColor Green
             continue
         }
 
-        Write-Host ("[{0}] Keeping v{1} (Keep={2}) at '{3}'." -f $scope, $keepItem.VersionString, $Keep, $keepItem.InstalledLocation) -ForegroundColor Cyan
+        Write-Host ("[{0}] Keeping v{1} (Keep={2}) at '{3}'. Removing {4} older rankable version(s)." -f $scope, $keepItem.VersionString, $Keep, $keepItem.InstalledLocation, $toRemove.Count) -ForegroundColor Cyan
 
         foreach ($item in $toRemove) {
             $label = '{0} v{1} ({2})' -f $item.Name, $item.VersionString, $scope
@@ -1306,7 +1348,7 @@ Emit objects describing planned/performed actions.
                 continue
             }
 
-            # Unload exact version if loaded
+            # Unload exact version if currently loaded
             $loaded = Get-Module -Name $item.Name | Where-Object { $_.ModuleBase -eq $item.InstalledLocation }
             if ($loaded) {
                 try {
@@ -1317,10 +1359,10 @@ Emit objects describing planned/performed actions.
                 }
             }
 
-            # Uninstall (explicit, prerelease-aware)
+            # Uninstall exact version
             $removed = $false
             try {
-                if ($uninstallSupportsAllowPre -and ($item.Sem.IsPrerelease)) {
+                if ($uninstallSupportsAllowPre -and $item.Sem.IsPrerelease) {
                     Uninstall-Module -Name $item.Name -RequiredVersion $item.VersionString -AllowPrerelease -Force -ErrorAction Stop
                 } else {
                     Uninstall-Module -Name $item.Name -RequiredVersion $item.VersionString -Force -ErrorAction Stop
@@ -1339,28 +1381,30 @@ Emit objects describing planned/performed actions.
         }
     }
 
-    # Ensure the kept version is loaded at the end (when relevant)
-    $currentLoaded  = Get-Module -Name $ModuleName
-    $needEnsureLoad = $false
-    if ($wasLoadedInitially) { $needEnsureLoad = $true }
-    elseif ($currentLoaded) {
-        $match = $false
-        foreach ($m in $currentLoaded) {
-            if ($m.ModuleBase -eq $globalKeep.InstalledLocation) { $match = $true; break }
+    # Ensure the globally kept version is loaded at the end (when relevant)
+    if ($globalKeep) {
+        $currentLoaded  = Get-Module -Name $ModuleName
+        $needEnsureLoad = $false
+        if ($wasLoadedInitially) { $needEnsureLoad = $true }
+        elseif ($currentLoaded) {
+            $match = $false
+            foreach ($m in $currentLoaded) {
+                if ($m.ModuleBase -eq $globalKeep.InstalledLocation) { $match = $true; break }
+            }
+            if (-not $match) { $needEnsureLoad = $true }
         }
-        if (-not $match) { $needEnsureLoad = $true }
-    }
 
-    if ($needEnsureLoad -and $globalKeep) {
-        $ensureLabel = ('{0} v{1} (ensure loaded)' -f $globalKeep.Name, $globalKeep.VersionString)
-        if ($PSCmdlet.ShouldProcess($ensureLabel, 'Ensure kept version is loaded')) {
-            try { Remove-Module -Name $ModuleName -Force -ErrorAction SilentlyContinue } catch {}
-            $importTarget = Get-ImportTargetPath $globalKeep.InstalledLocation $globalKeep.Name
-            try {
-                Import-Module -Name $importTarget -Force -ErrorAction Stop
-                Write-Host ("Loaded kept version: {0} v{1}" -f $globalKeep.Name, $globalKeep.VersionString) -ForegroundColor Green
-            } catch {
-                Write-Host ("Failed to load kept version {0} v{1}: {2}" -f $globalKeep.Name, $globalKeep.VersionString, $_.Exception.Message) -ForegroundColor Red
+        if ($needEnsureLoad) {
+            $ensureLabel = ('{0} v{1} (ensure loaded)' -f $globalKeep.Name, $globalKeep.VersionString)
+            if ($PSCmdlet.ShouldProcess($ensureLabel, 'Ensure kept version is loaded')) {
+                try { Remove-Module -Name $ModuleName -Force -ErrorAction SilentlyContinue } catch {}
+                $importTarget = Get-ImportTargetPath $globalKeep.InstalledLocation $globalKeep.Name
+                try {
+                    Import-Module -Name $importTarget -Force -ErrorAction Stop
+                    Write-Host ("Loaded kept version: {0} v{1}" -f $globalKeep.Name, $globalKeep.VersionString) -ForegroundColor Green
+                } catch {
+                    Write-Host ("Failed to load kept version {0} v{1}: {2}" -f $globalKeep.Name, $globalKeep.VersionString, $_.Exception.Message) -ForegroundColor Red
+                }
             }
         }
     }

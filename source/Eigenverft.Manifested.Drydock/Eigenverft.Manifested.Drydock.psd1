@@ -12,7 +12,7 @@
 RootModule = 'Eigenverft.Manifested.Drydock.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.20255.55433'
+ModuleVersion = '0.20255.55461'
 
 # Supported PSEditions
 CompatiblePSEditions = @('Desktop','Core')
@@ -30,7 +30,7 @@ CompanyName = ''
 Copyright = 'Copyright (c) 2025 Eigenverft'
 
 # Description of the functionality provided by this module
-Description = 'PowerShell helper functions for the Eigenverft Manifested Drydock project, focused on building and deploying locally and in CI/CD; see .github/workflow/main.ps1 and .yml for how it works.'
+Description = 'PowerShell helper functions for the Eigenverft Manifested Drydock, optimized for lightning-fast iteration and reliable local + CI/CD workflows. Expect frequent releases—auto-versioning is built in. Tasks are parity-driven: the same commands run locally and in CI/CD, so local builds remain fully functional even if the pipeline is down.'
 
 # Minimum version of the PowerShell engine required by this module
 PowerShellVersion = '5.1'
@@ -51,7 +51,7 @@ PowerShellVersion = '5.1'
 # ProcessorArchitecture = ''
 
 # Modules that must be imported into the global environment prior to importing this module
-# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20255.55433'; })
+# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20255.55461'; })
 
 # Assemblies that must be loaded prior to importing this module
 # RequiredAssemblies = @()
@@ -89,6 +89,7 @@ FunctionsToExport = @(
     'Find-FilesByPattern',
     'Test-VariableValue',
     'Test-CommandAvailable',
+    'Test-ModuleAvailable',
     'Get-RunEnvironment',
     'Get-ConfigValue',
     'Initialize-PowerShellMiniBootstrap',

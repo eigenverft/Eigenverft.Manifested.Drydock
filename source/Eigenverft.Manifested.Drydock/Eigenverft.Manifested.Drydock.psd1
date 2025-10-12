@@ -79,29 +79,32 @@ FunctionsToExport = @(
 
     'Write-ConsoleLog',
 
-    'Convert-DateTimeTo64SecVersionComponents',
-    'Convert-64SecVersionComponentsToDateTime',
-    'Convert-DateTimeTo64SecPowershellVersion',
-    'Convert-64SecPowershellVersionToDateTime',
-
     'Update-ManifestModuleVersion',
     'Update-ManifestReleaseNotes',
     'Update-ManifestPrerelease',
 
     'Find-FilesByPattern',
-    'Test-VariableValue',
-    'Test-CommandAvailable',
-    'Test-ModuleAvailable',
     'Get-RunEnvironment',
     'Get-ConfigValue',
     'Initialize-PowerShellMiniBootstrap',
     'Import-Script',
     'Export-OfflineModuleBundle',
     'Use-Tls12',
-    'New-CompatScheduledTask',
     'Find-ModuleScopeClutter',
     'Uninstall-PreviousModuleVersions',
-    'Convert-BranchToDeploymentInfo'
+    'Convert-BranchToDeploymentInfo',
+
+    'New-CompatScheduledTask',
+
+    'Test-VariableValue',
+    'Test-CommandAvailable',
+    'Test-ModuleAvailable',
+    'Test-PsGalleryPublishPrereqsOffline',
+
+    'Convert-DateTimeTo64SecVersionComponents',
+    'Convert-64SecVersionComponentsToDateTime',
+    'Convert-DateTimeTo64SecPowershellVersion',
+    'Convert-64SecPowershellVersionToDateTime'
     )
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.

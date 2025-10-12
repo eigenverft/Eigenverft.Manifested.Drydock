@@ -316,3 +316,143 @@ function Test-ModuleAvailable {
 
     if ($Quiet) { return $false } else { return $null }
 }
+
+function Test-PsGalleryPublishPrereqsOffline {
+<#
+.SYNOPSIS
+Local diagnostics for PowerShell Gallery publish prerequisites.
+
+.DESCRIPTION
+Performs non-network checks to assess whether the host is prepared for `Publish-Module`:
+- On Windows PowerShell 5.x, verifies TLS 1.2 flag is present.
+- Confirms NuGet package provider (>= 2.8.5.201) is installed.
+- Confirms PackageManagement and PowerShellGet modules are present and importable.
+- Confirms the PSGallery repository is registered and includes publish endpoints.
+Writes human-readable status lines via Write-Host and returns nothing.
+
+.PARAMETER ThrowOnFailure
+If supplied, throws after checks when any prerequisite is missing.
+
+.PARAMETER ExitOnFailure
+If supplied, exits the host with code 1 after checks when any prerequisite is missing.
+NOTE: This terminates the current PowerShell host. Use in CI pipelines or scripts only.
+
+.EXAMPLE
+Test-PsGalleryPublishPrereqsOffline
+
+.EXAMPLE
+Test-PsGalleryPublishPrereqsOffline -ThrowOnFailure
+
+.EXAMPLE
+Test-PsGalleryPublishPrereqsOffline -ExitOnFailure
+#>
+    [CmdletBinding()]
+    param(
+        [switch]$ThrowOnFailure,
+        [switch]$ExitOnFailure
+    )
+
+    # Internal state
+    $overallOk = $true
+    $failures  = New-Object System.Collections.Generic.List[string]
+    $isDesktop = ($PSVersionTable.PSEdition -eq 'Desktop')
+    $psv       = $PSVersionTable.PSVersion.ToString()
+
+    # Helper: formatted line with OK/FAIL, color, and detail; collects failing names
+    function _print([string]$name, [bool]$ok, [string]$detail) {
+        if (-not $ok) {
+            $script:overallOk = $false
+            [void]$script:failures.Add($name)
+        }
+        $tag   = if ($ok) { 'OK' } else { 'FAIL' }
+        $color = if ($ok) { 'Green' } else { 'Red' }
+        Write-Host ("[{0}] {1}: {2}" -f $tag, $name, $detail) -ForegroundColor $color
+    }
+
+    Write-Host ("--- PowerShell Gallery Publish Prerequisite Check (PS {0}, Edition: {1}) ---" -f $psv, $PSVersionTable.PSEdition) -ForegroundColor Cyan
+
+    # TLS 1.2 (Windows PowerShell only)
+    $tlsOk = $true
+    $tlsDetail = "Not applicable on $($PSVersionTable.PSEdition)"
+    if ($isDesktop) {
+        try {
+            $tls = [Net.ServicePointManager]::SecurityProtocol
+            $tlsOk = (($tls -band [Net.SecurityProtocolType]::Tls12) -ne 0)
+            $tlsDetail = if ($tlsOk) { 'TLS 1.2 present' } else { 'TLS 1.2 not present' }
+        } catch {
+            $tlsOk = $false
+            $tlsDetail = 'Unable to read SecurityProtocol'
+        }
+    }
+    _print 'TLS (Desktop only)' $tlsOk $tlsDetail
+
+    # NuGet package provider (>= 2.8.5.201)
+    $nugetOk = $false
+    $nugetDetail = 'Not found'
+    try {
+        $nuget = Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue
+        if ($nuget) {
+            $nugetOk = ($nuget.Version -ge [version]'2.8.5.201')
+            $nugetDetail = "Found $($nuget.Version)" + ($(if(-not $nugetOk){' (need >= 2.8.5.201)'} else {''}))
+        }
+    } catch {}
+    _print 'NuGet provider' $nugetOk $nugetDetail
+
+    # PackageManagement module present & importable
+    $pmOk = $false
+    $pmDetail = 'Not found'
+    try {
+        $pm = Get-Module -ListAvailable -Name PackageManagement | Sort-Object Version -Descending | Select-Object -First 1
+        if ($pm) {
+            try { Import-Module PackageManagement -MinimumVersion $pm.Version -Force -ErrorAction Stop | Out-Null } catch {}
+            $pmOk = $true
+            $pmDetail = "Found $($pm.Version)"
+        }
+    } catch {}
+    _print 'PackageManagement module' $pmOk $pmDetail
+
+    # PowerShellGet module present & importable
+    $psgOk = $false
+    $psgDetail = 'Not found'
+    try {
+        $psg = Get-Module -ListAvailable -Name PowerShellGet | Sort-Object Version -Descending | Select-Object -First 1
+        if ($psg) {
+            try { Import-Module PowerShellGet -MinimumVersion $psg.Version -Force -ErrorAction Stop | Out-Null } catch {}
+            $psgOk = $true
+            $psgDetail = "Found $($psg.Version)"
+        }
+    } catch {}
+    _print 'PowerShellGet module' $psgOk $psgDetail
+
+    # PSGallery repository registration & publish endpoints (metadata only; no network)
+    $repoOk = $false
+    $repoDetail = 'Not registered'
+    $pubOk = $false
+    $pubDetail = 'Publish endpoints missing'
+    try {
+        $repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+        if ($repo) {
+            $repoOk = $true
+            $repoDetail = 'Registered'
+            $pubOk = [bool]$repo.PublishLocation -and [bool]$repo.ScriptPublishLocation -and ($repo.PublishLocation.ToString() -match '/api/v2/package/')
+            $pubDetail = if ($pubOk) { 'Publish endpoints present' } else { 'Publish endpoints missing' }
+        }
+    } catch {}
+    _print 'PSGallery repository' $repoOk $repoDetail
+    _print 'PSGallery publish endpoints' $pubOk $pubDetail
+
+    # Summary and failure handling
+    if ($overallOk) {
+        Write-Host '[SUMMARY] Prerequisite check PASSED.' -ForegroundColor Green
+    } else {
+        Write-Host ('[SUMMARY] Prerequisite check FAILED: {0}.' -f ($failures -join ', ')) -ForegroundColor Red
+        if ($ThrowOnFailure) {
+            throw ("Prereq check failed: {0}." -f ($failures -join ', '))
+        } elseif ($ExitOnFailure) {
+            $global:LASTEXITCODE = 1
+            exit 1
+        }
+    }
+
+    return  # no output object
+}

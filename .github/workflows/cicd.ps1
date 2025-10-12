@@ -1,5 +1,5 @@
 param (
-    [string]$POWERSHELL_GALLERY
+    [string]$PsGalleryApiKey
 ) 
 
 # Keep this script compatible with PowerShell 5.1 and PowerShell 7+
@@ -11,10 +11,10 @@ Write-Host "Powershell script $(Split-Path -Leaf $PSCommandPath) has started."
 # Designed to short-circuit local and CI/CD workflows when dependencies are offline (e.g., skip a push if the Git host is unreachable).
 . "$PSScriptRoot\cicd.bootstrap.ps1"
 
-$remoteRessourcesOk = Test-RemoteRessourcesAvailable -Quiet
+$remoteResourcesOk = Test-RemoteRessourcesAvailable -Quiet
 
 # Ensure connectivity to PowerShell Gallery before attempting module installation, if not assuming being offline, installation is present check existance with Test-ModuleAvailable
-if ($remoteRessourcesOk)
+if ($remoteResourcesOk)
 {
     # Install the required modules to run this script, Eigenverft.Manifested.Drydock needs to be Powershell 5.1 and Powershell 7+ compatible
     Install-Module -Name 'Eigenverft.Manifested.Drydock' -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber -AllowPrerelease -ErrorAction Stop
@@ -29,12 +29,12 @@ Initialize-PowerShellMiniBootstrap
 Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
 
 # Import optional integration script if it exists
-Import-Script -File @("$PSScriptRoot\cicd.integration.ps1") -ErrorIfMissing
+Import-Script -File @("$PSScriptRoot\cicd.integration.ps1")
 Write-IntegrationMsg -Message "This function is defined in the optional integration script. That should be integrated into this main module script."
 
 # In the case the secrets are not passed as parameters, try to get them from the secrets file, local development or CI/CD environment
-$POWERSHELL_GALLERY = Get-ConfigValue -Check $POWERSHELL_GALLERY -FilePath (Join-Path $PSScriptRoot 'cicd.secrets.json') -Property 'POWERSHELL_GALLERY'
-Test-VariableValue -Variable { $POWERSHELL_GALLERY } -ExitIfNullOrEmpty -HideValue
+$PsGalleryApiKey = Get-ConfigValue -Check $PsGalleryApiKey -FilePath (Join-Path $PSScriptRoot 'cicd.secrets.json') -Property 'PsGalleryApiKey'
+Test-VariableValue -Variable { $PsGalleryApiKey } -ExitIfNullOrEmpty -HideValue
 
 # Verify required commands are available
 if ($cmd = Test-CommandAvailable -Command "git") { Write-Host "Test-CommandAvailable: $($cmd.Name) $($cmd.Version) found at $($cmd.Source)" } else { Write-Error "git not found"; exit 1 }
@@ -74,7 +74,7 @@ Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPre
 Write-Host "===> Testing module manifest at: $($manifestFile.FullName)" -ForegroundColor Cyan
 Test-ModuleManifest -Path $($manifestFile.FullName)
 
-if ($remoteRessourcesOk)
+if ($remoteResourcesOk)
 {
     try {
         Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$POWERSHELL_GALLERY" -ErrorAction Stop    
@@ -85,7 +85,7 @@ if ($remoteRessourcesOk)
 }
 
 
-if ($remoteRessourcesOk)
+if ($remoteResourcesOk)
 {
     if ($($runEnvironment.IsCI)) {
         Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Auto ver bump from CICD to $($generatedVersion.VersionFull) [skip ci]" -Tags @( "$($generatedVersion.VersionFull)-$($deploymentInfo.Affix.Label)" ) -ErrorAction Stop

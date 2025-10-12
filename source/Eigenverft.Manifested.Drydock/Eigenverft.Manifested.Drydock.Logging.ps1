@@ -16,7 +16,16 @@ The message to log. Mandatory and non-empty.
 Severity tag. One of: TRC, DBG, INF, WRN, ERR, FTL. Defaults to INF.
 
 .PARAMETER LocalTime
-Switch. When present, uses local time instead of UTC.
+When present, uses local time instead of UTC.
+
+.PARAMETER ContinueOnError
+When present, do NOT exit on ERR/FTL. By default the function exits on ERR (code 1) and FTL (code 2).
+
+.PARAMETER QuietExceptCritical
+Suppress all output except ERR and FTL.
+
+.PARAMETER QuietExceptWarning
+Suppress all output except WRN, ERR, and FTL.
 
 .EXAMPLE
 function MakeDirs {
@@ -24,15 +33,26 @@ function MakeDirs {
 }
 MakeDirs
 # -> [2025-10-12 04:47:17:265 INF] [out.ps1] [makedirs] Dirscreated.
-# (timestamp is in UTC)
+
+.EXAMPLE
+# Use in try/catch; include the error message via $_ and keep running.
+try {
+    Throw "Something went wrong."
+}
+catch {
+    # Default would exit on ERR; add -ContinueOnError to log and continue.
+    # Write-ConsoleLog -Level ERR -ContinueOnError -Message ("Caught error: {0}" -f $_.Exception.Message)
+    # Alternatively include the whole error record:
+    # Write-ConsoleLog -Level ERR -ContinueOnError -Message ("Caught error: {0}" -f $_)
+}
 
 .EXAMPLE
 Write-ConsoleLog -Message 'customtext.' -Level WRN -LocalTime
 # -> [2025-10-12 06:47:17:265 WRN] [fileofthefunction] [functionnameinfile] customtext.
-# (timestamp is in local time)
 
 .NOTES
-Help is inside the function so it travels when copied.
+- Default: exit on ERR (1) and FTL (2). Use -ContinueOnError to keep going.
+- If both quiet switches are supplied, QuietExceptCritical takes precedence.
 #>
     [CmdletBinding()]
     param(
@@ -45,14 +65,23 @@ Help is inside the function so it travels when copied.
         [string]$Level = 'INF',
 
         [Parameter()]
-        [switch]$LocalTime
+        [switch]$LocalTime,
+
+        [Parameter()]
+        [switch]$ContinueOnError,
+
+        [Parameter()]
+        [switch]$QuietExceptCritical,
+
+        [Parameter()]
+        [switch]$QuietExceptWarning
     )
 
-    # Reviewer: Deterministic timestamp; UTC default unless -LocalTime is set.
+    # Timestamp (UTC by default).
     $now = if ($LocalTime.IsPresent) { Get-Date } else { [DateTime]::UtcNow }
     $ts  = $now.ToString('yyyy-MM-dd HH:mm:ss:fff')
 
-    # Reviewer: Get first caller that's not this function.
+    # Resolve file/function from call stack.
     $self   = $MyInvocation.MyCommand.Name
     $caller = Get-PSCallStack | Where-Object { $_.FunctionName -ne $self } | Select-Object -First 1
     if (-not $caller) {
@@ -64,7 +93,6 @@ Help is inside the function so it travels when copied.
         }
     }
 
-    # Prefer ScriptName; fall back to Location; else 'console'.
     $file =
         if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName }
         elseif ($caller.Location -and $caller.Location -match '^(.*?):\d+') { Split-Path -Leaf $Matches[1] }
@@ -75,9 +103,31 @@ Help is inside the function so it travels when copied.
         elseif ($caller.Command)  { $caller.Command }
         else { '<scriptblock>' }
 
-    $lvl  = $Level.ToUpperInvariant()
+    $lvl = $Level.ToUpperInvariant()
+
+    # Severity ranking.
+    $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
+    $sev    = $sevMap[$lvl]
+
+    # Quieting rules (QuietExceptCritical is stricter; give it precedence).
+    $shouldWrite = $true
+    if ($QuietExceptCritical.IsPresent) {
+        if ($sev -lt 4) { $shouldWrite = $false }
+    }
+    elseif ($QuietExceptWarning.IsPresent) {
+        if ($sev -lt 3) { $shouldWrite = $false }
+    }
+
+    # Format the line.
     $line = "[{0} {1}] [{2}] [{3}] {4}" -f $ts, $lvl, $file, $func.ToLower(), $Message
 
-    # Reviewer: Write-Host ensures immediate console rendering in PS5.
-    Write-Host $line
+    if ($shouldWrite) {
+        Write-Host $line
+    }
+
+    # Default: stop on ERR/FTL unless -ContinueOnError is specified.
+    if (-not $ContinueOnError.IsPresent -and $sev -ge 4) {
+        exit (if ($sev -ge 5) { 2 } else { 1 })
+    }
 }
+

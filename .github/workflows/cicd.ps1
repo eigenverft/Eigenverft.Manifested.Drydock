@@ -22,7 +22,7 @@ if ($remoteRessourcesOk)
 
 if ($m = Test-ModuleAvailable -Name 'Eigenverft.Manifested.Drydock') { Write-Host "$($m.Name) $($m.Version)" } else { Write-Error "Eigenverft.Manifested.Drydock (stable) not found"; exit 1 }
 
-#Write-ConsoleLog -Level INF -Message 'Dirscreated.'
+
 
 # Required for updating PowerShellGet and PackageManagement providers in local PowerShell 5.x environments
 Initialize-PowerShellMiniBootstrap

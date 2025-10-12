@@ -48,67 +48,6 @@ function Register-LocalGalleryRepository {
     Write-Host "Local repository '$RepositoryName' registered at: $RepositoryPath" -ForegroundColor Green
 }
 
-function Update-ManifestModuleVersion {
-    <#
-    .SYNOPSIS
-        Updates the ModuleVersion in a PowerShell module manifest (psd1) file.
-
-    .DESCRIPTION
-        This function reads a PowerShell module manifest file as text, uses a regular expression to update the
-        ModuleVersion value while preserving the file's comments and formatting, and writes the updated content back
-        to the file. If a directory path is supplied, the function recursively searches for the first *.psd1 file and uses it.
-
-    .PARAMETER ManifestPath
-        The file or directory path to the module manifest (psd1) file. If a directory is provided, the function will
-        search recursively for the first *.psd1 file.
-
-    .PARAMETER NewVersion
-        The new version string to set for the ModuleVersion property.
-
-    .EXAMPLE
-        PS C:\> Update-ManifestModuleVersion -ManifestPath "C:\projects\MyDscModule" -NewVersion "2.0.0"
-        Updates the ModuleVersion of the first PSD1 manifest found in the given directory to "2.0.0".
-    #>
-    [CmdletBinding()]
-    [alias("ummv")]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ManifestPath,
-
-        [Parameter(Mandatory = $true)]
-        [string]$NewVersion
-    )
-
-    # Check if the provided path exists
-    if (-not (Test-Path $ManifestPath)) {
-        throw "The path '$ManifestPath' does not exist."
-    }
-
-    # If the path is a directory, search recursively for the first *.psd1 file.
-    $item = Get-Item $ManifestPath
-    if ($item.PSIsContainer) {
-        $psd1File = Get-ChildItem -Path $ManifestPath -Filter *.psd1 -Recurse | Select-Object -First 1
-        if (-not $psd1File) {
-            throw "No PSD1 manifest file found in directory '$ManifestPath'."
-        }
-        $ManifestPath = $psd1File.FullName
-    }
-
-    Write-Verbose "Using manifest file: $ManifestPath"
-
-    # Read the manifest file content as text using .NET method.
-    $content = [System.IO.File]::ReadAllText($ManifestPath)
-
-    # Define the regex pattern to locate the ModuleVersion value.
-    $pattern = "(?<=ModuleVersion\s*=\s*')[^']+(?=')"
-
-    # Replace the current version with the new version using .NET regex.
-    $updatedContent = [System.Text.RegularExpressions.Regex]::Replace($content, $pattern, $NewVersion)
-
-    # Write the updated content back to the manifest file.
-    [System.IO.File]::WriteAllText($ManifestPath, $updatedContent)
-}
-
 function Update-ModuleIfNewer {
     <#
     .SYNOPSIS

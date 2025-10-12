@@ -1076,12 +1076,12 @@ PS> Install-ModulesFromRepoFolder -Folder C:\repo -Name Pester,PSScriptAnalyzer
 function Uninstall-PreviousModuleVersions {
 <#
 .SYNOPSIS
-Removes older versions of a PowerShell module, keeping only the latest per scope.
+Removes older versions of a PowerShell module, keeping only one per scope according to a keep policy.
 
 .DESCRIPTION
 Default Mode=Auto. If the session is elevated (Administrator on Windows or root on Unix), it cleans both CurrentUser and AllUsers.
 If not elevated, it cleans only CurrentUser and reports AllUsers installs that cannot be removed.
-Works on Windows PowerShell 5.1 and PowerShell 7+ on Windows/Linux/macOS.
+Supports prerelease versions and can prefer keeping Stable or Prerelease.
 
 .PARAMETER ModuleName
 Name of the module to clean. Older versions beyond the newest per scope are removed.
@@ -1089,22 +1089,27 @@ Name of the module to clean. Older versions beyond the newest per scope are remo
 .PARAMETER Mode
 Auto (default), CurrentUser, AllUsers, Both. In non-elevated sessions, AllUsers removals are skipped and reported.
 
+.PARAMETER Keep
+Any (default): keep absolute latest (stable or prerelease).
+Stable: keep latest stable; if none exist, keep latest prerelease.
+Prerelease: keep latest prerelease; if none exist, keep latest stable.
+
 .PARAMETER PassThru
 Emit a summary of planned/performed actions as objects.
 
 .EXAMPLE
 Uninstall-PreviousModuleVersions -ModuleName 'Pester'
-Cleans old versions in Auto mode.
+Cleans old versions in Auto mode, keeping the absolute latest (stable or prerelease).
 
 .EXAMPLE
-Uninstall-PreviousModuleVersions -ModuleName 'Az' -WhatIf
-Shows what would be removed without making changes.
+Uninstall-PreviousModuleVersions -ModuleName 'Az' -Keep Stable -WhatIf
+Shows what would be removed, preferring to keep the latest stable version.
 
 .OUTPUTS
 System.Object (when -PassThru is used)
 
 .NOTES
-Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one latest version per scope.
+Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one version per scope based on -Keep.
 #>
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
     [Alias('romv')]
@@ -1115,6 +1120,9 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one latest vers
         [ValidateSet('Auto','CurrentUser','AllUsers','Both')]
         [string]$Mode = 'Auto',
 
+        [ValidateSet('Any','Stable','Prerelease')]
+        [string]$Keep = 'Any',
+
         [switch]$PassThru
     )
 
@@ -1124,7 +1132,7 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one latest vers
         return
     }
 
-    # --- Elevation + OS detection (names chosen to avoid $IsWindows collision on PS7) ---
+    # --- Elevation + OS detection (avoid $IsWindows collisions on PS7) ---
     $onWindowsOS = $false
     try { $onWindowsOS = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT } catch { $onWindowsOS = $true }
 
@@ -1150,7 +1158,15 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one latest vers
     }
 
     try {
-        $installed = Get-InstalledModule -Name $ModuleName -AllVersions -ErrorAction SilentlyContinue
+        # Include prerelease installs when supported.
+        $cmd = Get-Command Get-InstalledModule
+        $hasAllowPre = $cmd.Parameters.ContainsKey('AllowPrerelease')
+        if ($hasAllowPre) {
+            $installed = Get-InstalledModule -Name $ModuleName -AllVersions -AllowPrerelease -ErrorAction SilentlyContinue
+        } else {
+            $installed = Get-InstalledModule -Name $ModuleName -AllVersions -ErrorAction SilentlyContinue
+        }
+
         if (-not $installed) {
             Write-Host "No installed module found with the name '$ModuleName'." -ForegroundColor Yellow
             return
@@ -1182,7 +1198,7 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one latest vers
         }
         $userRoots = $userRoots | Sort-Object -Unique
 
-        # Annotate each install with inferred scope (CurrentUser if under user roots; otherwise AllUsers).
+        # Annotate each install with inferred scope + prerelease flag (PS5-safe).
         $annotated = foreach ($m in $installed) {
             $p = $m.InstalledLocation
             try { if ($p) { $p = [IO.Path]::GetFullPath($p) } } catch { }
@@ -1195,21 +1211,30 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one latest vers
                 }
             }
 
-            # PS5-safe: compute value first (avoid inline 'if' in hashtable)
-            $scopeLabel = 'AllUsers'
-            if ($isUserScope) { $scopeLabel = 'CurrentUser' }
+            $scopeLabel = if ($isUserScope) { 'CurrentUser' } else { 'AllUsers' }
+
+            # Folder version string for exact targeting (handles prerelease labels).
+            $reqVersion = $null
+            try { if ($p) { $reqVersion = Split-Path -Path $p -Leaf } } catch { }
+
+            # Detect prerelease by hyphen in folder version (e.g., 1.2.3-beta1).
+            $verStr = if ($reqVersion) { $reqVersion } else { [string]$m.Version }
+            $isPrerelease = $false
+            if ($verStr -match '\-[A-Za-z0-9]') { $isPrerelease = $true }
 
             [pscustomobject]@{
                 Name              = $m.Name
                 Version           = $m.Version
                 InstalledLocation = $p
                 Scope             = $scopeLabel
+                RequiredVersion   = $reqVersion
+                IsPrerelease      = $isPrerelease
             }
         }
 
         # --- Extra report for AllUsers when that scope isn't processed (e.g., not elevated in Auto) ---
         if ( ($annotated | Where-Object Scope -eq 'AllUsers') -and -not ($scopesToProcess -contains 'AllUsers') ) {
-            $allAU   = $annotated | Where-Object Scope -eq 'AllUsers' | Sort-Object Version -Descending
+            $allAU    = $annotated | Where-Object Scope -eq 'AllUsers' | Sort-Object Version -Descending
             $auLatest = $allAU[0]
             $auOld    = $allAU | Select-Object -Skip 1
 
@@ -1253,23 +1278,41 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one latest vers
                 continue
             }
 
-            # Keep exactly the newest version in this scope; remove all others.
+            # Sort newest -> oldest by Version (PowerShellGet provides a comparable Version).
             $sorted = $inScope | Sort-Object Version -Descending
-            $latest = $sorted[0]
-            $old    = $sorted | Select-Object -Skip 1
+
+            # Choose what to keep based on -Keep policy (with sensible fallbacks).
+            switch ($Keep) {
+                'Stable' {
+                    $candidates = $sorted | Where-Object { -not $_.IsPrerelease }
+                    if ($candidates) { $latest = $candidates[0] } else { $latest = $sorted[0] }
+                }
+                'Prerelease' {
+                    $candidates = $sorted | Where-Object { $_.IsPrerelease }
+                    if ($candidates) { $latest = $candidates[0] } else { $latest = $sorted[0] }
+                }
+                default { # 'Any'
+                    $latest = $sorted[0]
+                }
+            }
+
+            # Everything except the selected 'latest' is removable.
+            $old = $sorted | Where-Object { $_ -ne $latest }
 
             if (-not $old) {
-                Write-Host "[$scope] Only one version present (v$($latest.Version)). Nothing to remove in $scope." -ForegroundColor Green
+                Write-Host "[$scope] Only one version present (kept v$($latest.Version), keep=$Keep). Nothing to remove in $scope." -ForegroundColor Green
                 continue
             }
 
-            Write-Host ("[{0}] Retaining latest v{1} at '{2}'." -f $scope, $latest.Version, $latest.InstalledLocation) -ForegroundColor Cyan
+            Write-Host ("[{0}] Retaining keep={1} v{2} at '{3}'." -f $scope, $Keep, $latest.Version, $latest.InstalledLocation) -ForegroundColor Cyan
 
             foreach ($item in $old) {
                 $target = "{0} v{1} ({2})" -f $item.Name, $item.Version, $scope
                 if ($PSCmdlet.ShouldProcess($target, 'Uninstall-Module')) {
                     try {
-                        Uninstall-Module -Name $item.Name -RequiredVersion $item.Version -Force -ErrorAction Stop
+                        # Use folder-version string when available (supports prerelease labels like 1.2.3-beta1).
+                        $reqVer = if ($item.RequiredVersion) { $item.RequiredVersion } else { [string]$item.Version }
+                        Uninstall-Module -Name $item.Name -RequiredVersion $reqVer -Force -ErrorAction Stop
                         Write-Host ("[{0}] Removed v{1} from '{2}'." -f $scope, $item.Version, $item.InstalledLocation) -ForegroundColor Green
                         if ($PassThru) { $summary += [pscustomobject]@{ Scope=$scope; Version=$item.Version; Action='Removed'; Path=$item.InstalledLocation } }
                     } catch {
@@ -1282,7 +1325,7 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one latest vers
             }
         }
 
-        Write-Host ("Cleanup complete (mode: {0}, elevated: {1}, processed scopes: {2})." -f $Mode, $isElevated, ($scopesToProcess -join ', ')) -ForegroundColor Green
+        Write-Host ("Cleanup complete (mode: {0}, keep: {1}, elevated: {2}, processed scopes: {3})." -f $Mode, $Keep, $isElevated, ($scopesToProcess -join ', ')) -ForegroundColor Green
         if ($PassThru) { $summary }
     }
     catch {
@@ -1597,6 +1640,11 @@ function Update-ManifestPrerelease {
       (single-quoted, double-quoted, or here-string).
     - If -NewPrerelease is '' (empty) or $null, keeps the 'Prerelease' assignment but sets it to an
       empty string: Prerelease = ''  (for here-strings, converts to a single-quoted empty value).
+    - Recognizes and "activates" commented-out assignments such as:
+        # Prerelease = 'dev'
+        #Prerelease = 'dev'
+        # # # Prerelease = 'dev'
+        ### ## Prerelease = 'dev'
     - Raw-text approach; PS 5.1 and 7+ compatible.
 
 .PARAMETER ManifestPath
@@ -1642,11 +1690,12 @@ function Update-ManifestPrerelease {
     $optsLine = $optsAll -bor [System.Text.RegularExpressions.RegexOptions]::Multiline
     $optsHere = $optsLine -bor [System.Text.RegularExpressions.RegexOptions]::Singleline
 
-    # Precompute escapes for non-empty replacements
-    $encSQ = if ([string]::IsNullOrEmpty($NewPrerelease)) { '' } else { $NewPrerelease -replace "'", "''" }
-    $encDQ = if ([string]::IsNullOrEmpty($NewPrerelease)) { '' } else { $NewPrerelease -replace '(["`$])','`$1' }
+    # Reviewer: Precompute escapes for quoted contexts when setting a non-empty value.
+    $isEmpty = [string]::IsNullOrEmpty($NewPrerelease)
+    $encSQ = if ($isEmpty) { '' } else { $NewPrerelease -replace "'", "''" }
+    $encDQ = if ($isEmpty) { '' } else { $NewPrerelease -replace '(["`$])','`$1' }
 
-    # Patterns in one list; we stop on the first match.
+    # Supported active assignment forms; stop on the first match.
     $defs = @(
         # Here-strings first (line-anchored)
         @{ Style='hsq'; Options=$optsHere; Pattern='^(?<indent>[ \t]*)\bPrerelease\s*=\s*@''(?<content>.*?)''@(?<trail>[ \t]*#.*)?(?<nl>\r?\n?)' }
@@ -1656,32 +1705,32 @@ function Update-ManifestPrerelease {
         @{ Style='dq' ; Options=$optsLine; Pattern='(?<prefix>\bPrerelease\s*=\s*")(?<content>(?:``.|`"|[^"])*)?(?<suffix>")' }
     )
 
+    # Track whether any (active or commented) assignment was located.
+    $matched = $false
+
     foreach ($d in $defs) {
         $rx = [regex]::new($d.Pattern, $d.Options)
         if (-not $rx.IsMatch($content)) { continue }
 
+        $matched = $true
+
         $content = $rx.Replace($content, {
             param($m)
-
             switch ($d.Style) {
-                # Here-strings: if empty -> convert to single-quoted empty; else keep HS and inject content.
+                # Here-strings: if empty -> convert to single-quoted empty; else keep here-string style.
                 'hsq' {
-                    if ([string]::IsNullOrEmpty($NewPrerelease)) {
+                    if ($isEmpty) {
                         $m.Groups['indent'].Value + "Prerelease = ''" + $m.Groups['trail'].Value + $m.Groups['nl'].Value
-                    }
-                    else {
-                        $m.Groups['indent'].Value + "Prerelease = @'"+ $m.Groups['content'].Value.GetType() | Out-Null
-                        "@"
+                    } else {
+                        $m.Groups['indent'].Value + "Prerelease = @'" + $NewPrerelease + "'@" + $m.Groups['trail'].Value + $m.Groups['nl'].Value
                     }
                 }
                 'hdq' {
-                    if ([string]::IsNullOrEmpty($NewPrerelease)) {
+                    if ($isEmpty) {
                         $m.Groups['indent'].Value + "Prerelease = ''" + $m.Groups['trail'].Value + $m.Groups['nl'].Value
-                    }
-                    else {
-                        $m.Groups['indent'].Value + "@"
-                        # We escape for double-quoted HS (expandable)
-                        "Prerelease = @""$encDQ""@" + $m.Groups['trail'].Value + $m.Groups['nl'].Value
+                    } else {
+                        # Use escaped content for expandable here-strings.
+                        $m.Groups['indent'].Value + 'Prerelease = @"' + $encDQ + '"@' + $m.Groups['trail'].Value + $m.Groups['nl'].Value
                     }
                 }
                 # Quoted forms: keep the quote style, replace inside the quotes.
@@ -1693,12 +1742,44 @@ function Update-ManifestPrerelease {
         break
     }
 
-    if ($content -eq $original) {
-        throw "Could not locate a 'Prerelease' assignment (supported forms: quoted or here-string)."
+    # If no active assignment matched, try commented-out assignment lines with 1+ '#'
+    if (-not $matched) {
+        $commentDefs = @(
+            # Matches:
+            #   # Prerelease = 'dev'
+            #   #Prerelease = 'dev'
+            #   # # # Prerelease = 'dev'
+            #   ### ## Prerelease = 'dev'
+            @{ Style='csq'; Options=$optsLine; Pattern='^(?<indent>[ \t]*)(?:#\s*)+\bPrerelease\s*=\s*''(?<content>(?:''''|[^''])*)''(?<trail>[ \t]*#.*)?(?<nl>\r?\n?)' }
+            @{ Style='cdq'; Options=$optsLine; Pattern='^(?<indent>[ \t]*)(?:#\s*)+\bPrerelease\s*=\s*"(?<content>(?:``.|`"|[^"])*)?"(?<trail>[ \t]*#.*)?(?<nl>\r?\n?)' }
+        )
+        foreach ($d in $commentDefs) {
+            $rx = [regex]::new($d.Pattern, $d.Options)
+            if (-not $rx.IsMatch($content)) { continue }
+
+            $matched = $true
+
+            $content = $rx.Replace($content, {
+                param($m)
+                switch ($d.Style) {
+                    'csq' { $m.Groups['indent'].Value + "Prerelease = '" + $encSQ + "'" + $m.Groups['trail'].Value + $m.Groups['nl'].Value }
+                    'cdq' { $m.Groups['indent'].Value + 'Prerelease = "' + $encDQ + '"' + $m.Groups['trail'].Value + $m.Groups['nl'].Value }
+                }
+            }, 1)
+            break
+        }
     }
 
+    # Throw only if we never matched an active or commented assignment.
+    if (-not $matched) {
+        throw "Could not locate a 'Prerelease' assignment (supported forms: quoted or here-string; commented forms with leading '#' are also recognized)."
+    }
+
+    # Write only when the file content actually changes (equal value is success, no write).
     if ($content -ne $original) {
         [System.IO.File]::WriteAllText($ManifestPath, $content)
     }
 }
+
+
 

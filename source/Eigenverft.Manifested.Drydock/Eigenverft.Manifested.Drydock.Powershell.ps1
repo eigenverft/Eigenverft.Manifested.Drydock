@@ -1170,11 +1170,11 @@ pscustomobject (when -PassThru)
     }
 
     # Helpers
-    $home = if ([Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) { $env:USERPROFILE } else { $env:HOME }
+    $homex = if ([Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) { $env:USERPROFILE } else { $env:HOME }
     function Get-InferredScope([string]$path) {
         try {
             $full = if ($path) { [IO.Path]::GetFullPath($path) } else { $null }
-            if ($home -and $full -and $full.StartsWith($home, $true, [Globalization.CultureInfo]::InvariantCulture)) { 'CurrentUser' } else { 'AllUsers' }
+            if ($homex -and $full -and $full.StartsWith($homex, $true, [Globalization.CultureInfo]::InvariantCulture)) { 'CurrentUser' } else { 'AllUsers' }
         } catch { 'AllUsers' }
     }
     function Test-IsPrerelease([string]$installPath) {

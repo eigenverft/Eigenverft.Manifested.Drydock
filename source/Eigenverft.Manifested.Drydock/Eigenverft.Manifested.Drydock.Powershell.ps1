@@ -1081,7 +1081,8 @@ Removes older versions of a PowerShell module, keeping only one per scope accord
 .DESCRIPTION
 Default Mode=Auto. If the session is elevated (Administrator on Windows or root on Unix), it cleans both CurrentUser and AllUsers.
 If not elevated, it cleans only CurrentUser and reports AllUsers installs that cannot be removed.
-Supports prerelease versions and can prefer keeping Stable or Prerelease.
+Supports prerelease versions and can prefer keeping Stable or Prerelease. Includes a hardened, PS5-compatible fallback removal path
+that performs strict validation before touching the filesystem.
 
 .PARAMETER ModuleName
 Name of the module to clean. Older versions beyond the newest per scope are removed.
@@ -1099,9 +1100,11 @@ Emit a summary of planned/performed actions as objects.
 
 .EXAMPLE
 Uninstall-PreviousModuleVersions -ModuleName 'Pester'
+Cleans old versions in Auto mode, keeping the absolute latest (stable or prerelease).
 
 .EXAMPLE
 Uninstall-PreviousModuleVersions -ModuleName 'Az' -Keep Stable -WhatIf
+Shows what would be removed, preferring to keep the latest stable version.
 
 .OUTPUTS
 System.Object (when -PassThru is used)
@@ -1201,6 +1204,13 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one version per
         }
         $userRoots = $userRoots | Sort-Object -Unique
 
+        # Whitelist of allowed module roots (all PSModulePath entries canonicalized)
+        $allowedRoots = @()
+        foreach ($mp in ($modulePaths | Where-Object { $_ })) {
+            try { $allowedRoots += [IO.Path]::GetFullPath($mp) } catch { $allowedRoots += $mp }
+        }
+        $allowedRoots = $allowedRoots | Sort-Object -Unique
+
         # Annotate each install with inferred scope + prerelease flag (PS5-safe).
         $annotated = foreach ($m in $installed) {
             $p = $m.InstalledLocation
@@ -1234,6 +1244,8 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one version per
                 IsPrerelease      = $isPrerelease
             }
         }
+
+        $summary = @()
 
         # --- Extra report for AllUsers when that scope isn't processed ---
         if ( ($annotated | Where-Object Scope -eq 'AllUsers') -and -not ($scopesToProcess -contains 'AllUsers') ) {
@@ -1271,8 +1283,6 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one version per
             $v = ($hasAllUsers | Sort-Object Version -Descending | Select-Object -ExpandProperty Version) -join ', '
             Write-Host ("AllUsers installs detected for '{0}': {1}. Run elevated (Admin/root) to remove them." -f $ModuleName, $v) -ForegroundColor Yellow
         }
-
-        $summary = @()
 
         foreach ($scope in $scopesToProcess) {
             $inScope = $annotated | Where-Object Scope -eq $scope
@@ -1313,10 +1323,12 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one version per
                 $target = "{0} v{1} ({2})" -f $item.Name, $item.Version, $scope
                 if ($PSCmdlet.ShouldProcess($target, 'Uninstall-Module')) {
                     try {
-                        # Use folder-version string when available (supports prerelease labels like 1.2.3-beta1).
-                        $reqVer = if ($item.RequiredVersion) { $item.RequiredVersion } else { [string]$item.Version }
+                        # Use numeric ModuleVersion for prerelease, + -AllowPrerelease when supported.
+                        $reqVer =
+                            if ($item.IsPrerelease -and $unHasAllowPre) { [string]$item.Version }
+                            elseif ($item.RequiredVersion) { $item.RequiredVersion }
+                            else { [string]$item.Version }
 
-                        # PS5-compatible: add -AllowPrerelease when supported (fixes error on prerelease RequiredVersion).
                         $uninstallParams = @{
                             Name            = $item.Name
                             RequiredVersion = $reqVer
@@ -1330,8 +1342,124 @@ Honors -WhatIf/-Confirm via SupportsShouldProcess. Keeps exactly one version per
                         Write-Host ("[{0}] Removed v{1} from '{2}'." -f $scope, $item.Version, $item.InstalledLocation) -ForegroundColor Green
                         if ($PassThru) { $summary += [pscustomobject]@{ Scope=$scope; Version=$item.Version; Action='Removed'; Path=$item.InstalledLocation } }
                     } catch {
-                        Write-Error ("[{0}] Failed to remove {1} v{2}: {3}" -f $scope, $item.Name, $item.Version, $_.Exception.Message)
-                        if ($PassThru) { $summary += [pscustomobject]@{ Scope=$scope; Version=$item.Version; Action='Error'; Path=$item.InstalledLocation; Error=$_.Exception.Message } }
+                        # Hardened, PS5-safe fallback: validate thoroughly before touching disk.
+                        $msg = $_.Exception.Message
+                        $noMatch = ($msg -like '*No match was found*') -or ($msg -like '*specified search criteria*')
+                        if ($noMatch -and $item.InstalledLocation -and (Test-Path -LiteralPath $item.InstalledLocation)) {
+
+                            # Double-confirm intent for the fallback removal path.
+                            if ($PSCmdlet.ShouldProcess($item.InstalledLocation, 'Remove-Item -Recurse (validated fallback)')) {
+                                try {
+                                    # --- Preflight: canonicalize path and verify it lives under a whitelisted module root.
+                                    $full = $item.InstalledLocation
+                                    try { $full = [IO.Path]::GetFullPath($full) } catch { throw "Canonical path resolution failed for '$($item.InstalledLocation)'" }
+
+                                    $underAllowedRoot = $false
+                                    foreach ($root in $allowedRoots) {
+                                        if ($root -and $full.StartsWith($root, $true, [Globalization.CultureInfo]::InvariantCulture)) { $underAllowedRoot = $true; break }
+                                    }
+                                    if (-not $underAllowedRoot) { throw "Path is not under any allowed PSModulePath root: '$full'." }
+
+                                    $dir = Get-Item -LiteralPath $full -Force -ErrorAction Stop
+                                    if (-not $dir.PSIsContainer) { throw "Expected a directory at '$full'." }
+                                    if ($dir.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Refusing to delete reparse point/junction/symlink: '$full'." }
+
+                                    # --- Identity checks: manifest and/or module file must match module name and version.
+                                    $expectedName    = $item.Name
+                                    $expectedVersion = [version]$item.Version
+
+                                    $psd1 = Get-ChildItem -LiteralPath $full -Filter '*.psd1' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                                    $hasPsm1 = Test-Path -LiteralPath (Join-Path $full ($expectedName + '.psm1'))
+
+                                    $manifestOk = $false
+                                    if ($psd1) {
+                                        try {
+                                            $data = Import-PowerShellDataFile -LiteralPath $psd1.FullName -ErrorAction Stop
+                                        } catch {
+                                            throw "Manifest parse failed: $($psd1.FullName): $($_.Exception.Message)"
+                                        }
+
+                                        # External reviewer note: ModuleVersion must be numeric-only; prerelease lives in PrivateData.PSData.
+                                        if ($data.ContainsKey('ModuleVersion')) {
+                                            $mv = [version]$data['ModuleVersion']
+                                            if ($mv -ne $expectedVersion) {
+                                                throw "Manifest ModuleVersion $mv does not match target $expectedVersion."
+                                            }
+                                        }
+
+                                        # At least either manifest name aligns or a properly named .psm1 exists or RootModule points to it.
+                                        $nameEvidence = @()
+                                        if ($psd1.BaseName -eq $expectedName) { $nameEvidence += 'ManifestName' }
+                                        if ($hasPsm1) { $nameEvidence += 'Psm1Present' }
+                                        try {
+                                            $rootMod = $data['RootModule']
+                                            if ($rootMod -and ($rootMod -ieq ($expectedName + '.psm1'))) { $nameEvidence += 'RootModule' }
+                                        } catch { }
+
+                                        if ($nameEvidence.Count -gt 0) { $manifestOk = $true }
+                                    } else {
+                                        # No manifest? insist on a $Name.psm1 in this directory.
+                                        if ($hasPsm1) { $manifestOk = $true }
+                                    }
+                                    if (-not $manifestOk) { throw "Folder does not present a trustworthy identity for $expectedName $expectedVersion at '$full'." }
+
+                                    # Cross-check with ListAvailable (best-effort; may not see prerelease correctly).
+                                    $listed = Get-Module -ListAvailable -Name $expectedName -ErrorAction SilentlyContinue |
+                                              Where-Object { $_.ModuleBase -eq $full -and $_.Version -eq $expectedVersion }
+                                    if (-not $listed) {
+                                        Write-Host ("[Warn] {0} not reported by Get-Module at '{1}', proceeding based on manifest/structure checks." -f $expectedName, $full) -ForegroundColor Yellow
+                                    }
+
+                                    # --- Quarantine rename (makes rollback/inspection easier if deletion fails mid-way).
+                                    $parent   = Split-Path -Path $full -Parent
+                                    $leaf     = Split-Path -Path $full -Leaf
+                                    $stamp    = Get-Date -Format 'yyyyMMddHHmmss'
+                                    $tempName = "{0}_DELETE_{1}_{2}" -f $leaf, $stamp, ([Guid]::NewGuid().ToString('N').Substring(0,8))
+                                    $tempPath = Join-Path $parent $tempName
+
+                                    # Normalize attributes to avoid permission friction (ignore failures).
+                                    Get-ChildItem -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+                                        try { $_.Attributes = 'Normal' } catch { }
+                                    }
+
+                                    try {
+                                        Rename-Item -LiteralPath $full -NewName $tempName -ErrorAction Stop
+                                    } catch {
+                                        # If rename fails (locks), try direct removal as a last resort.
+                                        Write-Host ("[Info] Rename failed ('{0}')->('{1}'): {2}" -f $full, $tempPath, $_.Exception.Message) -ForegroundColor Yellow
+                                        $tempPath = $full
+                                    }
+
+                                    # Perform deletion on the quarantine path (or the original if rename failed).
+                                    Remove-Item -LiteralPath $tempPath -Recurse -Force -ErrorAction Stop
+
+                                    # Optional tidy: remove now-empty parent folder.
+                                    try {
+                                        $parentItems = Get-ChildItem -LiteralPath $parent -Force -ErrorAction SilentlyContinue
+                                        if (-not $parentItems) {
+                                            # Double-check parent is still under allowed roots before removal.
+                                            $parentFull = [IO.Path]::GetFullPath($parent)
+                                            $parentOk = $false
+                                            foreach ($root in $allowedRoots) {
+                                                if ($root -and $parentFull.StartsWith($root, $true, [Globalization.CultureInfo]::InvariantCulture)) { $parentOk = $true; break }
+                                            }
+                                            if ($parentOk) { Remove-Item -LiteralPath $parentFull -Force -ErrorAction SilentlyContinue }
+                                        }
+                                    } catch { }
+
+                                    Write-Host ("[{0}] Removed v{1} from '{2}' via validated filesystem fallback." -f $scope, $item.Version, $full) -ForegroundColor Green
+                                    if ($PassThru) { $summary += [pscustomobject]@{ Scope=$scope; Version=$item.Version; Action='Removed (Validated Fallback)'; Path=$full } }
+                                    continue
+                                } catch {
+                                    Write-Error ("[{0}] Fallback removal aborted for {1} v{2} at '{3}': {4}" -f $scope, $item.Name, $item.Version, $item.InstalledLocation, $_.Exception.Message)
+                                    if ($PassThru) { $summary += [pscustomobject]@{ Scope=$scope; Version=$item.Version; Action='Error (Fallback)'; Path=$item.InstalledLocation; Error=$_.Exception.Message } }
+                                }
+                            }
+                        }
+
+                        # If we got here, either it wasn't the no-match case or fallback declined/failed.
+                        Write-Error ("[{0}] Failed to remove {1} v{2}: {3}" -f $scope, $item.Name, $item.Version, $msg)
+                        if ($PassThru) { $summary += [pscustomobject]@{ Scope=$scope; Version=$item.Version; Action='Error'; Path=$item.InstalledLocation; Error=$msg } }
                     }
                 } else {
                     if ($PassThru) { $summary += [pscustomobject]@{ Scope=$scope; Version=$item.Version; Action='Planned (WhatIf)'; Path=$item.InstalledLocation } }

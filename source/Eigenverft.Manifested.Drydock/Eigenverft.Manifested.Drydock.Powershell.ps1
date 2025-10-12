@@ -1820,5 +1820,3 @@ function Update-ManifestPrerelease {
     }
 }
 
-
-

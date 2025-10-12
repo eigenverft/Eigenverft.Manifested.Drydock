@@ -26,7 +26,7 @@ Test-ModuleAvailable -Name 'Eigenverft.Manifested.Drydock' -IncludePrerelease -E
 Initialize-PowerShellMiniBootstrap
 
 # Clean up previous versions of the module to avoid conflicts in local PowerShell environments
-Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
+# Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
 
 # Import optional integration script if it exists
 Import-Script -File @("$PSScriptRoot\cicd.integration.ps1") -ErrorIfMissing

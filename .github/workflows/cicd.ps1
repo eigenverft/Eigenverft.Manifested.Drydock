@@ -17,10 +17,12 @@ $remoteRessourcesOk = Test-RemoteRessourcesAvailable -Quiet
 if ($remoteRessourcesOk)
 {
     # Install the required modules to run this script, Eigenverft.Manifested.Drydock needs to be Powershell 5.1 and Powershell 7+ compatible
-    Install-Module -Name 'Eigenverft.Manifested.Drydock' -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+    Install-Module -Name 'Eigenverft.Manifested.Drydock' -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber -AllowPrerelease -ErrorAction Stop
 }
 
 if ($m = Test-ModuleAvailable -Name 'Eigenverft.Manifested.Drydock') { Write-Host "$($m.Name) $($m.Version)" } else { Write-Error "Eigenverft.Manifested.Drydock (stable) not found"; exit 1 }
+
+#Write-ConsoleLog -Level INF -Message 'Dirscreated.'
 
 # Required for updating PowerShellGet and PackageManagement providers in local PowerShell 5.x environments
 Initialize-PowerShellMiniBootstrap

@@ -435,5 +435,3 @@ Optional description.
 #    Use when your script needs the user's interactive desktop.
 #New-CompatScheduledTask -TaskName 'MyApp-UserLogon' -ActionPath 'C:\Windows\regedit.exe' -LogonThisUser
 #New-CompatScheduledTask -TaskName 'MyDaily-System-0200' `-RunAsAccount System -Highest -DailyAtTime '02:00' -ActionPath "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -ActionArguments '-NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\job.ps1"' -WorkingDirectory 'C:\Scripts'
-
-  

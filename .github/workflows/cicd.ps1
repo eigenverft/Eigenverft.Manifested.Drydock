@@ -26,7 +26,7 @@ Test-ModuleAvailable -Name 'Eigenverft.Manifested.Drydock' -IncludePrerelease -E
 Initialize-PowerShellMiniBootstrap
 
 # Clean up previous versions of the module to avoid conflicts in local PowerShell environments
-Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
+# Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
 
 # Import optional integration script if it exists
 Import-Script -File @("$PSScriptRoot\cicd.integration.ps1") -ErrorIfMissing
@@ -88,11 +88,11 @@ if ($remoteRessourcesOk)
 if ($remoteRessourcesOk)
 {
     if ($($runEnvironment.IsCI)) {
-        # Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Auto ver bump from CICD to $($generatedVersion.VersionFull) [skip ci]" -Tags @( "$($generatedVersion.VersionFull)" ) -ErrorAction Stop
-        Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Auto ver bump from CICD to $($generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
+        Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Auto ver bump from CICD to $($generatedVersion.VersionFull) [skip ci]" -Tags @( "$($generatedVersion.VersionFull)-$($deploymentInfo.Affix.Label)" ) -ErrorAction Stop
+        # Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "github-actions[bot]" -UserEmail "github-actions[bot]@users.noreply.github.com" -CommitMessage "Auto ver bump from CICD to $($generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
     } else {
-        # Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Auto ver bump from local to $($generatedVersion.VersionFull) [skip ci]" -Tags @( "$($generatedVersion.VersionFull)" ) -ErrorAction Stop
-        Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Auto ver bump from local to $($generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
+        Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Auto ver bump from local to $($generatedVersion.VersionFull) [skip ci]" -Tags @( "$($generatedVersion.VersionFull)-$($deploymentInfo.Affix.Label)" ) -ErrorAction Stop
+        # Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Auto ver bump from local to $($generatedVersion.VersionFull) [skip ci]" -ErrorAction Stop
     }
 }
 

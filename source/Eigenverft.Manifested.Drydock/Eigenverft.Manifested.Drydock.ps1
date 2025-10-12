@@ -232,3 +232,4 @@ Reviewer note: Host-type detection for Azure is heuristic by design; no single a
         }
     }
 }
+

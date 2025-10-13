@@ -636,12 +636,22 @@ function Import-Script {
 
 .PARAMETER File
     One or more script paths. Variables like $PSScriptRoot are expanded.
+    When -NormalizeSeparators is supplied, any incorrect slash characters are replaced to match the OS.
 
 .PARAMETER ErrorIfMissing
     If set, writes a non-terminating error for each missing file and continues.
 
+.PARAMETER NormalizeSeparators
+    If set, normalizes all path separators in -File to the OS-dependent directory separator.
+    On Windows: '/' -> '\'
+    On Linux/macOS: '\' -> '/'
+
 .EXAMPLE
     Import-Script -File @("$PSScriptRoot\cicd.migration.ps1")
+
+.EXAMPLE
+    Import-Script -File @("$PSScriptRoot/cicd.migration.ps1") -NormalizeSeparators
+    # Same path as above but with forward slashes; switch ensures it works on Windows too.
 
 .NOTES
     Only function/filter declarations are globalized. If the source script must expose variables
@@ -651,7 +661,8 @@ function Import-Script {
     param(
         [Parameter(Mandatory, Position=0)]
         [string[]]$File,
-        [switch]$ErrorIfMissing
+        [switch]$ErrorIfMissing,
+        [switch]$NormalizeSeparators
     )
 
     foreach ($f in $File) {
@@ -659,6 +670,18 @@ function Import-Script {
 
         # Expand variables (e.g., $PSScriptRoot) before checking.
         $expanded = $ExecutionContext.InvokeCommand.ExpandString($f)
+
+        # Reviewer note: Normalize separators only when explicitly requested to avoid surprising path changes.
+        if ($NormalizeSeparators) {
+            $sep = [System.IO.Path]::DirectorySeparatorChar
+            if ($sep -eq '\') {
+                # Windows: fix any forward slashes
+                $expanded = $expanded -replace '/', '\'
+            } else {
+                # Unix-like: fix any backslashes
+                $expanded = $expanded -replace '\\', '/'
+            }
+        }
 
         if (-not (Test-Path -LiteralPath $expanded)) {
             if ($ErrorIfMissing) { Write-Error "Import-Script: file not found: $expanded" }
@@ -1370,7 +1393,6 @@ Reliability and limits (judgment):
     Write-Host ("Cleanup complete (mode: {0}, keep: {1}, elevated: {2})." -f $Mode, $Keep, $isElevated) -ForegroundColor Green
     if ($PassThru) { $summary }
 }
-
 
 function Find-ModuleScopeClutter {
 <#

@@ -52,6 +52,6 @@ jobs:
       run: pwsh --version
 
     - name: Workflow Build/Deploy
-      run: .github/workflows/cicd.ps1 -POWERSHELL_GALLERY "${{ secrets.POWERSHELL_GALLERY }}"
+      run: .github/workflows/cicd.ps1 -PsGalleryApiKey "${{ secrets.POWERSHELL_GALLERY }}"
       shell: pwsh
       

@@ -12,7 +12,7 @@
 RootModule = 'Eigenverft.Manifested.Drydock.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.20255.56700'
+ModuleVersion = '0.20255.57324'
 
 # Supported PSEditions
 CompatiblePSEditions = @('Desktop','Core')
@@ -51,7 +51,7 @@ PowerShellVersion = '5.1'
 # ProcessorArchitecture = ''
 
 # Modules that must be imported into the global environment prior to importing this module
-# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20255.56700'; })
+# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20255.57324'; })
 
 # Assemblies that must be loaded prior to importing this module
 # RequiredAssemblies = @()
@@ -79,29 +79,32 @@ FunctionsToExport = @(
 
     'Write-ConsoleLog',
 
-    'Convert-DateTimeTo64SecVersionComponents',
-    'Convert-64SecVersionComponentsToDateTime',
-    'Convert-DateTimeTo64SecPowershellVersion',
-    'Convert-64SecPowershellVersionToDateTime',
-
     'Update-ManifestModuleVersion',
     'Update-ManifestReleaseNotes',
     'Update-ManifestPrerelease',
 
     'Find-FilesByPattern',
-    'Test-VariableValue',
-    'Test-CommandAvailable',
-    'Test-ModuleAvailable',
     'Get-RunEnvironment',
     'Get-ConfigValue',
     'Initialize-PowerShellMiniBootstrap',
     'Import-Script',
     'Export-OfflineModuleBundle',
     'Use-Tls12',
-    'New-CompatScheduledTask',
     'Find-ModuleScopeClutter',
     'Uninstall-PreviousModuleVersions',
-    'Convert-BranchToDeploymentInfo'
+    'Convert-BranchToDeploymentInfo',
+
+    'New-CompatScheduledTask',
+
+    'Test-VariableValue',
+    'Test-CommandAvailable',
+    'Test-ModuleAvailable',
+    'Test-PsGalleryPublishPrereqsOffline',
+
+    'Convert-DateTimeTo64SecVersionComponents',
+    'Convert-64SecVersionComponentsToDateTime',
+    'Convert-DateTimeTo64SecPowershellVersion',
+    'Convert-64SecPowershellVersionToDateTime'
     )
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -164,7 +167,7 @@ PrivateData = @{
         ReleaseNotes = ''
 
         # Prerelease string of this module
-        Prerelease = ''
+        Prerelease = 'dev'
 
         # Flag to indicate whether the module requires explicit user acceptance for install/update/save
         # RequireLicenseAcceptance = $false

@@ -14,7 +14,11 @@ PowerShell 7+ (recommended):
 
 ```powershell
 Install-Module -Name Eigenverft.Manifested.Drydock -Repository PSGallery -Scope CurrentUser -Force
-Import-Module Eigenverft.Manifested.Drydock
+# Export-OfflineModuleBundle -Folder 'C:\Bundle' -Name @('PowerShellGet','PackageManagement','Eigenverft.Manifested.Drydock')
+```
+
+```powershell (offline transfer)
+
 ```
 
 Windows PowerShell 5.1 (legacy bootstrap):

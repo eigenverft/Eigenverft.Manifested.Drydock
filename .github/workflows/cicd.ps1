@@ -25,6 +25,8 @@ Test-ModuleAvailable -Name 'Eigenverft.Manifested.Drydock' -IncludePrerelease -E
 # Required for updating PowerShellGet and PackageManagement providers in local PowerShell 5.x environments
 Initialize-PowerShellMiniBootstrap
 
+Test-PsGalleryPublishPrereqsOffline -ExitOnFailure
+
 # Clean up previous versions of the module to avoid conflicts in local PowerShell environments
 Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
 

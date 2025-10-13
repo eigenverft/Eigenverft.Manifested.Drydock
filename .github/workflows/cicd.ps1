@@ -77,7 +77,7 @@ Test-ModuleManifest -Path $($manifestFile.FullName)
 if ($remoteResourcesOk)
 {
     try {
-        Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$POWERSHELL_GALLERY" -ErrorAction Stop    
+        Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$PsGalleryApiKey" -ErrorAction Stop    
     }
     catch {
         Write-Error "Failed to publish module: $_"

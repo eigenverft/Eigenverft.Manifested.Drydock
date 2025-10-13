@@ -741,7 +741,6 @@ function Import-Script {
     }
 }
 
-
 function Export-OfflineModuleBundle {
 <#
 .SYNOPSIS
@@ -1394,7 +1393,6 @@ Reliability and limits (judgment):
     Write-Host ("Cleanup complete (mode: {0}, keep: {1}, elevated: {2})." -f $Mode, $Keep, $isElevated) -ForegroundColor Green
     if ($PassThru) { $summary }
 }
-
 
 function Find-ModuleScopeClutter {
 <#

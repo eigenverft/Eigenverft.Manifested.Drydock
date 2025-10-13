@@ -164,7 +164,7 @@ function Test-GitHubConnectivity {
     }
 }
 
-function Test-RemoteRessourcesAvailable {
+function Test-RemoteResourcesAvailable {
 <#
 .SYNOPSIS
     Runs the existing PSGallery and GitHub connectivity checks and aggregates the result.
@@ -179,10 +179,10 @@ function Test-RemoteRessourcesAvailable {
     Return only a boolean (True iff both checks succeed).
 
 .EXAMPLE
-    Test-RemoteRessourcesAvailable
+    Test-RemoteResourcesAvailable
 
 .EXAMPLE
-    Test-RemoteRessourcesAvailable -Quiet
+    Test-RemoteResourcesAvailable -Quiet
 
 .OUTPUTS
     PSCustomObject (default) or System.Boolean (with -Quiet)

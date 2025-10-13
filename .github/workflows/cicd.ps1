@@ -11,7 +11,7 @@ Write-Host "Powershell script $(Split-Path -Leaf $PSCommandPath) has started."
 # Designed to short-circuit local and CI/CD workflows when dependencies are offline (e.g., skip a push if the Git host is unreachable).
 . "$PSScriptRoot\cicd.bootstrap.ps1"
 
-$remoteResourcesOk = Test-RemoteRessourcesAvailable -Quiet
+$remoteResourcesOk = Test-RemoteResourcesAvailable -Quiet
 
 # Ensure connectivity to PowerShell Gallery before attempting module installation, if not assuming being offline, installation is present check existance with Test-ModuleAvailable
 if ($remoteResourcesOk)
@@ -29,7 +29,7 @@ Initialize-PowerShellMiniBootstrap
 Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
 
 # Import optional integration script if it exists
-Import-Script -File @("$PSScriptRoot\cicd.integration.ps1")
+Import-Script -File @("$PSScriptRoot\cicd.integration.ps1") -NormalizeSeparators
 Write-IntegrationMsg -Message "This function is defined in the optional integration script. That should be integrated into this main module script."
 
 # In the case the secrets are not passed as parameters, try to get them from the secrets file, local development or CI/CD environment
@@ -76,12 +76,7 @@ Test-ModuleManifest -Path $($manifestFile.FullName)
 
 if ($remoteResourcesOk)
 {
-    try {
-        Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$PsGalleryApiKey" -ErrorAction Stop    
-    }
-    catch {
-        Write-Error "Failed to publish module: $_"
-    }
+    Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$PsGalleryApiKey" -ErrorAction Stop    
 }
 
 

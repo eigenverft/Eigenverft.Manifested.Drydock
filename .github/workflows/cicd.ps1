@@ -28,7 +28,7 @@ Initialize-PowerShellMiniBootstrap
 # Test TLS, NuGet, PackageManagement, PowerShellGet, and PSGallery publish endpoint
 Test-PsGalleryPublishPrereqsOffline -ExitOnFailure
 
-Invoke-DotnetToolRestore
+#Invoke-DotnetToolRestore -ManifestFile "$PSScriptRoot\dotnet-tools.json"
 
 # Clean up previous versions of the module to avoid conflicts in local PowerShell environments
 Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'

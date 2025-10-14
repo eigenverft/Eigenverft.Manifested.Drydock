@@ -1,7 +1,7 @@
 
 function Invoke-DotnetToolRestore {
     Write-Host "===> Restoring dotnet tools from manifest at: $PSScriptRoot" -ForegroundColor Cyan
-    $info = Get-CallerScriptInfo
+    $info = Get-CallerScriptInfo -Depth 2
     Write-Host "Caller script info: $($info.CallerFileInfo)" -ForegroundColor DarkGray
 }
 

@@ -386,12 +386,12 @@ Disable-TempDotnetTools -ManifestFile "$PSScriptRoot\.config\dotnet-tools.json" 
 
 
 # One-liner: sticky cache derived from manifest → fast subsequent runs
-$rep = Enable-TempDotnetTools -ManifestFile "C:\dev\github.com\eigenverft\Eigenverft.Manifested.Drydock\.github\workflows\.config\dotnet-tools\dotnet-tools.json" -NoReturn  # <-- reuse the same temp cache per manifest
-$rep.Tools | Format-Table
+#$rep = Enable-TempDotnetTools -ManifestFile "C:\dev\github.com\eigenverft\Eigenverft.Manifested.Drydock\.github\workflows\.config\dotnet-tools\dotnet-tools.json" -NoReturn  # <-- reuse the same temp cache per manifest
+#$rep.Tools | Format-Table
 
 # Use your tools anywhere in this session...
 # e.g., dotnet-ef / dotnet ef / docfx, etc.
-docfx --help
+#docfx --help
 # End of session: remove from PATH and (optionally) delete the cache
-Disable-TempDotnetTools -ManifestFile "C:\dev\github.com\eigenverft\Eigenverft.Manifested.Drydock\.github\workflows\.config\dotnet-tools\dotnet-tools.json"              # keep cache (fast next time)
+#Disable-TempDotnetTools -ManifestFile "C:\dev\github.com\eigenverft\Eigenverft.Manifested.Drydock\.github\workflows\.config\dotnet-tools\dotnet-tools.json"              # keep cache (fast next time)
 

@@ -94,7 +94,6 @@ FunctionsToExport = @(
     'Update-ManifestModuleVersion',
     'Update-ManifestReleaseNotes',
     'Update-ManifestPrerelease',
-    'Get-CallerScriptInfo',
 
     'Find-FilesByPattern',
     'Get-RunEnvironment',

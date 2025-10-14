@@ -31,7 +31,7 @@ Test-PsGalleryPublishPrereqsOffline -ExitOnFailure
 # Clean up previous versions of the module to avoid conflicts in local PowerShell environments
 Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
 
-Invoke-DotnetToolRestore -ManifestFile "$PSScriptRoot\config\dotnet-tools\dotnet-tools.json"
+# Enable-TempDotnetTools -ManifestFile "$PSScriptRoot\config\dotnet-tools\dotnet-tools.json"
 
 # Import optional integration script if it exists
 Import-Script -File @("$PSScriptRoot\cicd.integration.ps1") -NormalizeSeparators

@@ -74,7 +74,8 @@ FunctionsToExport = @(
     'Convert-BranchToDeploymentInfo',
     
     # ...Dotnet.ps1
-    'Invoke-DotnetToolRestore',
+    'Enable-TempDotnetTools',
+    'Disable-TempDotnetTools',
 
     # ...Execution.ps1
     'Invoke-Exec',

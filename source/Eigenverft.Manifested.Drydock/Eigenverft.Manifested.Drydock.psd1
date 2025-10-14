@@ -78,10 +78,12 @@ FunctionsToExport = @(
     'Invoke-GitAddCommitPush',
 
     'Write-ConsoleLog',
+    'Invoke-DotnetToolRestore',
 
     'Update-ManifestModuleVersion',
     'Update-ManifestReleaseNotes',
     'Update-ManifestPrerelease',
+    'Get-CallerScriptInfo',
 
     'Find-FilesByPattern',
     'Get-RunEnvironment',

@@ -20,6 +20,7 @@ if ($remoteResourcesOk)
     Install-Module -Name 'Eigenverft.Manifested.Drydock' -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber -AllowPrerelease -ErrorAction Stop
 }
 
+# Verify the module is available, if not found exit the script with error
 Test-ModuleAvailable -Name 'Eigenverft.Manifested.Drydock' -IncludePrerelease -ExitIfNotFound -Quiet
 
 # Required for updating PowerShellGet and PackageManagement providers in local PowerShell 5.x environments
@@ -30,8 +31,6 @@ Test-PsGalleryPublishPrereqsOffline -ExitOnFailure
 
 # Clean up previous versions of the module to avoid conflicts in local PowerShell environments
 Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
-
-Enable-TempDotnetTools -ManifestFile "$PSScriptRoot\.config\dotnet-tools\dotnet-tools.json" -NoReturn
 
 # Import optional integration script if it exists
 Import-Script -File @("$PSScriptRoot\cicd.integration.ps1") -NormalizeSeparators
@@ -44,6 +43,9 @@ Test-VariableValue -Variable { $PsGalleryApiKey } -ExitIfNullOrEmpty -HideValue
 # Verify required commands are available
 if ($cmd = Test-CommandAvailable -Command "git") { Write-Host "Test-CommandAvailable: $($cmd.Name) $($cmd.Version) found at $($cmd.Source)" } else { Write-Error "git not found"; exit 1 }
 if ($cmd = Test-CommandAvailable -Command "dotnet") { Write-Host "Test-CommandAvailable: $($cmd.Name) $($cmd.Version) found at $($cmd.Source)" } else { Write-Error "dotnet not found"; exit 1 }
+
+# Enable the .NET tools specified in the manifest file
+Enable-TempDotnetTools -ManifestFile "$PSScriptRoot\.config\dotnet-tools\dotnet-tools.json" -NoReturn
 
 # Preload environment information
 $runEnvironment = Get-RunEnvironment
@@ -70,7 +72,7 @@ $probeGeneratedVersion = Convert-64SecPowershellVersionToDateTime -VersionBuild 
 Test-VariableValue -Variable { $generatedVersion } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
 
-#######
+###############################################################
 
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" -ErrorAction Stop
 Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedVersion.VersionFull)"
@@ -84,7 +86,6 @@ if ($remoteResourcesOk)
     Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$PsGalleryApiKey" -ErrorAction Stop    
 }
 
-
 if ($remoteResourcesOk)
 {
     if ($($runEnvironment.IsCI)) {
@@ -93,6 +94,3 @@ if ($remoteResourcesOk)
         Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Auto ver bump from local to $($generatedVersion.VersionFull) [skip ci]" -Tags @( "$($generatedVersion.VersionFull)-$($deploymentInfo.Affix.Label)" ) -ErrorAction Stop
     }
 }
-
-
-

@@ -87,6 +87,7 @@ FunctionsToExport = @(
     'Get-GitRemoteUrl',
     'Invoke-GitAddCommitPush',
 
+    # ...Logging.ps1
     'Write-ConsoleLog',
 
     'Update-ManifestModuleVersion',

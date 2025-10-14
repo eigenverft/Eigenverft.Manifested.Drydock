@@ -122,6 +122,8 @@ If set, passes --no-cache to dotnet (disables NuGet HTTP cache; slower).
     # -----------------------
 
     $mf = Resolve-Path -LiteralPath $ManifestFile -ErrorAction Stop
+    Write-Host ("[dotnet-tools] Manifest: {0}" -f $mf.Path) -ForegroundColor DarkGray
+
     $manifest = Get-Content -Raw -LiteralPath $mf | ConvertFrom-Json
     if (-not $manifest.tools) { throw "Manifest has no 'tools' entries: $mf" }
 
@@ -136,11 +138,20 @@ If set, passes --no-cache to dotnet (disables NuGet HTTP cache; slower).
         $ToolPath = Join-Path $base ("dotnet-tools-cache\" + $hash)
     }
     New-Item -ItemType Directory -Force -Path $ToolPath | Out-Null
+    Write-Host ("[dotnet-tools] Cache (tool-path): {0}" -f $ToolPath) -ForegroundColor DarkGray
 
     # -----------------------
     # 2) Snapshot BEFORE
     # -----------------------
     $before = _GetToolsInPath -Path $ToolPath
+    if ($before.Count -gt 0) {
+        Write-Host ("[dotnet-tools] Existing tools in cache: {0}" -f $before.Count) -ForegroundColor DarkGray
+        foreach ($k in ($before.Keys | Sort-Object)) {
+            Write-Host ("  - {0} {1}" -f $k, $before[$k]) -ForegroundColor DarkGray
+        }
+    } else {
+        Write-Host "[dotnet-tools] Cache is empty." -ForegroundColor DarkGray
+    }
 
     # -----------------------
     # 3) Ensure each tool (sorted for readability)
@@ -157,10 +168,19 @@ If set, passes --no-cache to dotnet (disables NuGet HTTP cache; slower).
 
         $status = "AlreadyPresent"
         if (-not $unchanged) {
+            Write-Host ("[dotnet-tools] Ensuring {0}@{1}..." -f $id, $ver) -ForegroundColor DarkGray
             $ok = _EnsureExactTool -Path $ToolPath -Id $id -Version $ver -NoCache:$NoCache -TryUpdateFirst:$present
             if (-not $ok) { throw "Failed to ensure $id@$ver in $ToolPath." }
             $status = $present ? "Updated" : "Installed"
         }
+
+        # Per-tool status line with color
+        switch ($status) {
+            "Installed"      { $fc = "Green";  break }
+            "Updated"        { $fc = "Yellow"; break }
+            default          { $fc = "Cyan";   break } # AlreadyPresent
+        }
+        Write-Host ("[{0}] {1}@{2}" -f $status, $id, $ver) -ForegroundColor $fc
 
         $toolsResult += [pscustomobject]@{ Id = $id; Version = $ver; Status = $status }
     }
@@ -169,6 +189,7 @@ If set, passes --no-cache to dotnet (disables NuGet HTTP cache; slower).
     # 4) PATH (session only)
     # -----------------------
     _PrependPathIfMissing -Path $ToolPath
+    Write-Host ("[dotnet-tools] PATH updated for session: {0}" -f $ToolPath) -ForegroundColor DarkGray
 
     # -----------------------
     # 5) Snapshot AFTER (normalize versions actually resolved by dotnet)
@@ -176,7 +197,12 @@ If set, passes --no-cache to dotnet (disables NuGet HTTP cache; slower).
     $after = _GetToolsInPath -Path $ToolPath
     for ($i = 0; $i -lt $toolsResult.Count; $i++) {
         $rid = $toolsResult[$i].Id
-        if ($after.ContainsKey($rid)) { $toolsResult[$i].Version = $after[$rid] }
+        if ($after.ContainsKey($rid)) {
+            if ($toolsResult[$i].Version -ne $after[$rid]) {
+                Write-Host ("[dotnet-tools] Resolved {0} -> {1}" -f $toolsResult[$i].Version, $after[$rid]) -ForegroundColor DarkGray
+            }
+            $toolsResult[$i].Version = $after[$rid]
+        }
     }
 
     # -----------------------
@@ -187,6 +213,7 @@ If set, passes --no-cache to dotnet (disables NuGet HTTP cache; slower).
         Tools    = $toolsResult
     }
 }
+
 
 
 function Disable-TempDotnetTools {

@@ -42,6 +42,7 @@ Invoke-DotnetToolRestore
         # Intention: dotnet local tools look for the manifest (dotnet-tools.json) in the *tool root* (e.g., repo root).
         # Calling from a nested script folder (e.g., /scripts) may not find the manifest.
         # Therefore, go one directory up from the caller script's directory before restoring.
+        Write-Host "Setlocation $(Split-Path -Parent $info.CallerFileInfo.DirectoryName)" -ForegroundColor DarkGray
         Set-Location (Split-Path -Parent $info.CallerFileInfo.DirectoryName)
     }
     else {
@@ -57,6 +58,7 @@ Invoke-DotnetToolRestore
 
     # Reset location after the call.
     Set-Location "$($info.CallerFileInfo.DirectoryName)"
+    Write-Host "Setlocation $($info.CallerFileInfo.DirectoryName)" -ForegroundColor DarkGray
 }
 
 

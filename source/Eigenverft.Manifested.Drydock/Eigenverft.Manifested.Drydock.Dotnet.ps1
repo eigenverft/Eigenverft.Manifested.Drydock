@@ -7,7 +7,7 @@ Install local-tools from a manifest into an ephemeral cache and expose them for 
 - Reads a standard dotnet local tools manifest (dotnet-tools.json) with exact versions.
 - Ensures each tool exists in a --tool-path cache (sticky or fresh).
 - Puts that folder at the front of PATH for the current session only.
-- Returns a single object: @{ ToolPath = "..."; Tools = [ @{Id,Version,Status}, ... ] }.
+- Returns a single object: @{ ToolPath = "..."; Tools = [ @{Id,Version,Status[,Command]}, ... ] }.
 
 .PARAMETER ManifestFile
 Path to the dotnet local tools manifest (dotnet-tools.json).
@@ -20,13 +20,17 @@ If set, uses a brand-new GUID cache folder (cold start each time).
 
 .PARAMETER NoCache
 If set, passes --no-cache to dotnet (disables NuGet HTTP cache; slower).
+
+.PARAMETER NoReturn
+If set, the function does not return the object to the pipeline (console stays clean).
 #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$ManifestFile,
         [string]$ToolPath,
         [switch]$Fresh,
-        [switch]$NoCache
+        [switch]$NoCache,
+        [switch]$NoReturn
     )
 
     # -----------------------
@@ -78,6 +82,46 @@ If set, passes --no-cache to dotnet (disables NuGet HTTP cache; slower).
         return $map
     }
 
+    function _GetToolCommandsInPath {
+        param([Parameter(Mandatory)][string]$Path)
+        # Parse commands from --detail; returns @{ <id> = @('cmd1','cmd2') }
+        $cmds = @{}
+        $detail = & dotnet tool list --tool-path $Path --detail 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $detail) { return $cmds }
+
+        $block = @()
+        foreach ($line in ($detail -split "`r?`n")) {
+            if ([string]::IsNullOrWhiteSpace($line)) {
+                if ($block.Count) {
+                    $id=$null; $names=$null
+                    foreach ($l in $block) {
+                        if ($l -match '^\s*Package Id\s*:\s*(.+)$')        { $id    = $matches[1].Trim() }
+                        elseif ($l -match '^\s*Tool command name\s*:\s*(.+)$') { $names = $matches[1].Trim() }
+                    }
+                    if ($id -and $names) {
+                        $arr = @()
+                        foreach ($n in ($names -split ',')) { $arr += $n.Trim() }
+                        $cmds[$id] = $arr
+                    }
+                    $block = @()
+                }
+            } else { $block += $line }
+        }
+        if ($block.Count) {
+            $id=$null; $names=$null
+            foreach ($l in $block) {
+                if     ($l -match '^\s*Package Id\s*:\s*(.+)$')           { $id    = $matches[1].Trim() }
+                elseif ($l -match '^\s*Tool command name\s*:\s*(.+)$')    { $names = $matches[1].Trim() }
+            }
+            if ($id -and $names) {
+                $arr = @()
+                foreach ($n in ($names -split ',')) { $arr += $n.Trim() }
+                $cmds[$id] = $arr
+            }
+        }
+        return $cmds
+    }
+
     function _EnsureExactTool {
         param(
             [Parameter(Mandatory)][string]$Path,
@@ -122,7 +166,7 @@ If set, passes --no-cache to dotnet (disables NuGet HTTP cache; slower).
     # -----------------------
 
     $mf = Resolve-Path -LiteralPath $ManifestFile -ErrorAction Stop
-    Write-Host ("[dotnet-tools] Manifest: {0}" -f $mf.Path) -ForegroundColor DarkGray
+    Write-Host ("[dotnet-tools] Manifest:        {0}" -f $mf.Path) -ForegroundColor DarkGray
 
     $manifest = Get-Content -Raw -LiteralPath $mf | ConvertFrom-Json
     if (-not $manifest.tools) { throw "Manifest has no 'tools' entries: $mf" }
@@ -138,19 +182,19 @@ If set, passes --no-cache to dotnet (disables NuGet HTTP cache; slower).
         $ToolPath = Join-Path $base ("dotnet-tools-cache\" + $hash)
     }
     New-Item -ItemType Directory -Force -Path $ToolPath | Out-Null
-    Write-Host ("[dotnet-tools] Cache (tool-path): {0}" -f $ToolPath) -ForegroundColor DarkGray
+    Write-Host ("[dotnet-tools] Cache (toolpath): {0}" -f $ToolPath) -ForegroundColor DarkGray
 
     # -----------------------
     # 2) Snapshot BEFORE
     # -----------------------
     $before = _GetToolsInPath -Path $ToolPath
     if ($before.Count -gt 0) {
-        Write-Host ("[dotnet-tools] Existing tools in cache: {0}" -f $before.Count) -ForegroundColor DarkGray
+        Write-Host ("[dotnet-tools] Cache existing:  {0}" -f $before.Count) -ForegroundColor DarkGray
         foreach ($k in ($before.Keys | Sort-Object)) {
             Write-Host ("  - {0} {1}" -f $k, $before[$k]) -ForegroundColor DarkGray
         }
     } else {
-        Write-Host "[dotnet-tools] Cache is empty." -ForegroundColor DarkGray
+        Write-Host "[dotnet-tools] Cache existing:  none" -ForegroundColor DarkGray
     }
 
     # -----------------------
@@ -168,7 +212,7 @@ If set, passes --no-cache to dotnet (disables NuGet HTTP cache; slower).
 
         $status = "AlreadyPresent"
         if (-not $unchanged) {
-            Write-Host ("[dotnet-tools] Ensuring {0}@{1}..." -f $id, $ver) -ForegroundColor DarkGray
+            Write-Host ("[dotnet-tools] Ensuring:       {0}@{1}" -f $id, $ver) -ForegroundColor DarkGray
             $ok = _EnsureExactTool -Path $ToolPath -Id $id -Version $ver -NoCache:$NoCache -TryUpdateFirst:$present
             if (-not $ok) { throw "Failed to ensure $id@$ver in $ToolPath." }
             $status = $present ? "Updated" : "Installed"
@@ -176,11 +220,11 @@ If set, passes --no-cache to dotnet (disables NuGet HTTP cache; slower).
 
         # Per-tool status line with color
         switch ($status) {
-            "Installed"      { $fc = "Green";  break }
-            "Updated"        { $fc = "Yellow"; break }
-            default          { $fc = "Cyan";   break } # AlreadyPresent
+            "Installed" { $fc = "Green" }
+            "Updated"   { $fc = "Yellow" }
+            default     { $fc = "Cyan" } # AlreadyPresent
         }
-        Write-Host ("[{0}] {1}@{2}" -f $status, $id, $ver) -ForegroundColor $fc
+        Write-Host ("[{0,-10}] {1}@{2}" -f $status, $id, $ver) -ForegroundColor $fc
 
         $toolsResult += [pscustomobject]@{ Id = $id; Version = $ver; Status = $status }
     }
@@ -189,32 +233,99 @@ If set, passes --no-cache to dotnet (disables NuGet HTTP cache; slower).
     # 4) PATH (session only)
     # -----------------------
     _PrependPathIfMissing -Path $ToolPath
-    Write-Host ("[dotnet-tools] PATH updated for session: {0}" -f $ToolPath) -ForegroundColor DarkGray
+    Write-Host ("[dotnet-tools] PATH updated:    {0}" -f $ToolPath) -ForegroundColor DarkGray
+
 
     # -----------------------
-    # 5) Snapshot AFTER (normalize versions actually resolved by dotnet)
+    # 5) Snapshot AFTER (normalize versions actually resolved by dotnet) + commands (from manifest)
     # -----------------------
     $after = _GetToolsInPath -Path $ToolPath
+
+    # Build command map from the manifest (tools.<id>.commands)
+    $cmdInfo = @{}
+    $manifestToolsProps = $manifest.tools.PSObject.Properties | Sort-Object Name
+    foreach ($p in $manifestToolsProps) {
+        $id = [string]$p.Name
+        $cmds = @()
+        if ($p.Value.PSObject.Properties.Name -contains 'commands') {
+            foreach ($n in @($p.Value.commands)) {
+                if ($n) { $cmds += [string]$n }
+            }
+        }
+        if ($cmds.Count -gt 0) { $cmdInfo[$id] = $cmds }
+    }
+
     for ($i = 0; $i -lt $toolsResult.Count; $i++) {
         $rid = $toolsResult[$i].Id
         if ($after.ContainsKey($rid)) {
             if ($toolsResult[$i].Version -ne $after[$rid]) {
-                Write-Host ("[dotnet-tools] Resolved {0} -> {1}" -f $toolsResult[$i].Version, $after[$rid]) -ForegroundColor DarkGray
+                Write-Host ("[dotnet-tools] Resolved:       {0} -> {1}" -f $toolsResult[$i].Version, $after[$rid]) -ForegroundColor DarkGray
             }
             $toolsResult[$i].Version = $after[$rid]
+        }
+
+        if ($cmdInfo.ContainsKey($rid)) {
+            $cmdsText = ($cmdInfo[$rid] -join ", ")
+            # Attach Command property always, so the printout is consistent.
+            Add-Member -InputObject $toolsResult[$i] -NotePropertyName Command -NotePropertyValue $cmdsText -Force
         }
     }
 
     # -----------------------
-    # 6) Return single object
+    # Pretty print manifest-sourced command names (ASCII only, PS5-safe)
     # -----------------------
-    return [pscustomobject]@{
-        ToolPath = $ToolPath
-        Tools    = $toolsResult
+    $rows = @()
+    foreach ($p in $manifestToolsProps) {
+        $id = [string]$p.Name
+        $hasCmd = $false
+        $joined = "(none)"
+        if ($cmdInfo.ContainsKey($id) -and $cmdInfo[$id].Count -gt 0) {
+            $joined = ($cmdInfo[$id] -join ", ")
+            $hasCmd = $true
+        }
+        $rows += New-Object psobject -Property @{ Id = $id; Cmds = $joined; Has = $hasCmd }
+    }
+
+    # Determine column width for PACKAGE column (min width 8)
+    $idWidth = 8
+    foreach ($r in $rows) { if ($r.Id.Length -gt $idWidth) { $idWidth = $r.Id.Length } }
+
+    $headerLeft  = "PACKAGE".PadRight($idWidth)
+    $headerRight = "TOOLCOMMANDNAMES"
+    $sepLeft  = ("-" * $idWidth)
+    $sepRight = ("-" * $headerRight.Length)
+
+    Write-Host ("[dotnet-tools] Commands (manifest): {0} tool(s)" -f $rows.Count) -ForegroundColor Cyan
+    Write-Host ("  {0}   {1}" -f $headerLeft, $headerRight) -ForegroundColor DarkGray
+    Write-Host ("  {0}   {1}" -f $sepLeft,     $sepRight)   -ForegroundColor DarkGray
+
+    foreach ($r in $rows) {
+        # ASCII status symbol and simple colors (no Unicode)
+        $symbol   = "-"
+        $symColor = "DarkGray"
+        if ($r.Has) { $symbol = "+"; $symColor = "Green" }
+
+        $cmdColor = "DarkGray"
+        if ($r.Has) { $cmdColor = "White" }
+
+        Write-Host "  " -NoNewline
+        Write-Host $symbol -ForegroundColor $symColor -NoNewline
+        Write-Host (" {0} " -f $r.Id.PadRight($idWidth)) -ForegroundColor Gray -NoNewline
+        Write-Host " ... " -ForegroundColor DarkGray -NoNewline
+        Write-Host $r.Cmds -ForegroundColor $cmdColor
+    }
+
+
+    # -----------------------
+    # 6) Return single object (unless -NoReturn)
+    # -----------------------
+    if (-not $NoReturn) {
+        return [pscustomobject]@{
+            ToolPath = $ToolPath
+            Tools    = $toolsResult
+        }
     }
 }
-
-
 
 function Disable-TempDotnetTools {
 <#
@@ -274,15 +385,13 @@ Disable-TempDotnetTools -ManifestFile "$PSScriptRoot\.config\dotnet-tools.json" 
 }
 
 
-
-
 # One-liner: sticky cache derived from manifest → fast subsequent runs
-#$rep = Enable-TempDotnetTools -ManifestFile "C:\dev\github.com\eigenverft\Eigenverft.Manifested.Drydock\.github\workflows\config\dotnet-tools\dotnet-tools.json"  # <-- reuse the same temp cache per manifest
-#$rep.Tools | Format-Table
+$rep = Enable-TempDotnetTools -ManifestFile "C:\dev\github.com\eigenverft\Eigenverft.Manifested.Drydock\.github\workflows\.config\dotnet-tools\dotnet-tools.json" -NoReturn  # <-- reuse the same temp cache per manifest
+$rep.Tools | Format-Table
 
 # Use your tools anywhere in this session...
 # e.g., dotnet-ef / dotnet ef / docfx, etc.
-#docfx --help
+docfx --help
 # End of session: remove from PATH and (optionally) delete the cache
-#Disable-TempDotnetTools -ManifestFile "C:\dev\github.com\eigenverft\Eigenverft.Manifested.Drydock\.github\workflows\config\dotnet-tools\dotnet-tools.json"              # keep cache (fast next time)
+Disable-TempDotnetTools -ManifestFile "C:\dev\github.com\eigenverft\Eigenverft.Manifested.Drydock\.github\workflows\.config\dotnet-tools\dotnet-tools.json"              # keep cache (fast next time)
 

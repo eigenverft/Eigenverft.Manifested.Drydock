@@ -70,10 +70,16 @@ PowerShellVersion = '5.1'
 
 # Functions to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no functions to export.
 FunctionsToExport = @(
-
+    # ...Deployments.ps1
     'Convert-BranchToDeploymentInfo',
+    
+    # ...Dotnet.ps1
     'Invoke-DotnetToolRestore',
 
+    # ...Execution.ps1
+    'Invoke-Exec',
+
+    # ...Git.ps1
     'Get-GitTopLevelDirectory',
     'Get-GitCurrentBranch',
     'Get-GitCurrentBranchRoot',

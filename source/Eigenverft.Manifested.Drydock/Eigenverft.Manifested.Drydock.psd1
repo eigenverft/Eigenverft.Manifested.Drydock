@@ -90,6 +90,8 @@ FunctionsToExport = @(
 
     # ...IO.ps1
     'Find-FilesByPattern',
+    'Find-TreeContent',
+    'Find-TreeContentByFile',
 
     # ...Logging.ps1
     'Write-ConsoleLog',

@@ -14,7 +14,7 @@ The module itself is publish with this function so see for example usage .github
 
 Install `Eigenverft.Manifested.Drydock` from a Windows PowerShell or PowerShell 7+ prompt.
 
-PowerShell 7+ (recommended):
+PowerShell 5-7+ (recommended):
 
 ```powershell
 Install-Module -Name Eigenverft.Manifested.Drydock -Repository PSGallery -Scope CurrentUser -Force

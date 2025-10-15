@@ -2,6 +2,17 @@ param (
     [string]$PsGalleryApiKey
 ) 
 
+# Fail-fast defaults for reliable CI/local runs:
+# - StrictMode 3: treat uninitialized variables, unknown members, etc. as errors.
+# - ErrorActionPreference='Stop': convert non-terminating errors into terminating ones (catchable).
+# Error-handling guidance:
+# - In catch{ }, prefer Write-Error or 'throw' to preserve fail-fast behavior.
+#   * Write-Error (with ErrorActionPreference='Stop') is terminating and bubbles to the caller 'throw' is always terminating and keeps stack context.
+# - Using Write-Host in catch{ } only logs and SWALLOWS the exception; execution continues, use a sentinel value (e.g., $null) explicitly.
+# - Note: native tool exit codes on PS5 aren’t governed by ErrorActionPreference; use the Invoke-Exec wrapper to enforce policy.
+Set-StrictMode -Version 3
+$ErrorActionPreference = 'Stop'
+
 # Keep this script compatible with PowerShell 5.1 and PowerShell 7+
 # Lean, pipeline-friendly style—simple, readable, and easy to modify, failfast on errors.
 Write-Host "Powershell script $(Split-Path -Leaf $PSCommandPath) has started."

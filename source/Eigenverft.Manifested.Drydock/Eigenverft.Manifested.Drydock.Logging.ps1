@@ -112,7 +112,7 @@ try { throw 'boom' } catch { Write-ConsoleLog -Level ERR -Message 'fatal path' }
             Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified
         }
     } else {
-        Write-Output $line
+        Write-Information -MessageData $line -InformationAction Continue
     }
 }
 

@@ -1841,4 +1841,3 @@ function Update-ManifestPrerelease {
         [System.IO.File]::WriteAllText($ManifestPath, $content)
     }
 }
-

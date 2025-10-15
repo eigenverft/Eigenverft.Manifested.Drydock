@@ -12,7 +12,7 @@
 RootModule = 'Eigenverft.Manifested.Drydock.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.20255.57349'
+ModuleVersion = '0.20255.59479'
 
 # Supported PSEditions
 CompatiblePSEditions = @('Desktop','Core')
@@ -51,7 +51,7 @@ PowerShellVersion = '5.1'
 # ProcessorArchitecture = ''
 
 # Modules that must be imported into the global environment prior to importing this module
-# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20255.57349'; })
+# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20255.59479'; })
 
 # Assemblies that must be loaded prior to importing this module
 # RequiredAssemblies = @()
@@ -70,6 +70,17 @@ PowerShellVersion = '5.1'
 
 # Functions to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no functions to export.
 FunctionsToExport = @(
+    # ...Deployments.ps1
+    'Convert-BranchToDeploymentInfo',
+    
+    # ...Dotnet.ps1
+    'Enable-TempDotnetTools',
+    'Disable-TempDotnetTools',
+
+    # ...Execution.ps1
+    'Invoke-Exec',
+
+    # ...Git.ps1
     'Get-GitTopLevelDirectory',
     'Get-GitCurrentBranch',
     'Get-GitCurrentBranchRoot',
@@ -77,6 +88,7 @@ FunctionsToExport = @(
     'Get-GitRemoteUrl',
     'Invoke-GitAddCommitPush',
 
+    # ...Logging.ps1
     'Write-ConsoleLog',
 
     'Update-ManifestModuleVersion',
@@ -92,7 +104,7 @@ FunctionsToExport = @(
     'Use-Tls12',
     'Find-ModuleScopeClutter',
     'Uninstall-PreviousModuleVersions',
-    'Convert-BranchToDeploymentInfo',
+    
 
     'New-CompatScheduledTask',
 
@@ -167,7 +179,7 @@ PrivateData = @{
         ReleaseNotes = ''
 
         # Prerelease string of this module
-        Prerelease = ''
+        Prerelease = 'dev'
 
         # Flag to indicate whether the module requires explicit user acceptance for install/update/save
         # RequireLicenseAcceptance = $false

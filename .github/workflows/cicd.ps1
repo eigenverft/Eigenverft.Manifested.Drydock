@@ -2,6 +2,17 @@ param (
     [string]$PsGalleryApiKey
 ) 
 
+# Fail-fast defaults for reliable CI/local runs:
+# - StrictMode 3: treat uninitialized variables, unknown members, etc. as errors.
+# - ErrorActionPreference='Stop': convert non-terminating errors into terminating ones (catchable).
+# Error-handling guidance:
+# - In catch{ }, prefer Write-Error or 'throw' to preserve fail-fast behavior.
+#   * Write-Error (with ErrorActionPreference='Stop') is terminating and bubbles to the caller 'throw' is always terminating and keeps stack context.
+# - Using Write-Host in catch{ } only logs and SWALLOWS the exception; execution continues, use a sentinel value (e.g., $null) explicitly.
+# - Note: native tool exit codes on PS5 aren’t governed by ErrorActionPreference; use the Invoke-Exec wrapper to enforce policy.
+Set-StrictMode -Version 3
+$ErrorActionPreference = 'Stop'
+
 # Keep this script compatible with PowerShell 5.1 and PowerShell 7+
 # Lean, pipeline-friendly style—simple, readable, and easy to modify, failfast on errors.
 Write-Host "Powershell script $(Split-Path -Leaf $PSCommandPath) has started."
@@ -20,11 +31,13 @@ if ($remoteResourcesOk)
     Install-Module -Name 'Eigenverft.Manifested.Drydock' -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber -AllowPrerelease -ErrorAction Stop
 }
 
+# Verify the module is available, if not found exit the script with error
 Test-ModuleAvailable -Name 'Eigenverft.Manifested.Drydock' -IncludePrerelease -ExitIfNotFound -Quiet
 
 # Required for updating PowerShellGet and PackageManagement providers in local PowerShell 5.x environments
 Initialize-PowerShellMiniBootstrap
 
+# Test TLS, NuGet, PackageManagement, PowerShellGet, and PSGallery publish endpoint
 Test-PsGalleryPublishPrereqsOffline -ExitOnFailure
 
 # Clean up previous versions of the module to avoid conflicts in local PowerShell environments
@@ -41,6 +54,9 @@ Test-VariableValue -Variable { $PsGalleryApiKey } -ExitIfNullOrEmpty -HideValue
 # Verify required commands are available
 if ($cmd = Test-CommandAvailable -Command "git") { Write-Host "Test-CommandAvailable: $($cmd.Name) $($cmd.Version) found at $($cmd.Source)" } else { Write-Error "git not found"; exit 1 }
 if ($cmd = Test-CommandAvailable -Command "dotnet") { Write-Host "Test-CommandAvailable: $($cmd.Name) $($cmd.Version) found at $($cmd.Source)" } else { Write-Error "dotnet not found"; exit 1 }
+
+# Enable the .NET tools specified in the manifest file
+Enable-TempDotnetTools -ManifestFile "$PSScriptRoot\.config\dotnet-tools\dotnet-tools.json" -NoReturn
 
 # Preload environment information
 $runEnvironment = Get-RunEnvironment
@@ -67,7 +83,7 @@ $probeGeneratedVersion = Convert-64SecPowershellVersionToDateTime -VersionBuild 
 Test-VariableValue -Variable { $generatedVersion } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
 
-#######
+###############################################################
 
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" -ErrorAction Stop
 Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedVersion.VersionFull)"
@@ -81,7 +97,6 @@ if ($remoteResourcesOk)
     Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$PsGalleryApiKey" -ErrorAction Stop    
 }
 
-
 if ($remoteResourcesOk)
 {
     if ($($runEnvironment.IsCI)) {
@@ -90,6 +105,3 @@ if ($remoteResourcesOk)
         Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Auto ver bump from local to $($generatedVersion.VersionFull) [skip ci]" -Tags @( "$($generatedVersion.VersionFull)-$($deploymentInfo.Affix.Label)" ) -ErrorAction Stop
     }
 }
-
-
-

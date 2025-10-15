@@ -104,6 +104,7 @@ FunctionsToExport = @(
     'Use-Tls12',
     'Find-ModuleScopeClutter',
     'Uninstall-PreviousModuleVersions',
+    'Drydock',
     
 
     'New-CompatScheduledTask',

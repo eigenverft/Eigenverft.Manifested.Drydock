@@ -233,3 +233,51 @@ Reviewer note: Host-type detection for Azure is heuristic by design; no single a
     }
 }
 
+function Drydock {
+<#
+.SYNOPSIS
+Install Eigenverft.Manifested.Drydock from PSGallery.
+
+.DESCRIPTION
+Installs the module for the chosen scope. By default prerelease builds are allowed;
+use -Stable to restrict to stable releases only.
+
+.PARAMETER Stable
+Install only stable versions (omits -AllowPrerelease).
+
+.PARAMETER Scope
+PowerShellGet install scope. Defaults to CurrentUser. Use AllUsers if elevated.
+
+.EXAMPLE
+Drydock
+# Installs (allows prerelease) for CurrentUser.
+
+.EXAMPLE
+Drydock -Stable -Scope AllUsers
+# Installs stable-only for all users (requires elevation).
+#>
+    [CmdletBinding()]
+    param(
+        [switch]$Stable,
+        [ValidateSet('CurrentUser','AllUsers')]
+        [string]$Scope = 'CurrentUser'
+    )
+
+    # Build arguments explicitly to keep the surface area minimal and PS5-safe.
+    $cliargs = @(
+        '-Name','Eigenverft.Manifested.Drydock',
+        '-Repository','PSGallery',
+        '-Scope', $Scope,
+        '-Force',
+        '-AllowClobber',
+        '-ErrorAction','Stop'
+    )
+
+    if (-not $Stable) {
+        # Allow prerelease unless caller requests stable-only.
+        $cliargs += '-AllowPrerelease'
+    }
+
+    Install-Module @cliargs
+}
+

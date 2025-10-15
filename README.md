@@ -5,6 +5,8 @@ Expect frequent releases—auto-versioning is built in. Tasks are parity-driven:
 
 The Export-OfflineModuleBundle cmdlet makes modules available for isolated, offline systems; see below. (Only stable builds will be used.)
 
+The module itself is publish with this function so see for example usage .github/workflows/cicd.ps1 
+
 [Eigenverft.Manifested.Drydock – PowerShell Gallery](https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock)
 
 

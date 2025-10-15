@@ -239,45 +239,43 @@ function Drydock {
 Install Eigenverft.Manifested.Drydock from PSGallery.
 
 .DESCRIPTION
-Installs the module for the chosen scope. By default prerelease builds are allowed;
-use -Stable to restrict to stable releases only.
+Installs for the chosen scope. Allows prerelease by default; use -Stable for stable-only.
 
 .PARAMETER Stable
-Install only stable versions (omits -AllowPrerelease).
+Install only stable versions (omits prerelease).
 
 .PARAMETER Scope
-PowerShellGet install scope. Defaults to CurrentUser. Use AllUsers if elevated.
+Install scope. Defaults to CurrentUser.
 
 .EXAMPLE
 Drydock
-# Installs (allows prerelease) for CurrentUser.
+# Installs (prerelease allowed) for CurrentUser.
 
 .EXAMPLE
 Drydock -Stable -Scope AllUsers
 # Installs stable-only for all users (requires elevation).
 #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess=$true)]
     param(
         [switch]$Stable,
         [ValidateSet('CurrentUser','AllUsers')]
         [string]$Scope = 'CurrentUser'
     )
 
-    # Build arguments explicitly to keep the surface area minimal and PS5-safe.
-    $cliargs = @(
-        '-Name','Eigenverft.Manifested.Drydock',
-        '-Repository','PSGallery',
-        '-Scope', $Scope,
-        '-Force',
-        '-AllowClobber',
-        '-ErrorAction','Stop'
-    )
-
-    if (-not $Stable) {
-        # Allow prerelease unless caller requests stable-only.
-        $cliargs += '-AllowPrerelease'
+    # Build a HASHTABLE for splatting (required).
+    $params = @{
+        Name         = 'Eigenverft.Manifested.Drydock'
+        Repository   = 'PSGallery'
+        Scope        = $Scope
+        Force        = $true
+        AllowClobber = $true
+        ErrorAction  = 'Stop'
     }
+    if (-not $Stable) { $params.AllowPrerelease = $true }
 
-    Install-Module @cliargs
+    if ($PSCmdlet.ShouldProcess("$($params.Name)","Install ($Scope)")) {
+        Install-Module @params
+    }
 }
+
 

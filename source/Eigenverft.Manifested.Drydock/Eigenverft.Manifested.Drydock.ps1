@@ -233,3 +233,49 @@ Reviewer note: Host-type detection for Azure is heuristic by design; no single a
     }
 }
 
+function Drydock {
+<#
+.SYNOPSIS
+Install Eigenverft.Manifested.Drydock from PSGallery.
+
+.DESCRIPTION
+Installs for the chosen scope. Allows prerelease by default; use -Stable for stable-only.
+
+.PARAMETER Stable
+Install only stable versions (omits prerelease).
+
+.PARAMETER Scope
+Install scope. Defaults to CurrentUser.
+
+.EXAMPLE
+Drydock
+# Installs (prerelease allowed) for CurrentUser.
+
+.EXAMPLE
+Drydock -Stable -Scope AllUsers
+# Installs stable-only for all users (requires elevation).
+#>
+    [CmdletBinding(SupportsShouldProcess=$true)]
+    param(
+        [switch]$Stable,
+        [ValidateSet('CurrentUser','AllUsers')]
+        [string]$Scope = 'CurrentUser'
+    )
+
+    # Build a HASHTABLE for splatting (required).
+    $params = @{
+        Name         = 'Eigenverft.Manifested.Drydock'
+        Repository   = 'PSGallery'
+        Scope        = $Scope
+        Force        = $true
+        AllowClobber = $true
+        ErrorAction  = 'Stop'
+    }
+    if (-not $Stable) { $params.AllowPrerelease = $true }
+
+    if ($PSCmdlet.ShouldProcess("$($params.Name)","Install ($Scope)")) {
+        Install-Module @params
+    }
+}
+
+

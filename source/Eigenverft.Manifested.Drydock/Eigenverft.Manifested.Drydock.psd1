@@ -88,6 +88,9 @@ FunctionsToExport = @(
     'Get-GitRemoteUrl',
     'Invoke-GitAddCommitPush',
 
+    # ...IO.ps1
+    'Find-FilesByPattern',
+
     # ...Logging.ps1
     'Write-ConsoleLog',
 
@@ -95,7 +98,6 @@ FunctionsToExport = @(
     'Update-ManifestReleaseNotes',
     'Update-ManifestPrerelease',
 
-    'Find-FilesByPattern',
     'Get-RunEnvironment',
     'Get-ConfigValue',
     'Initialize-PowerShellMiniBootstrap',

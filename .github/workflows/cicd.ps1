@@ -11,7 +11,10 @@ param (
 # - Using Write-Host in catch{ } only logs and SWALLOWS the exception; execution continues, use a sentinel value (e.g., $null) explicitly.
 # - Note: native tool exit codes on PS5 aren’t governed by ErrorActionPreference; use the Invoke-Exec wrapper to enforce policy.
 Set-StrictMode -Version 3
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference     = 'Stop'   # errors become terminating
+$Global:ConsoleLogMinLevel = 'INF'    # gate: TRC/DBG/INF/WRN/ERR/FTL
+
+#Write-ConsoleLog -Level INF -Message 'started' 
 
 # Keep this script compatible with PowerShell 5.1 and PowerShell 7+
 # Lean, pipeline-friendly style—simple, readable, and easy to modify, failfast on errors.
@@ -105,3 +108,4 @@ if ($remoteResourcesOk)
         Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "Auto ver bump from local to $($generatedVersion.VersionFull) [skip ci]" -Tags @( "$($generatedVersion.VersionFull)$($deploymentInfo.Affix.Suffix)" ) -ErrorAction Stop
     }
 }
+

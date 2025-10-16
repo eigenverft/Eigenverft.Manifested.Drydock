@@ -215,7 +215,11 @@ If set, the function does not return the object to the pipeline (console stays c
             Write-Host ("[dotnet-tools] Ensuring:       {0}@{1}" -f $id, $ver) -ForegroundColor DarkGray
             $ok = _EnsureExactTool -Path $ToolPath -Id $id -Version $ver -NoCache:$NoCache -TryUpdateFirst:$present
             if (-not $ok) { throw "Failed to ensure $id@$ver in $ToolPath." }
-            $status = $present ? "Updated" : "Installed"
+            if ($present) {
+                $status = "Updated"
+            } else {
+                $status = "Installed"
+            }
         }
 
         # Per-tool status line with color

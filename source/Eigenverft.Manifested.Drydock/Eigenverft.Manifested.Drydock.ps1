@@ -155,7 +155,7 @@ Reviewer note: Host-type detection for Azure is heuristic by design; no single a
     elseif ($env:JENKINS_URL -or $env:BUILD_ID) {
         $state.Provider = 'Jenkins'
         $state.IsCI     = $true
-        $state.IsLocal  = $false        
+        $state.IsLocal  = $false
         $state.Details['NodeName'] = $env:NODE_NAME
         $state.Details['HasJenkinsUrl'] = [bool]$env:JENKINS_URL
 
@@ -170,7 +170,7 @@ Reviewer note: Host-type detection for Azure is heuristic by design; no single a
     elseif ($env:CI -eq 'true') {
         $state.Provider = 'UnknownCI'
         $state.IsCI     = $true
-        $state.IsLocal  = $false        
+        $state.IsLocal  = $false
         $state.Hosting  = 'Unknown'
         $state.Evidence += 'CI'
     }

@@ -695,7 +695,11 @@ Resolve-ModulePath -ModuleName Pester -All -IncludePrerelease
 
     if (-not $annotated) {
         if ($ThrowIfNotFound) {
-            $scope = $IncludePrerelease ? 'any (incl. prerelease)' : 'stable'
+            if ($IncludePrerelease) {
+                $scope = 'any (incl. prerelease)'
+            } else {
+                $scope = 'stable'
+            }
             throw "Module '$ModuleName' not found in $scope installations on PSModulePath."
         }
         return

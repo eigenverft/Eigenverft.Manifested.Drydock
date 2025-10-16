@@ -1,58 +1,57 @@
 function Write-ConsoleLog {
 <#
 .SYNOPSIS
-Minimal console logger for PowerShell 5 (space layout), UTC by default.
+Deterministic logger gated ONLY by MinLevel; non-errors use Output, errors use Error.
 
 .DESCRIPTION
-Emits: "[yyyy-MM-dd HH:mm:ss:fff LEVEL] [file.ps1] [function] message"
-- Time is UTC by default. Use -LocalTime to log in local time.
-- Auto-resolves caller script file and function from the call stack.
-- Plain text, deterministic output (no colors).
+Formats: "[yyyy-MM-dd HH:mm:ss:fff LEVEL] [file.ps1] [function] message"
+Visibility is controlled solely by MinLevel (TRC..FTL). Preferences like Verbose/Debug/Warning do not affect output.
+Streams:
+  - TRC/DBG/INF/WRN -> Write-Output
+  - ERR/FTL         -> Write-Error (terminates when $ErrorActionPreference = 'Stop')
+If an error is requested (ERR/FTL) but MinLevel is stricter (e.g., FTL), the function auto-escalates to match MinLevel
+so it isn’t filtered out (useful in catch).
 
 .PARAMETER Message
-The message to log. Mandatory and non-empty.
+Text to log.
 
 .PARAMETER Level
-Severity tag. One of: TRC, DBG, INF, WRN, ERR, FTL. Defaults to INF.
+TRC | DBG | INF | WRN | ERR | FTL. Default: INF.
+
+.PARAMETER MinLevel
+TRC | DBG | INF | WRN | ERR | FTL. Defaults to $Global:ConsoleLogMinLevel or 'INF'.
 
 .PARAMETER LocalTime
-When present, uses local time instead of UTC.
-
-.PARAMETER ContinueOnError
-When present, do NOT exit on ERR/FTL. By default the function exits on ERR (code 1) and FTL (code 2).
-
-.PARAMETER QuietExceptCritical
-Suppress all output except ERR and FTL.
-
-.PARAMETER QuietExceptWarning
-Suppress all output except WRN, ERR, and FTL.
+Use local time (UTC is default).
 
 .EXAMPLE
-function MakeDirs {
-    Write-ConsoleLog -Level INF -Message 'Dirscreated.'
-}
-MakeDirs
-# -> [2025-10-12 04:47:17:265 INF] [out.ps1] [makedirs] Dirscreated.
+# Global config (only these matter)
+$ErrorActionPreference     = 'Stop'   # errors become terminating
+$Global:ConsoleLogMinLevel = 'INF'    # gate: TRC/DBG/INF/WRN/ERR/FTL
 
 .EXAMPLE
-# Use in try/catch; include the error message via $_ and keep running.
+# 1) Normal flow
+Write-ConsoleLog -Level INF -Message 'started'     # goes to Output
+
+.EXAMPLE
+# 2) Try/Catch – you just say ERR in catch
 try {
-    Throw "Something went wrong."
+    Write-ConsoleLog -Level INF -Message 'work ok'
 }
 catch {
-    # Default would exit on ERR; add -ContinueOnError to log and continue.
-    # Write-ConsoleLog -Level ERR -ContinueOnError -Message ("Caught error: {0}" -f $_.Exception.Message)
-    # Alternatively include the whole error record:
-    # Write-ConsoleLog -Level ERR -ContinueOnError -Message ("Caught error: {0}" -f $_)
+    Write-ConsoleLog -Level ERR -Message 'not ok'   # goes to Error; terminates because EAPref=Stop
 }
 
 .EXAMPLE
-Write-ConsoleLog -Message 'customtext.' -Level WRN -LocalTime
-# -> [2025-10-12 06:47:17:265 WRN] [fileofthefunction] [functionnameinfile] customtext.
+# 3) Gate to warnings and above (no preferences involved)
+$Global:ConsoleLogMinLevel = 'WRN'
+Write-ConsoleLog -Level INF -Message 'hidden'
+Write-ConsoleLog -Level WRN -Message 'shown (Output)'
 
-.NOTES
-- Default: exit on ERR (1) and FTL (2). Use -ContinueOnError to keep going.
-- If both quiet switches are supplied, QuietExceptCritical takes precedence.
+.EXAMPLE
+# 4) Gate to fatal only; catch auto-escalates
+$Global:ConsoleLogMinLevel = 'FTL'
+try { throw 'boom' } catch { Write-ConsoleLog -Level ERR -Message 'fatal path' }  # escalates to FTL → Error → Stop
 #>
     [CmdletBinding()]
     param(
@@ -65,69 +64,57 @@ Write-ConsoleLog -Message 'customtext.' -Level WRN -LocalTime
         [string]$Level = 'INF',
 
         [Parameter()]
-        [switch]$LocalTime,
+        [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
+        [string]$MinLevel,
 
         [Parameter()]
-        [switch]$ContinueOnError,
-
-        [Parameter()]
-        [switch]$QuietExceptCritical,
-
-        [Parameter()]
-        [switch]$QuietExceptWarning
+        [switch]$LocalTime
     )
 
-    # Timestamp (UTC by default).
-    $now = if ($LocalTime.IsPresent) { Get-Date } else { [DateTime]::UtcNow }
+    # Resolve MinLevel: explicit > global > default
+    if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
+        $MinLevel = if ($Global:ConsoleLogMinLevel) { $Global:ConsoleLogMinLevel } else { 'INF' }
+    }
+
+    $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
+    $lvl = $Level.ToUpperInvariant()
+    $min = $MinLevel.ToUpperInvariant()
+    $sev = $sevMap[$lvl]
+    $gate= $sevMap[$min]
+
+    # Auto-escalate requested errors to meet strict MinLevel (e.g., MinLevel=FTL)
+    if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) {
+        $lvl = $min
+        $sev = $gate
+    }
+
+    # Drop below gate
+    if ($sev -lt $gate) { return }
+
+    # Format line
+    $now = if ($LocalTime) { Get-Date } else { [DateTime]::UtcNow }
     $ts  = $now.ToString('yyyy-MM-dd HH:mm:ss:fff')
 
-    # Resolve file/function from call stack.
+    # Resolve caller (external reviewer perspective)
     $self   = $MyInvocation.MyCommand.Name
     $caller = Get-PSCallStack | Where-Object { $_.FunctionName -ne $self } | Select-Object -First 1
-    if (-not $caller) {
-        $caller = [pscustomobject]@{
-            ScriptName   = $PSCommandPath
-            FunctionName = '<scriptblock>'
-            Location     = $null
-            Command      = $null
-        }
-    }
+    if (-not $caller) { $caller = [pscustomobject]@{ ScriptName=$PSCommandPath; FunctionName='<scriptblock>' } }
 
-    $file =
-        if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName }
-        elseif ($caller.Location -and $caller.Location -match '^(.*?):\d+') { Split-Path -Leaf $Matches[1] }
-        else { 'console' }
-
-    $func =
-        if ($caller.FunctionName) { $caller.FunctionName }
-        elseif ($caller.Command)  { $caller.Command }
-        else { '<scriptblock>' }
-
-    $lvl = $Level.ToUpperInvariant()
-
-    # Severity ranking.
-    $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
-    $sev    = $sevMap[$lvl]
-
-    # Quieting rules (QuietExceptCritical is stricter; give it precedence).
-    $shouldWrite = $true
-    if ($QuietExceptCritical.IsPresent) {
-        if ($sev -lt 4) { $shouldWrite = $false }
-    }
-    elseif ($QuietExceptWarning.IsPresent) {
-        if ($sev -lt 3) { $shouldWrite = $false }
-    }
-
-    # Format the line.
+    $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'console' }
+    $func = if ($caller.FunctionName) { $caller.FunctionName } else { '<scriptblock>' }
     $line = "[{0} {1}] [{2}] [{3}] {4}" -f $ts, $lvl, $file, $func.ToLower(), $Message
 
-    if ($shouldWrite) {
-        Write-Host $line
-    }
-
-    # Default: stop on ERR/FTL unless -ContinueOnError is specified.
-    if (-not $ContinueOnError.IsPresent -and $sev -ge 4) {
-        exit (if ($sev -ge 5) { 2 } else { 1 })
+    # Emit: Output for non-errors; Error for ERR/FTL. Termination via $ErrorActionPreference.
+    if ($sev -ge 4) {
+        if ($ErrorActionPreference -eq 'Stop') {
+            Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified -ErrorAction Stop
+        } else {
+            Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified
+        }
+    } else {
+        Write-Information -MessageData $line -InformationAction Continue
     }
 }
+
+
 

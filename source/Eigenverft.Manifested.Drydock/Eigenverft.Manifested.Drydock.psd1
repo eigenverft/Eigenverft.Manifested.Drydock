@@ -12,7 +12,7 @@
 RootModule = 'Eigenverft.Manifested.Drydock.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.20255.60034'
+ModuleVersion = '0.20255.61402'
 
 # Supported PSEditions
 CompatiblePSEditions = @('Desktop','Core')
@@ -51,7 +51,7 @@ PowerShellVersion = '5.1'
 # ProcessorArchitecture = ''
 
 # Modules that must be imported into the global environment prior to importing this module
-# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20255.60034'; })
+# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20255.61402'; })
 
 # Assemblies that must be loaded prior to importing this module
 # RequiredAssemblies = @()
@@ -88,32 +88,44 @@ FunctionsToExport = @(
     'Get-GitRemoteUrl',
     'Invoke-GitAddCommitPush',
 
+    # ...IO.ps1
+    'Find-FilesByPattern',
+    'Find-TreeContent',
+    'Find-TreeContentByFile',
+    'Resolve-ModulePath',
+
     # ...Logging.ps1
     'Write-ConsoleLog',
 
+    # ...Powershell.ps1
+    'Export-OfflineModuleBundle',
+    'Uninstall-PreviousModuleVersions',
+    'Find-ModuleScopeClutter',
     'Update-ManifestModuleVersion',
     'Update-ManifestReleaseNotes',
     'Update-ManifestPrerelease',
+    
+    # ...Process.ps1
+    'Open-LocalHtml',
 
-    'Find-FilesByPattern',
+
     'Get-RunEnvironment',
     'Get-ConfigValue',
     'Initialize-PowerShellMiniBootstrap',
     'Import-Script',
-    'Export-OfflineModuleBundle',
     'Use-Tls12',
-    'Find-ModuleScopeClutter',
-    'Uninstall-PreviousModuleVersions',
     'Drydock',
     
-
+    # ...ScheduledTask.ps1
     'New-CompatScheduledTask',
 
+    # ...Tests.ps1
     'Test-VariableValue',
     'Test-CommandAvailable',
     'Test-ModuleAvailable',
     'Test-PsGalleryPublishPrereqsOffline',
 
+    # ...Version.ps1
     'Convert-DateTimeTo64SecVersionComponents',
     'Convert-64SecVersionComponentsToDateTime',
     'Convert-DateTimeTo64SecPowershellVersion',
@@ -180,7 +192,7 @@ PrivateData = @{
         ReleaseNotes = ''
 
         # Prerelease string of this module
-        Prerelease = ''
+        Prerelease = 'dev'
 
         # Flag to indicate whether the module requires explicit user acceptance for install/update/save
         # RequireLicenseAcceptance = $false

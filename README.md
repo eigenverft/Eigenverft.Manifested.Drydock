@@ -3,6 +3,10 @@
 PowerShell helper functions for the Eigenverft Manifested Drydock, optimized for lightning-fast iteration and reliable local + CI/CD workflows.
 Expect frequent releases—auto-versioning is built in. Tasks are parity-driven: the same commands run locally and in CI/CD, so local builds remain fully functional even if the pipeline is down.
 
+The Export-OfflineModuleBundle cmdlet makes modules available for isolated, offline systems; see below. (Only stable builds will be used.)
+
+The module itself is publish with this function so see for example usage .github/workflows/cicd.ps1 
+
 [Eigenverft.Manifested.Drydock – PowerShell Gallery](https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock)
 
 
@@ -10,15 +14,11 @@ Expect frequent releases—auto-versioning is built in. Tasks are parity-driven:
 
 Install `Eigenverft.Manifested.Drydock` from a Windows PowerShell or PowerShell 7+ prompt.
 
-PowerShell 7+ (recommended):
+PowerShell 5-7+ (recommended):
 
 ```powershell
 Install-Module -Name Eigenverft.Manifested.Drydock -Repository PSGallery -Scope CurrentUser -Force
-# Export-OfflineModuleBundle -Folder 'C:\Bundle' -Name @('PowerShellGet','PackageManagement','Eigenverft.Manifested.Drydock')
-```
-
-```powershell (offline transfer)
-
+# Export-OfflineModuleBundle -Folder C:\temp\export -Name @('PowerShellGet','PackageManagement','Pester','PSScriptAnalyzer','Eigenverft.Manifested.Drydock')
 ```
 
 Windows PowerShell 5.1 (legacy bootstrap):

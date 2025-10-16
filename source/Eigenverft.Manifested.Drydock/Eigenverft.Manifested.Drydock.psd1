@@ -92,32 +92,40 @@ FunctionsToExport = @(
     'Find-FilesByPattern',
     'Find-TreeContent',
     'Find-TreeContentByFile',
+    'Resolve-ModulePath',
 
     # ...Logging.ps1
     'Write-ConsoleLog',
 
+    # ...Powershell.ps1
+    'Export-OfflineModuleBundle',
+    'Uninstall-PreviousModuleVersions',
+    'Find-ModuleScopeClutter',
     'Update-ManifestModuleVersion',
     'Update-ManifestReleaseNotes',
     'Update-ManifestPrerelease',
+    
+    # ...Process.ps1
+    'Open-LocalHtml',
+
 
     'Get-RunEnvironment',
     'Get-ConfigValue',
     'Initialize-PowerShellMiniBootstrap',
     'Import-Script',
-    'Export-OfflineModuleBundle',
     'Use-Tls12',
-    'Find-ModuleScopeClutter',
-    'Uninstall-PreviousModuleVersions',
     'Drydock',
     
-
+    # ...ScheduledTask.ps1
     'New-CompatScheduledTask',
 
+    # ...Tests.ps1
     'Test-VariableValue',
     'Test-CommandAvailable',
     'Test-ModuleAvailable',
     'Test-PsGalleryPublishPrereqsOffline',
 
+    # ...Version.ps1
     'Convert-DateTimeTo64SecVersionComponents',
     'Convert-64SecVersionComponentsToDateTime',
     'Convert-DateTimeTo64SecPowershellVersion',

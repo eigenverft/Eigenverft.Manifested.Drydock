@@ -279,7 +279,13 @@ Drydock -Commands
                 Write-Verbose ("Import failed; attempting enumeration without import. Error: {0}" -f $_.Exception.Message)
             }
 
-            Get-Command -Module $ModuleName |
+            $mod = Get-Module -Name $ModuleName
+            if (-not $mod) {
+                try { Import-Module -Name $ModuleName -ErrorAction Stop | Out-Null } catch { }
+                $mod = Get-Module -Name $ModuleName
+            }
+            $mod.ExportedCommands.Values |
+                Where-Object { $_.CommandType -in 'Function','Cmdlet' } |
                 Sort-Object Name |
                 Select-Object Name, CommandType, ModuleName
             return
@@ -304,4 +310,3 @@ Drydock -Commands
         }
     }
 }
-

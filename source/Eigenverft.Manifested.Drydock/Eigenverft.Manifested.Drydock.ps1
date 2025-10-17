@@ -284,10 +284,24 @@ Drydock -Commands
                 try { Import-Module -Name $ModuleName -ErrorAction Stop | Out-Null } catch { }
                 $mod = Get-Module -Name $ModuleName
             }
-            $mod.ExportedCommands.Values |
-                Where-Object { $_.CommandType -in 'Function','Cmdlet' } |
-                Sort-Object Name |
-                Select-Object Name, CommandType, ModuleName
+
+            # Functions only (no aliases, no cmdlets)
+            $funcs = $mod.ExportedFunctions.Values | Sort-Object Name
+            if ($null -eq $funcs -or $funcs.Count -eq 0) {
+                Write-Warning ("Module '{0}' exports no functions." -f $ModuleName)
+                return
+            }
+
+            # Functions only (you already have $funcs)
+            $rows = foreach ($f in $funcs) {
+                $n = $f.Name.Replace("'", "''")   # robust quoting for odd names
+                [pscustomobject]@{
+                    Help     = ("Get-Help -Name '{0}'" -f $n)
+                    Examples = ("Get-Help -Name '{0}' -Examples" -f $n)
+                }
+            }
+
+            $rows | Format-Table Help,Examples -AutoSize -Wrap
             return
         }
 
@@ -310,3 +324,5 @@ Drydock -Commands
         }
     }
 }
+
+Drydock -Commands

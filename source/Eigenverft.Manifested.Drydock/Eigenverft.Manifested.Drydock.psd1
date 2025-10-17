@@ -98,6 +98,9 @@ FunctionsToExport = @(
     'Write-ConsoleLog',
 
     # ...Powershell.ps1
+    'Initialize-PowerShellMiniBootstrap',
+    'Import-Script',
+    'Use-Tls12',
     'Export-OfflineModuleBundle',
     'Uninstall-PreviousModuleVersions',
     'Find-ModuleScopeClutter',
@@ -108,12 +111,9 @@ FunctionsToExport = @(
     # ...Process.ps1
     'Open-LocalHtml',
 
-
-    'Get-RunEnvironment',
+    # ...Drydock.ps1
     'Get-ConfigValue',
-    'Initialize-PowerShellMiniBootstrap',
-    'Import-Script',
-    'Use-Tls12',
+    'Get-RunEnvironment',
     'Drydock',
     
     # ...ScheduledTask.ps1

@@ -305,7 +305,7 @@ Drydock -Commands
             return
         }
 
-        'UpdateSet' {
+        'UpdateSet' { 
             # Build Install-Module args.
             $params = @{
                 Name         = $ModuleName
@@ -325,4 +325,3 @@ Drydock -Commands
     }
 }
 
-Drydock -Commands

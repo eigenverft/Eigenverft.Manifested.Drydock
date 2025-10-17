@@ -193,46 +193,115 @@ Reviewer note: Host-type detection for Azure is heuristic by design; no single a
 function Drydock {
 <#
 .SYNOPSIS
-Install Eigenverft.Manifested.Drydock from PSGallery.
+Install Eigenverft.Manifested.Drydock or list its commands (offline).
 
 .DESCRIPTION
-Installs for the chosen scope. Allows prerelease by default; use -Stable for stable-only.
+Safe-by-default. Without a main switch, prints a short manual. Main switches are mutually exclusive:
+- -Update : install/update from PSGallery (optionally -Stable, -Scope).
+- -Commands : list commands offline from a local install.
+
+.PARAMETER Update
+Perform an install/update from PSGallery. Requires internet. Honors -Stable and -Scope.
+
+.PARAMETER Commands
+List module commands strictly from a locally installed module (offline). Warns if not installed.
 
 .PARAMETER Stable
-Install only stable versions (omits prerelease).
+(Only with -Update) Install only stable versions. Default allows prerelease.
 
 .PARAMETER Scope
-Install scope. Defaults to CurrentUser.
+(Only with -Update) Installation scope: CurrentUser (default) or AllUsers (elevation required).
 
 .EXAMPLE
 Drydock
-# Installs (prerelease allowed) for CurrentUser.
+# Prints short manual (2 lines per switch).
 
 .EXAMPLE
-Drydock -Stable -Scope AllUsers
-# Installs stable-only for all users (requires elevation).
+Drydock -Update -Stable -Scope AllUsers
+# Install/update stable-only for all users (requires elevation).
+
+.EXAMPLE
+Drydock -Commands
+# List commands from the locally installed module (offline).
 #>
-    [CmdletBinding(SupportsShouldProcess=$true)]
+    [CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = 'Manual')]
     param(
+        # Main switches (mutually exclusive)
+        [Parameter(ParameterSetName='UpdateSet', Mandatory=$true)]
+        [switch]$Update,
+
+        [Parameter(ParameterSetName='CommandsSet', Mandatory=$true)]
+        [switch]$Commands,
+
+        # Options for -Update only
+        [Parameter(ParameterSetName='UpdateSet')]
         [switch]$Stable,
+
+        [Parameter(ParameterSetName='UpdateSet')]
         [ValidateSet('CurrentUser','AllUsers')]
         [string]$Scope = 'CurrentUser'
     )
 
-    # Build a HASHTABLE for splatting (required).
-    $params = @{
-        Name         = 'Eigenverft.Manifested.Drydock'
-        Repository   = 'PSGallery'
-        Scope        = $Scope
-        Force        = $true
-        AllowClobber = $true
-        ErrorAction  = 'Stop'
-    }
-    if (-not $Stable) { $params.AllowPrerelease = $true }
+    # Reviewer note: Keep identifiers centralized; avoids magic strings and typos.
+    $ModuleName = 'Eigenverft.Manifested.Drydock'
+    $Repository = 'PSGallery'
 
-    if ($PSCmdlet.ShouldProcess("$($params.Name)","Install ($Scope)")) {
-        Install-Module @params
+    function Show-Manual {
+        @(
+            "-Update   : Install/Update module from $Repository (supports -Stable, -Scope)."
+            "  Example : Drydock -Update -Stable -Scope AllUsers"
+            "  -Stable : Stable-only install; default allows prerelease."
+            "  -Scope  : CurrentUser (default) or AllUsers (elevation)."
+            ""
+            "-Commands : List commands from local install only (offline)."
+            "  Example : Drydock -Commands"
+        ) | ForEach-Object { Write-Output $_ }
+    }
+
+    switch ($PSCmdlet.ParameterSetName) {
+        'Manual' {
+            Show-Manual
+            return
+        }
+
+        'CommandsSet' {
+            # OFFLINE: only touches local disk.
+            $local = Get-Module -ListAvailable -Name $ModuleName
+            if ($null -eq $local) {
+                Write-Warning ("Module '{0}' is not installed locally; offline listing unavailable." -f $ModuleName)
+                return
+            }
+
+            # Import from local path only; remains offline.
+            try {
+                Import-Module -Name $ModuleName -ErrorAction Stop | Out-Null
+            } catch {
+                Write-Verbose ("Import failed; attempting enumeration without import. Error: {0}" -f $_.Exception.Message)
+            }
+
+            Get-Command -Module $ModuleName |
+                Sort-Object Name |
+                Select-Object Name, CommandType, ModuleName
+            return
+        }
+
+        'UpdateSet' {
+            # Build Install-Module args.
+            $params = @{
+                Name         = $ModuleName
+                Repository   = $Repository
+                Scope        = $Scope
+                Force        = $true
+                AllowClobber = $true
+                ErrorAction  = 'Stop'
+            }
+            if (-not $Stable) { $params.AllowPrerelease = $true }
+
+            if ($PSCmdlet.ShouldProcess("$($params.Name)", "Install ($Scope)")) {
+                Install-Module @params
+            }
+            return
+        }
     }
 }
-
 

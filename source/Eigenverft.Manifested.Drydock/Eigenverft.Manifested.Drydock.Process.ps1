@@ -5,7 +5,7 @@ Open local HTML files or web URLs (PS 5–7), using default or chosen browser.
 #>
     [CmdletBinding(SupportsShouldProcess = $false)]
     param(
-        [Parameter(Mandatory, Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [Parameter(Mandatory, Position = 0)]
         [Alias('FullName','LiteralPath')]
         [ValidateNotNullOrEmpty()]
         [string[]] $Path,
@@ -177,6 +177,7 @@ Open local HTML files or web URLs (PS 5–7), using default or chosen browser.
         }
     }
 }
+
 
 
 # Open-UrlInBrowser -Path 'https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock/0.20255.62363/Content/LICENSE.txt' -Browser Default

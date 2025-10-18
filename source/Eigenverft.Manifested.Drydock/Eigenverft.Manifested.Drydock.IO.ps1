@@ -577,21 +577,22 @@ function Resolve-ModulePath {
 Resolve the on-disk directory (ModuleBase) for a module by name, honoring prerelease rules.
 
 .DESCRIPTION
-Prefers the currently loaded module (active in the session), even if it’s prerelease.
+Prefers the currently loaded module (active in the session), regardless of prerelease.
 If not loaded, searches installed modules on $env:PSModulePath. By default returns the
-highest stable version. When -IncludePrerelease is set, prerelease versions are considered;
-numeric version wins first, and for equal numeric versions, stable outranks prerelease.
-PSModulePath order is used as a final tie-breaker.
+highest stable version. When -VersionScope IncludePrerelease is chosen, prerelease versions
+are considered; numeric version wins first, and for equal numeric versions, stable outranks
+prerelease. PSModulePath order is used as a final tie-breaker.
 
 .PARAMETER ModuleName
 Module name to resolve (e.g., 'Pester').
 
-.PARAMETER IncludePrerelease
-Include prerelease module versions when selecting the "latest" installed module.
-Note: A loaded module is always accepted regardless of prerelease status.
+.PARAMETER VersionScope
+'Stable' or 'IncludePrerelease'. Default: 'Stable'.
+Controls whether installed prerelease versions are considered. A loaded module is always
+accepted regardless of prerelease status.
 
 .PARAMETER All
-Return all discovered ModuleBase paths in resolution order.
+Return all discovered ModuleBase paths in resolution order (loaded first, then installed).
 
 .PARAMETER ThrowIfNotFound
 Throw if no matching module is found (neither loaded nor installed).
@@ -601,58 +602,71 @@ Resolve-ModulePath -ModuleName Pester
 # Loaded module wins; else highest installed stable by precedence.
 
 .EXAMPLE
-Resolve-ModulePath -ModuleName Pester -IncludePrerelease
+Resolve-ModulePath -ModuleName Pester -VersionScope IncludePrerelease
 # Considers prereleases: e.g., 4.0.0-beta outranks 3.9.0 stable; if 4.0.0 stable exists, it outranks 4.0.0-beta.
 
 .EXAMPLE
-Resolve-ModulePath -ModuleName Pester -All -IncludePrerelease
+Resolve-ModulePath -ModuleName Pester -All -VersionScope IncludePrerelease
 # Lists all candidate paths ordered by version (desc), stable before prerelease when equal, then PSModulePath precedence.
 
 .NOTES
-- Works on Windows PowerShell 5.1 and PowerShell 7+.
-- Detects prerelease via module manifest PrivateData.PSData.Prerelease when available.
+- Compatible with Windows PowerShell 5.1 and PowerShell 7+ on Windows/macOS/Linux.
+- Detects prerelease via PrivateData.PSData.Prerelease in the manifest when available.
 #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory, Position=0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [Parameter(Mandatory = $true, Position = 0)]
         [Alias('Name')]
         [ValidateNotNullOrEmpty()]
         [string] $ModuleName,
 
-        [switch] $IncludePrerelease,
+        [ValidateSet('Stable','IncludePrerelease')]
+        [string] $VersionScope = 'Stable',
+
         [switch] $All,
         [switch] $ThrowIfNotFound
     )
 
-    # Helper: PSModulePath precedence index (lower is better).
-    function __Get-PrecedenceIndex {
-        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
-        param([Parameter(Mandatory)][string]$ModuleBase)
-        $roots = ($env:PSModulePath -split [IO.Path]::PathSeparator)
-        try { $baseFull = [IO.Path]::GetFullPath($ModuleBase) } catch { $baseFull = $ModuleBase }
+    # Reviewer: Avoid global function leakage; use local scriptblocks for helpers.
+    $roots = ($env:PSModulePath -split [IO.Path]::PathSeparator)
+
+    $GetPrecedenceIndex = {
+        param([Parameter(Mandatory = $true)][string]$ModuleBase)
+        # Reviewer: Normalize inputs; tolerate odd entries and IO exceptions.
+        $baseFull = $ModuleBase
+        try { $baseFull = [IO.Path]::GetFullPath($ModuleBase) } catch { }
         for ($i = 0; $i -lt $roots.Length; $i++) {
-            $r = $roots[$i]; if ([string]::IsNullOrWhiteSpace($r)) { continue }
-            try { $rFull = [IO.Path]::GetFullPath($r) } catch { $rFull = $r }
-            if ($baseFull.StartsWith($rFull.TrimEnd('\','/'), [StringComparison]::InvariantCultureIgnoreCase)) { return $i }
+            $r = $roots[$i]
+            if ([string]::IsNullOrWhiteSpace($r)) { continue }
+            $rFull = $r
+            try { $rFull = [IO.Path]::GetFullPath($r) } catch { }
+            $trimmed = $rFull.TrimEnd('\','/')
+            if ($baseFull.StartsWith($trimmed, [System.StringComparison]::InvariantCultureIgnoreCase)) { return $i }
         }
         return [int]::MaxValue
     }
 
-    # Helper: determine prerelease label (if any) for a ModuleInfo.
-    function __Get-PrereleaseLabel {
-        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
-        param([Parameter(Mandatory)][System.Management.Automation.PSModuleInfo]$Module)
-        # Try PrivateData first (present when built from a manifest with PSData.Prerelease).
+    $GetPrereleaseLabel = {
+        param([Parameter(Mandatory = $true)][System.Management.Automation.PSModuleInfo]$Module)
+        # Reviewer: Prefer manifest PrivateData.PSData.Prerelease if exposed, else try read the .psd1.
         $pre = $null
         try {
-            $pd = $Module.PrivateData
-            if ($pd -and $pd.PSData -and $pd.PSData.Prerelease) { $pre = [string]$pd.PSData.Prerelease }
+            if ($Module.PrivateData -and $Module.PrivateData.PSData -and $Module.PrivateData.PSData.Prerelease) {
+                $pre = [string]$Module.PrivateData.PSData.Prerelease
+            }
         } catch { }
         if (-not $pre) {
-            # If manifest is available, read it defensively.
+            # Try explicit manifest path first if known, else fallback to <Name>.psd1 next to ModuleBase.
+            $manifestPath = $null
             try {
-                if ($Module.Path -and $Module.Path.EndsWith('.psd1', [StringComparison]::OrdinalIgnoreCase)) {
-                    $mf = Import-PowerShellDataFile -Path $Module.Path -ErrorAction Stop
+                if ($Module.Path -and $Module.Path.EndsWith('.psd1', [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $manifestPath = $Module.Path
+                } else {
+                    $candidate = Join-Path -Path $Module.ModuleBase -ChildPath ($Module.Name + '.psd1')
+                    if (Test-Path -LiteralPath $candidate) { $manifestPath = $candidate }
+                }
+                if ($manifestPath) {
+                    $mf = Import-PowerShellDataFile -Path $manifestPath -ErrorAction Stop
                     if ($mf.PrivateData -and $mf.PrivateData.PSData -and $mf.PrivateData.PSData.Prerelease) {
                         $pre = [string]$mf.PrivateData.PSData.Prerelease
                     }
@@ -662,60 +676,88 @@ Resolve-ModulePath -ModuleName Pester -All -IncludePrerelease
         return $pre
     }
 
-    # 1) Prefer loaded (active) module, regardless of prerelease.
-    $loaded = Get-Module -Name $ModuleName -All | Sort-Object Version -Descending
-    if ($loaded) {
-        if ($All) { return ($loaded | Select-Object -ExpandProperty ModuleBase -Unique) }
+    $includePre = ($VersionScope -eq 'IncludePrerelease')
+
+    # 1) Prefer loaded (active) modules, regardless of prerelease.
+    $loaded = @(Get-Module -Name $ModuleName -All | Sort-Object Version -Descending)
+
+    # 2) Discover installed candidates.
+    $installed = @(Get-Module -ListAvailable -Name $ModuleName -All)
+
+    if (-not $loaded -and -not $installed) {
+        if ($ThrowIfNotFound) {
+            throw "Module '$ModuleName' not found (neither loaded nor installed on PSModulePath)."
+        }
+        return
+    }
+
+    # Build annotated table for installed modules to sort correctly.
+    $annotatedInstalled = @()
+    foreach ($m in $installed) {
+        $pre = & $GetPrereleaseLabel -Module $m
+        $isPre = (-not [string]::IsNullOrWhiteSpace($pre))
+        if (-not $includePre -and $isPre) { continue } # Reviewer: filter prerelease unless explicitly requested.
+        $precIndex = & $GetPrecedenceIndex -ModuleBase $m.ModuleBase
+        $annotatedInstalled += [pscustomobject]@{
+            Module     = $m
+            ModuleBase = $m.ModuleBase
+            Version    = $m.Version
+            IsPre      = $isPre
+            PrecIndex  = $precIndex
+        }
+    }
+
+    # Sort installed: Version desc; stable before prerelease; PSModulePath precedence asc.
+    $orderedInstalled = @()
+    if ($annotatedInstalled.Count -gt 0) {
+        $orderedInstalled = $annotatedInstalled | Sort-Object `
+            @{ Expression = { $_.Version }; Descending = $true }, `
+            @{ Expression = { $_.IsPre } }, `
+            @{ Expression = { $_.PrecIndex } }
+    }
+
+    if ($All) {
+        # Reviewer: Return loaded first (in session order by version), then installed (excluding duplicates).
+        $result = New-Object System.Collections.Generic.List[string]
+        foreach ($lm in $loaded) {
+            if ($lm.ModuleBase -and -not $result.Contains($lm.ModuleBase, [System.StringComparer]::OrdinalIgnoreCase)) {
+                [void]$result.Add($lm.ModuleBase)
+            }
+        }
+        foreach ($row in $orderedInstalled) {
+            $mb = $row.ModuleBase
+            if ($mb -and -not $result.Contains($mb, [System.StringComparer]::OrdinalIgnoreCase)) {
+                [void]$result.Add($mb)
+            }
+        }
+        if ($result.Count -eq 0) {
+            if ($ThrowIfNotFound) {
+                throw "Module '$ModuleName' not found in the requested scope."
+            }
+            return
+        }
+        # Reviewer: Output in final resolution order, no extra noise.
+        return $result.ToArray()
+    }
+
+    # Single best resolution: loaded wins, else first installed by ordering.
+    if ($loaded.Count -gt 0) {
         return $loaded[0].ModuleBase
     }
 
-    # 2) Search installed modules.
-    $cands = Get-Module -ListAvailable -Name $ModuleName -All
-    if (-not $cands) {
-        if ($ThrowIfNotFound) { throw "Module '$ModuleName' not found (neither loaded nor installed on PSModulePath)." }
-        return
+    if ($orderedInstalled.Count -gt 0) {
+        return $orderedInstalled[0].ModuleBase
     }
 
-    # Annotate with prerelease metadata for correct ordering/filtering.
-    $annotated = foreach ($m in $cands) {
-        $pre = __Get-PrereleaseLabel -Module $m
-        [pscustomobject]@{
-            Module     = $m
-            ModuleBase = $m.ModuleBase
-            Version    = $m.Version           # [System.Version]
-            PreLabel   = $pre                  # string or $null
-            IsPre      = -not [string]::IsNullOrWhiteSpace($pre)
-            PrecIndex  = __Get-PrecedenceIndex $m.ModuleBase
+    if ($ThrowIfNotFound) {
+        $scope = 'stable'
+        if ($includePre) {
+            $scope = 'any (including prerelease)'
         }
+        throw "Module '$ModuleName' not found in $scope installations on PSModulePath."
     }
-
-    if (-not $IncludePrerelease) {
-        $annotated = $annotated | Where-Object { -not $_.IsPre }
-    }
-
-    if (-not $annotated) {
-        if ($ThrowIfNotFound) {
-            if ($IncludePrerelease) {
-                $scope = 'any (incl. prerelease)'
-            } else {
-                $scope = 'stable'
-            }
-            throw "Module '$ModuleName' not found in $scope installations on PSModulePath."
-        }
-        return
-    }
-
-    # Sort: Version desc; for equal Version => stable before prerelease; then PSModulePath precedence.
-    $ordered = $annotated | Sort-Object `
-        @{ Expression = { $_.Version }; Descending = $true }, `
-        @{ Expression = { $_.IsPre } }, `
-        @{ Expression = { $_.PrecIndex } }
-
-    if ($All) {
-        return $ordered.ModuleBase | Select-Object -Unique
-    }
-
-    return $ordered[0].ModuleBase
 }
+
+
 
 # Resolve-ModulePath -ModuleName Eigenverft.Manifested.Drydock -IncludePrerelease

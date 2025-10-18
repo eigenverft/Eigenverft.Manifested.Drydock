@@ -1865,18 +1865,16 @@ function Register-LocalPSGalleryRepository {
 
     .EXAMPLE
         Register-LocalPSGalleryRepository -RepositoryName LocalGallery
-        Registers the local repository using the default path with a Trusted policy.
 
     .EXAMPLE
         Register-LocalPSGalleryRepository -RepositoryPath "C:\MyRepo" -RepositoryName "My_Gallery-01" -InstallationPolicy Untrusted
-        Registers the repository at "C:\MyRepo" with the name "My_Gallery-01" and sets policy to Untrusted.
     #>
     [CmdletBinding()]
     [Alias("rlgr")]
     param(
         [Parameter(Mandatory = $false)]
         [ValidateNotNullOrEmpty()]
-        [string]$RepositoryPath = "$HOME/source/gallery",
+        [string]$RepositoryPath = "$HOME/source/PowershellGallery",
 
         [Parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
@@ -1888,24 +1886,48 @@ function Register-LocalPSGalleryRepository {
     )
 
     # Normalize to an absolute path (cross-platform friendly).
-    $RepositoryPath = [IO.Path]::GetFullPath((Join-Path -Path $RepositoryPath -ChildPath '.'))
+    try {
+        $RepositoryPath = [IO.Path]::GetFullPath((Join-Path -Path $RepositoryPath -ChildPath '.'))
+    }
+    catch {
+        Write-Host "Invalid repository path '$RepositoryPath': $($_.Exception.Message)" -ForegroundColor Red
+        throw
+    }
 
     # Ensure the local repository folder exists (idempotent).
     if (-not (Test-Path -Path $RepositoryPath -PathType Container)) {
-        New-Item -ItemType Directory -Path $RepositoryPath -Force | Out-Null
+        try {
+            New-Item -ItemType Directory -Path $RepositoryPath -Force -ErrorAction Stop | Out-Null
+        }
+        catch {
+            Write-Host "Failed to create repository directory '$RepositoryPath': $($_.Exception.Message)" -ForegroundColor Red
+            throw
+        }
     }
 
     # If a repository with the specified name exists, unregister it.
-    if (Get-PSRepository -Name $RepositoryName -ErrorAction SilentlyContinue) {
-        Write-Host "Repository '$RepositoryName' already exists. Removing it." -ForegroundColor Yellow
-        Unregister-PSRepository -Name $RepositoryName
+    try {
+        if (Get-PSRepository -Name $RepositoryName -ErrorAction SilentlyContinue) {
+            Write-Host "Repository '$RepositoryName' already exists. Removing it." -ForegroundColor Yellow
+            Unregister-PSRepository -Name $RepositoryName -ErrorAction Stop
+        }
+    }
+    catch {
+        Write-Host "Failed while checking/removing existing repository '$RepositoryName': $($_.Exception.Message)" -ForegroundColor Red
+        throw
     }
 
     # Register the local PowerShell repository with the requested installation policy.
-    Register-PSRepository -Name $RepositoryName -SourceLocation $RepositoryPath -InstallationPolicy $InstallationPolicy
-
-    Write-Host "Local repository '$RepositoryName' registered at: $RepositoryPath (Policy: $InstallationPolicy)" -ForegroundColor Green
+    try {
+        Register-PSRepository -Name $RepositoryName -SourceLocation $RepositoryPath -InstallationPolicy $InstallationPolicy -ErrorAction Stop
+        Write-Host "Local repository '$RepositoryName' registered at: $RepositoryPath (Policy: $InstallationPolicy)" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "Failed to register repository '$RepositoryName' at '$RepositoryPath': $($_.Exception.Message)" -ForegroundColor Red
+        throw
+    }
 }
+
 
 function Unregister-LocalPSGalleryRepository {
     <#

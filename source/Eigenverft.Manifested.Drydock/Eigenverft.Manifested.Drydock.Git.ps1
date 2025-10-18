@@ -441,7 +441,7 @@ Adds the repo to safe.directory before proceeding.
 
     # --- Tagging (optional): create annotated tags on HEAD and push ---
     if ($Tags -and $Tags.Count -gt 0) {
-        $head = git -C $repoPath rev-parse HEAD 2>$null
+        $head = (& git -C $repoPath rev-parse HEAD 2>$null)
         if ($head) { $head = $head.Trim() }
 
         if ([string]::IsNullOrWhiteSpace($head)) {
@@ -453,7 +453,8 @@ Adds the repo to safe.directory before proceeding.
             $tag = ([string]$rawTag).Trim()
             if ([string]::IsNullOrWhiteSpace($tag)) { continue }
 
-            & git -C $repoPath show-ref --tags --verify --quiet ("refs/tags/$tag")
+            # Fast existence check; quiet and no stderr output
+            $null = & git -C $repoPath rev-parse -q --verify ("refs/tags/$tag") 2>$null
             $exists = ($LASTEXITCODE -eq 0)
 
             if ($exists -and -not $ForceTagUpdate) {
@@ -461,26 +462,28 @@ Adds the repo to safe.directory before proceeding.
             } else {
                 $msg = if ($TagMessage) { $TagMessage } else { "Tag $tag" }
 
-                # >>> CHANGE: include transient identity for tag object creation/update
-                $tagArgs = @('-C', $repoPath, '-c', "user.name=$UserName", '-c', "user.email=$UserEmail", 'tag', '-a', $tag, $head, '-m', $msg)
+                # Include transient identity for tag creation/update (canonical arg order)
+                $tagArgs = @('-C', $repoPath, '-c', "user.name=$UserName", '-c', "user.email=$UserEmail", 'tag', '-a', $tag, '-m', $msg, $head)
                 if ($exists -and $ForceTagUpdate) {
-                    $tagArgs = @('-C', $repoPath, '-c', "user.name=$UserName", '-c', "user.email=$UserEmail", 'tag', '-f', '-a', $tag, $head, '-m', $msg)
+                    $tagArgs = @('-C', $repoPath, '-c', "user.name=$UserName", '-c', "user.email=$UserEmail", 'tag', '-f', '-a', $tag, '-m', $msg, $head)
                 }
 
                 Write-Host ("[Invoke-GitAddCommitPush] {0} annotated tag '{1}' on {2}." -f ($(if ($exists) { 'Updating' } else { 'Creating' }), $tag, $head))
-                & git @tagArgs 2>&1 | ForEach-Object { Write-Host $_ }
+                $null = & git @tagArgs 2>$null
                 if ($LASTEXITCODE -ne 0) {
                     Write-Host "[Invoke-GitAddCommitPush] git tag failed for '$tag' (code $LASTEXITCODE)."
                     if ($ExitOnError) { exit $LASTEXITCODE }; continue
                 }
             }
 
-            # Push tag (force if moved)
-            $pushArgs = @('-C', $repoPath, 'push', 'origin', $tag)
-            if ($exists -and $ForceTagUpdate) { $pushArgs = @('-C', $repoPath, 'push', '--force', 'origin', $tag) }
+            # Push tag (force if moved); --porcelain -> stdout only, --no-progress avoids stderr chatter
+            $pushArgs = @('-C', $repoPath, 'push', '--porcelain', '--no-progress', 'origin', $tag)
+            if ($exists -and $ForceTagUpdate) {
+                $pushArgs = @('-C', $repoPath, 'push', '--force', '--porcelain', '--no-progress', 'origin', $tag)
+            }
 
             Write-Host "[Invoke-GitAddCommitPush] Pushing tag '$tag' to 'origin'."
-            & git @pushArgs 2>&1 | ForEach-Object { Write-Host $_ }
+            & git @pushArgs 2>$null | ForEach-Object { Write-Host $_ }
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "[Invoke-GitAddCommitPush] git push for tag '$tag' failed (code $LASTEXITCODE)."
                 if ($ExitOnError) { exit $LASTEXITCODE }
@@ -489,6 +492,7 @@ Adds the repo to safe.directory before proceeding.
     } else {
         Write-Host "[Invoke-GitAddCommitPush] No tags specified."
     }
+
 
     Write-Host "[Invoke-GitAddCommitPush] Completed."
 }

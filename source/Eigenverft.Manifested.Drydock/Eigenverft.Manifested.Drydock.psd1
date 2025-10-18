@@ -117,7 +117,7 @@ FunctionsToExport = @(
     'Unregister-LocalNuGetPackageSource',
     
     # ...Process.ps1
-    'Open-LocalHtml',
+    'Open-UrlInBrowser',
 
     # ...Drydock.ps1
     'Get-ConfigValue',

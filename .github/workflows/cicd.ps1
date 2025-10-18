@@ -88,7 +88,11 @@ Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
 
 # Generate a local PowerShell Gallery repository to publish to.
 $LocalPowershellGalleryName = "LocalPowershellGallery"
-Register-LocalPSGalleryRepository -RepositoryName "$LocalPowershellGalleryName"
+$LocalPowershellGalleryName = Register-LocalPSGalleryRepository -RepositoryName "$LocalPowershellGalleryName"
+
+# Generate a local NuGet package source to publish to.
+$LocalNugetSourceName = "LocalNuget"
+$LocalNugetSourceName = Register-LocalNuGetDotNetPackageSource -SourceName "$LocalNugetSourceName"
 
 
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" | Select-Object -First 1

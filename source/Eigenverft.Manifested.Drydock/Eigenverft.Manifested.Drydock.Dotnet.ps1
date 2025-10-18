@@ -401,7 +401,7 @@ function Register-LocalNuGetDotNetPackageSource {
 
 .PARAMETER SourceLocation
     Source location. HTTP(S) URL or local/UNC path. Local paths will be created if missing.
-    Default: "$HOME/source/NuGet".
+    Default: "$HOME/source/LocalNuGet".
 
 .PARAMETER SourceName
     Optional name. If omitted, reuse by Location or generate TempNuGetSrc-xxxxxxxx.
@@ -422,7 +422,7 @@ function Register-LocalNuGetDotNetPackageSource {
     param(
         [Parameter(Mandatory = $false)]
         [ValidateNotNullOrEmpty()]
-        [string]$SourceLocation = "$HOME/source/NuGet",
+        [string]$SourceLocation = "$HOME/source/LocalNuGet",
 
         [Parameter(Mandatory = $false)]
         [string]$SourceName,

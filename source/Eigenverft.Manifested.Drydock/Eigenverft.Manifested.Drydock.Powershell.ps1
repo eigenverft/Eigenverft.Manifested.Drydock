@@ -1854,7 +1854,7 @@ function Register-LocalPSGalleryRepository {
     effective repository name as a string so it can be passed to Unregister-LocalPSGalleryRepository.
 
 .PARAMETER RepositoryPath
-    File system path to the local repository folder. Default: "$HOME/source/PowershellGallery".
+    File system path to the local repository folder. Default: "$HOME/source/LocalPowershellGallery".
 
 .PARAMETER RepositoryName
     Optional name for the repository. If omitted, a temporary name like "TempPSGallery-xxxxxxxx"
@@ -1876,7 +1876,7 @@ function Register-LocalPSGalleryRepository {
     param(
         [Parameter(Mandatory = $false)]
         [ValidateNotNullOrEmpty()]
-        [string]$RepositoryPath = "$HOME/source/PowershellGallery",
+        [string]$RepositoryPath = "$HOME/source/LocalPowershellGallery",
 
         [Parameter(Mandatory = $false)]
         [string]$RepositoryName,
@@ -2077,7 +2077,7 @@ function Register-LocalNuGetPackageSource {
     only escalates to Trusted when requested.
 
 .PARAMETER SourceLocation
-    Package source location. Local/UNC folder or HTTP(S) URL. Default: "$HOME/source/NuGet".
+    Package source location. Local/UNC folder or HTTP(S) URL. Default: "$HOME/source/LocalNuGet".
 
 .PARAMETER SourceName
     Optional source name. If omitted, reuse by Location or generate TempNuGetSrc-xxxxxxxx.
@@ -2098,7 +2098,7 @@ function Register-LocalNuGetPackageSource {
     param(
         [Parameter(Mandatory = $false)]
         [ValidateNotNullOrEmpty()]
-        [string]$SourceLocation = "$HOME/source/NuGet",
+        [string]$SourceLocation = "$HOME/source/LocalNuGet",
 
         [Parameter(Mandatory = $false)]
         [string]$SourceName,

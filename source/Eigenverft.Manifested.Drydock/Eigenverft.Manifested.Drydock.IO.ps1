@@ -602,7 +602,7 @@ Resolve-ModulePath -ModuleName Pester
 # Loaded module wins; else highest installed stable by precedence.
 
 .EXAMPLE
-Resolve-ModulePath -ModuleName Pester -VersionScope IncludePrerelease
+Resolve-ModulePath -ModuleName Eigenverft.Manifested.Drydock -VersionScope IncludePrerelease
 # Considers prereleases: e.g., 4.0.0-beta outranks 3.9.0 stable; if 4.0.0 stable exists, it outranks 4.0.0-beta.
 
 .EXAMPLE
@@ -758,6 +758,3 @@ Resolve-ModulePath -ModuleName Pester -All -VersionScope IncludePrerelease
     }
 }
 
-
-
-# Resolve-ModulePath -ModuleName Eigenverft.Manifested.Drydock -IncludePrerelease

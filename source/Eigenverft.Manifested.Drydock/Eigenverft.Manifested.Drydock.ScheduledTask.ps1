@@ -82,7 +82,11 @@ Emit the returned summary object as JSON (also returns the object).
 .PARAMETER Description
 Optional description.
 
-# ... [examples and the rest of your header remain unchanged] ...
+.EXAMPLE
+ Current user at logon (visible; no password; no elevation)
+ Use when your script needs the user's interactive desktop.
+ New-CompatScheduledTask -TaskName 'MyApp-UserLogon' -ActionPath 'C:\Windows\regedit.exe' -LogonThisUser
+ New-CompatScheduledTask -TaskName 'MyDaily-System-0200' `-RunAsAccount System -Highest -DailyAtTime '02:00' -ActionPath "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -ActionArguments '-NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\job.ps1"' -WorkingDirectory 'C:\Scripts'
 #>
     [CmdletBinding()]
     param(
@@ -431,7 +435,4 @@ Optional description.
     }
 }
 
-# 1) Current user at logon (visible; no password; no elevation)
-#    Use when your script needs the user's interactive desktop.
-#New-CompatScheduledTask -TaskName 'MyApp-UserLogon' -ActionPath 'C:\Windows\regedit.exe' -LogonThisUser
-#New-CompatScheduledTask -TaskName 'MyDaily-System-0200' `-RunAsAccount System -Highest -DailyAtTime '02:00' -ActionPath "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -ActionArguments '-NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\job.ps1"' -WorkingDirectory 'C:\Scripts'
+

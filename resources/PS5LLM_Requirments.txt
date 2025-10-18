@@ -27,7 +27,6 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
    - USE try/catch only where it adds value; rethrow with concise, actionable messages.
 
 8) OUTPUT & LOGGING
-   - BE QUIET by default.
    - EMIT Write-Host ONLY for key actions (created X, added/removed Y, enabled/disabled Z, updated trust). Keep minimal and consistent.
    - DO NOT use Write-Output, Write-Error, Write-Verbose, or Write-Information.
 
@@ -49,4 +48,13 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
 13) BEHAVIOR 
     - Do not make changes that a not requested, if you spot a previous error write a statement about it in the end.
 
+14) INLINE HELPERS (SAFE MODE)
+    - SCOPE: Inline (nested) helpers defined with function MUST be created in the local scope: function local:Name { ... }.
+    - NAMING: Use a distinct prefix to avoid collisions, e.g. _ (example: function local:_Norm-List { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param(...params...) ...code... }).
+    - NO OUTPUT: Helpers MUST NOT write to the pipeline. If needed, return values explicitly and keep them inside the outer function.
+    - QUIET LOGGING: Helpers MUST NOT use Write-Output, Write-Error, Write-Verbose, or Write-Information. Use Write-Host only in the outer function for key actions.
+    - NO EXPORT: Inline helpers MUST NOT be exported; they exist only for the duration of the outer function call.
+    - IDEMPOTENT: Helpers MUST NOT rely on session-global state; they must be deterministic given their inputs.
+
 DEFINITE: A function is "DONE" only if it meets ALL requirements above.
+    

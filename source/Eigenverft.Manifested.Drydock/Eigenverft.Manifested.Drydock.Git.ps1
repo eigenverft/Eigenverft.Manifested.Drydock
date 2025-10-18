@@ -492,3 +492,4 @@ Adds the repo to safe.directory before proceeding.
 
     Write-Host "[Invoke-GitAddCommitPush] Completed."
 }
+

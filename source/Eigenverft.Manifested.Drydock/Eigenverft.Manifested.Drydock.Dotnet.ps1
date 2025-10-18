@@ -449,7 +449,9 @@ function Register-LocalNuGetDotNetPackageSource {
         if ($u.IsAbsoluteUri -and ($u.Scheme -eq 'http' -or $u.Scheme -eq 'https')) { $isUrl = $true }
     } catch { $isUrl = $false }
 
-    if (-not $isUrl) {
+    if ($isUrl) {
+        Write-Host "Using URL source location: $SourceLocation" -ForegroundColor Cyan
+    } else {
         try {
             $SourceLocation = [IO.Path]::GetFullPath((Join-Path -Path $SourceLocation -ChildPath '.'))
         } catch {
@@ -458,9 +460,12 @@ function Register-LocalNuGetDotNetPackageSource {
         if (-not (Test-Path -Path $SourceLocation -PathType Container)) {
             try {
                 New-Item -ItemType Directory -Path $SourceLocation -Force -ErrorAction Stop | Out-Null
+                Write-Host "Created local source directory: $SourceLocation" -ForegroundColor Green
             } catch {
                 throw "Failed to create source directory '$SourceLocation': $($_.Exception.Message)"
             }
+        } else {
+            Write-Host "Using local source directory: $SourceLocation" -ForegroundColor Cyan
         }
     }
 
@@ -483,8 +488,14 @@ function Register-LocalNuGetDotNetPackageSource {
     $namePattern = '^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$'
     if ([string]::IsNullOrWhiteSpace($SourceName)) {
         $byLoc = $entries | Where-Object { $_.Location -eq $SourceLocation } | Select-Object -First 1
-        if ($byLoc) { $SourceName = $byLoc.Name }
-        else { $SourceName = 'TempNuGetSrc-' + ([Guid]::NewGuid().ToString('N').Substring(8)) }
+        if ($byLoc) {
+            $SourceName = $byLoc.Name
+            Write-Host "Reusing existing source name '$SourceName' for location '$SourceLocation'." -ForegroundColor Yellow
+        }
+        else {
+            $SourceName = 'TempNuGetSrc-' + ([Guid]::NewGuid().ToString('N').Substring(8))
+            Write-Host "Generated temporary source name: $SourceName" -ForegroundColor Yellow
+        }
     } elseif ($SourceName -notmatch $namePattern) {
         throw "SourceName '$SourceName' is invalid. Allowed: letters/digits; dot, hyphen, underscore allowed inside."
     }
@@ -495,28 +506,43 @@ function Register-LocalNuGetDotNetPackageSource {
     # Reconcile location/name clashes.
     if ($byLoc2 -and -not $byName) {
         if ($PSBoundParameters.ContainsKey('SourceName')) {
+            Write-Host "Removing conflicting existing source '$($byLoc2.Name)' for location '$SourceLocation'." -ForegroundColor Yellow
             Invoke-DotNetNuGet @('nuget','remove','source',$byLoc2.Name) | Out-Null
         } else {
             $SourceName = $byLoc2.Name
             $byName = $byLoc2
+            Write-Host "Reusing existing source '$SourceName' bound to location '$SourceLocation'." -ForegroundColor Yellow
         }
     }
 
     if ($byName) {
         if ($byName.Location -ne $SourceLocation) {
+            Write-Host "Updating source '$SourceName' location from '$($byName.Location)' to '$SourceLocation'." -ForegroundColor Cyan
             Invoke-DotNetNuGet @('nuget','remove','source',$SourceName) | Out-Null
             Invoke-DotNetNuGet @('nuget','add','source',$SourceLocation,'--name',$SourceName) | Out-Null
             $byName = [PSCustomObject]@{ Name=$SourceName; Location=$SourceLocation; Status='Enabled' }
+            Write-Host "Source '$SourceName' added at '$SourceLocation' (Enabled)." -ForegroundColor Green
         }
         if ($SourceState -eq 'Enabled' -and $byName.Status -eq 'Disabled') {
+            Write-Host "Enabling source '$SourceName'." -ForegroundColor Cyan
             Invoke-DotNetNuGet @('nuget','enable','source',$SourceName) | Out-Null
+            Write-Host "Source '$SourceName' is now Enabled." -ForegroundColor Green
         } elseif ($SourceState -eq 'Disabled' -and $byName.Status -eq 'Enabled') {
+            Write-Host "Disabling source '$SourceName'." -ForegroundColor Cyan
             Invoke-DotNetNuGet @('nuget','disable','source',$SourceName) | Out-Null
+            Write-Host "Source '$SourceName' is now Disabled." -ForegroundColor Green
+        } else {
+            Write-Host "No state change needed for '$SourceName' (already $($byName.Status))." -ForegroundColor Yellow
         }
     } else {
+        Write-Host "Adding source '$SourceName' at '$SourceLocation'." -ForegroundColor Cyan
         Invoke-DotNetNuGet @('nuget','add','source',$SourceLocation,'--name',$SourceName) | Out-Null
         if ($SourceState -eq 'Disabled') {
+            Write-Host "Disabling source '$SourceName' after add." -ForegroundColor Cyan
             Invoke-DotNetNuGet @('nuget','disable','source',$SourceName) | Out-Null
+            Write-Host "Source '$SourceName' is now Disabled." -ForegroundColor Green
+        } else {
+            Write-Host "Source '$SourceName' added and Enabled." -ForegroundColor Green
         }
     }
 
@@ -567,12 +593,14 @@ function Unregister-LocalNuGetDotNetPackageSource {
     }
 
     if ($exists) {
+        Write-Host "Removing NuGet source '$SourceName'." -ForegroundColor Cyan
         Invoke-DotNetNuGet @('nuget','remove','source',$SourceName) | Out-Null
         Write-Host "NuGet source '$SourceName' removed." -ForegroundColor Green
     } else {
         Write-Host "NuGet source '$SourceName' not found; nothing to do." -ForegroundColor Yellow
     }
 }
+
 
 
 

@@ -42,7 +42,7 @@ Open-UrlInBrowser 'https://example.com/page' -Browser Edge
 .NOTES
 - Local files: always pass a plain path (never file://) to the launched process.
 - Web URLs: pass the URL as-is.
-- No Begin/Process/End blocks; no assignments to automatic variables like $IsWindows or $args.
+- No Begin/Process/End blocks; no assignments to automatic variables like $IsWindows or $cmdArgs.
 #>
     [CmdletBinding(SupportsShouldProcess = $false)]
     param(
@@ -209,10 +209,10 @@ Open-UrlInBrowser 'https://example.com/page' -Browser Edge
             $appsToTry = @($primary) + $fallbackApps | Where-Object { $_ }
 
             foreach ($app in $appsToTry) {
-                $args = @('-a', $app, $arg)
-                if ($Wait) { $args = @('-W') + $args }
+                $cmdArgs = @('-a', $app, $arg)
+                if ($Wait) { $cmdArgs = @('-W') + $cmdArgs }
                 try {
-                    Start-Process -FilePath 'open' -ArgumentList $args
+                    Start-Process -FilePath 'open' -ArgumentList $cmdArgs
                     return
                 } catch { continue }
             }

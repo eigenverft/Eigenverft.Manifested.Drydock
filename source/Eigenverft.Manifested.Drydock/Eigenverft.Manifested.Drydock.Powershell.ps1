@@ -1845,33 +1845,33 @@ function Update-ManifestPrerelease {
 function Register-LocalPSGalleryRepository {
 <#
 .SYNOPSIS
-    Registers a local PowerShell PSRepository for gallery modules and returns its effective name.
+Registers a local PowerShell PSRepository and returns its effective name (string only).
 
 .DESCRIPTION
-    Ensures the target folder exists, removes any existing repository with the same name, and
-    registers a PSRepository with the requested installation policy. If -RepositoryName is not
-    provided, a temporary name with a fixed prefix is generated. The function returns the
-    effective repository name as a string so it can be passed to Unregister-LocalPSGalleryRepository.
+Ensures the target folder exists, removes any existing repository with the same name, and
+registers a PSRepository with the requested installation policy. Returns exactly one string:
+the effective repository name. No other pipeline output is produced.
 
 .PARAMETER RepositoryPath
-    File system path to the local repository folder. Default: "$HOME/source/LocalPowershellGallery".
+File system path to the local repository folder. Default: "$HOME/source/LocalPowershellGallery".
 
 .PARAMETER RepositoryName
-    Optional name for the repository. If omitted, a temporary name like "TempPSGallery-xxxxxxxx"
-    is generated. If provided, it must start and end with a letter or digit and may contain
-    letters, digits, dot, hyphen, or underscore in between.
+Optional name for the repository. If omitted, a temporary name like "TempPSGallery-xxxxxxxx" is
+generated. If provided, it must start/end with a letter/digit and may contain letters, digits,
+dot, hyphen, or underscore in between.
 
 .PARAMETER InstallationPolicy
-    Installation policy for the repository. Accepted values: Trusted, Untrusted. Default: Trusted.
+Installation policy: Trusted | Untrusted. Default: Trusted.
 
 .EXAMPLE
-    $name = Register-LocalPSGalleryRepository
-    Unregister-LocalPSGalleryRepository -RepositoryName $name
+$name = Register-LocalPSGalleryRepository
+Unregister-LocalPSGalleryRepository -RepositoryName $name
 
 .EXAMPLE
-    $name = Register-LocalPSGalleryRepository -RepositoryName LocalGallery -RepositoryPath "C:\Repo" -InstallationPolicy Untrusted
+$name = Register-LocalPSGalleryRepository -RepositoryName LocalGallery -RepositoryPath "C:\Repo" -InstallationPolicy Untrusted
 #>
     [CmdletBinding()]
+    [OutputType([string])]
     [Alias("rlgr")]
     param(
         [Parameter(Mandatory = $false)]
@@ -1885,7 +1885,7 @@ function Register-LocalPSGalleryRepository {
         [string]$InstallationPolicy = 'Trusted'
     )
 
-    # Determine effective repository name (validate if provided; otherwise generate a temp-safe one).
+    # Reviewer: Validate/generate the name; ensure it is safe and predictable.
     $namePattern = '^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$'
     if ([string]::IsNullOrWhiteSpace($RepositoryName)) {
         $RepositoryName = 'TempPSGallery-' + ([Guid]::NewGuid().ToString('N').Substring(8))
@@ -1893,47 +1893,49 @@ function Register-LocalPSGalleryRepository {
         throw "RepositoryName '$RepositoryName' is invalid. Allowed: letters/digits; dot, hyphen, underscore allowed inside."
     }
 
-    # Normalize to an absolute path.
+    # Normalize the repo path; fail clearly if it cannot be made absolute.
     try {
         $RepositoryPath = [IO.Path]::GetFullPath((Join-Path -Path $RepositoryPath -ChildPath '.'))
     } catch {
-        Write-Host "Invalid repository path '$RepositoryPath': $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Invalid repository path '$RepositoryPath': $($_.Exception.Message)"
         throw
     }
 
-    # Ensure the local repository folder exists (idempotent).
+    # Ensure folder exists (idempotent).
     if (-not (Test-Path -Path $RepositoryPath -PathType Container)) {
         try {
             New-Item -ItemType Directory -Path $RepositoryPath -Force -ErrorAction Stop | Out-Null
         } catch {
-            Write-Host "Failed to create repository directory '$RepositoryPath': $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "Failed to create repository directory '$RepositoryPath': $($_.Exception.Message)"
             throw
         }
     }
 
-    # If a repository with the specified name exists, unregister it first to avoid conflicts.
+    # Remove existing repository with the same name to avoid ambiguity.
     try {
-        if (Get-PSRepository -Name $RepositoryName -ErrorAction SilentlyContinue) {
-            Write-Host "Repository '$RepositoryName' already exists. Removing it." -ForegroundColor Yellow
-            Unregister-PSRepository -Name $RepositoryName -ErrorAction Stop
+        $existing = Get-PSRepository -Name $RepositoryName -ErrorAction SilentlyContinue
+        if ($existing) {
+            Write-Host "Repository '$RepositoryName' already exists. Removing it."
+            Unregister-PSRepository -Name $RepositoryName -ErrorAction Stop | Out-Null
         }
     } catch {
-        Write-Host "Failed while checking/removing existing repository '$RepositoryName': $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Failed while checking/removing existing repository '$RepositoryName': $($_.Exception.Message)"
         throw
     }
 
-    # Register the repository.
+    # Register repository; suppress any objects the cmdlet might emit.
     try {
-        Register-PSRepository -Name $RepositoryName -SourceLocation $RepositoryPath -InstallationPolicy $InstallationPolicy -ErrorAction Stop
-        Write-Host "Local repository '$RepositoryName' registered at: $RepositoryPath (Policy: $InstallationPolicy)" -ForegroundColor Green
+        Register-PSRepository -Name $RepositoryName -SourceLocation $RepositoryPath -InstallationPolicy $InstallationPolicy -ErrorAction Stop | Out-Null
+        Write-Host "Local repository '$RepositoryName' registered at: $RepositoryPath (Policy: $InstallationPolicy)"
     } catch {
-        Write-Host "Failed to register repository '$RepositoryName' at '$RepositoryPath': $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Failed to register repository '$RepositoryName' at '$RepositoryPath': $($_.Exception.Message)"
         throw
     }
 
-    # Return the effective name (string) so caller can pass it to Unregister-LocalPSGalleryRepository.
-    return $RepositoryName
+    # Only pipeline output: the effective name.
+    return [string]$RepositoryName
 }
+
 
 function Unregister-LocalPSGalleryRepository {
     <#

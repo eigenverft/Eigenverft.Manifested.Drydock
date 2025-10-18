@@ -76,6 +76,8 @@ FunctionsToExport = @(
     # ...Dotnet.ps1
     'Enable-TempDotnetTools',
     'Disable-TempDotnetTools',
+    'Register-LocalNuGetDotNetPackageSource',
+    'Unregister-LocalNuGetDotNetPackageSource',
 
     # ...Execution.ps1
     'Invoke-Exec',
@@ -109,6 +111,10 @@ FunctionsToExport = @(
     'Update-ManifestPrerelease',
     'Register-LocalPSGalleryRepository',
     'Unregister-LocalPSGalleryRepository',
+
+    'Register-DefaultNuGetPackageSource',
+    'Register-LocalNuGetPackageSource',
+    'Unregister-LocalNuGetPackageSource',
     
     # ...Process.ps1
     'Open-LocalHtml',

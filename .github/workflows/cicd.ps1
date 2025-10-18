@@ -86,11 +86,11 @@ $probeGeneratedVersion = Convert-64SecPowershellVersionToDateTime -VersionBuild 
 Test-VariableValue -Variable { $generatedVersion } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
 
-###############################################################
+# Generate a local PowerShell Gallery repository to publish to.
+$LocalPowershellGalleryName = "LocalPowershellGallery"
+Register-LocalPSGalleryRepository -RepositoryName "$LocalPowershellGalleryName"
 
-Register-LocalPSGalleryRepository -RepositoryName "LocalPowershellGallery"
 
-exit
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" | Select-Object -First 1
 Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedVersion.VersionFull)"
 Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPrerelease "$($deploymentInfo.Affix.Label)"
@@ -100,7 +100,8 @@ Test-ModuleManifest -Path $($manifestFile.FullName)
 
 if ($remoteResourcesOk)
 {
-    Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$PsGalleryApiKey" -ErrorAction Stop    
+    Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$PsGalleryApiKey"
+    Publish-Module -Path $($manifestFile.DirectoryName) -Repository "$LocalPowershellGalleryName"
 }
 
 if ($remoteResourcesOk)

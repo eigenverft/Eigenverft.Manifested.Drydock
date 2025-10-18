@@ -105,8 +105,9 @@ Test-ModuleManifest -Path $($manifestFile.FullName)
 if ($remoteResourcesOk)
 {
     Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$PsGalleryApiKey"
-    Publish-Module -Path $($manifestFile.DirectoryName) -Repository "$LocalPowershellGalleryName"
 }
+
+Publish-Module -Path $($manifestFile.DirectoryName) -Repository "$LocalPowershellGalleryName"
 
 if ($remoteResourcesOk)
 {

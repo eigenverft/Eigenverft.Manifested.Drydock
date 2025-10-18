@@ -431,11 +431,13 @@ Adds the repo to safe.directory before proceeding.
 
     # --- Always push branch ---
     Write-Host "[Invoke-GitAddCommitPush] git push origin '$CurrentBranch'"
-    & git -C $repoPath push origin $CurrentBranch 2>&1 | ForEach-Object { Write-Host $_ }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[Invoke-GitAddCommitPush] git push failed (code $LASTEXITCODE)."
-        if ($ExitOnError) { exit $LASTEXITCODE }; return
+    & git -C $repoPath push origin $CurrentBranch
+    $code = $LASTEXITCODE
+    if ($code -ne 0) {
+        Write-Host "[Invoke-GitAddCommitPush] git push failed (code $code)."
+        if ($ExitOnError) { exit $code }; return
     }
+    Write-Host "[Invoke-GitAddCommitPush] Pushed branch '$CurrentBranch' to 'origin'."
 
     # --- Tagging (optional): create annotated tags on HEAD and push ---
     if ($Tags -and $Tags.Count -gt 0) {

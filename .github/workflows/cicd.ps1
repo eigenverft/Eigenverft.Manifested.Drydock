@@ -94,6 +94,8 @@ $LocalPowershellGalleryName = Register-LocalPSGalleryRepository -RepositoryName 
 $LocalNugetSourceName = "LocalNuget"
 $LocalNugetSourceName = Register-LocalNuGetDotNetPackageSource -SourceName "$LocalNugetSourceName"
 
+##############################################################################
+# Main CICD Logic
 
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" | Select-Object -First 1
 Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedVersion.VersionFull)"

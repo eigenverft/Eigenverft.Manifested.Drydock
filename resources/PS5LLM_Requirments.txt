@@ -3,9 +3,8 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
 1) COMPATIBILITY
    - MUST run on Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
 
-2) AUTOMATIC/RESERVED VARIABLES
-   - MUST NOT assign to automatic variables: $IsWindows, $IsMacOS, $IsLinux, $args.
-   - MUST NOT use reserved $Args. Use unique parameter/local names.
+2) AUTOMATIC / RESERVED VARIABLES (PS5–PS7)
+   - Do not read/write/compare or shadow PowerShell automatic/reserved vars (any casing). Examples (not exhaustive): $_, $PSItem, $args/$Args, $IsWindows/$IsMacOS/$IsLinux, $Error, $PID, $LASTEXITCODE, $Matches, $PSBoundParameters, $PSScriptRoot, $MyInvocation. Do not name parameters/locals like these (no "Args", "IsWindows", "Error", etc.).
 
 3) EXTERNAL TOOLS
    - IF an external tool is required (e.g., dotnet, robocopy), THEN fail fast with a clear, actionable error when it is missing.

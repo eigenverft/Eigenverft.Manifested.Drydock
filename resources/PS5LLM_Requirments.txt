@@ -36,6 +36,7 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
 
 10) DOCUMENTATION
     - PROVIDE comment-based help: Synopsis, Description, Parameters, Examples, Notes.
+    - Examples should cover all relevant case dont serveral if applicable, no examples that are possible but do not make sense.
 
 11) TEXT & STYLE
     - KEEP code ASCII-only.

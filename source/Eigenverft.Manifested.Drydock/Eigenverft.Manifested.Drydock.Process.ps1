@@ -293,4 +293,5 @@ Open-UrlInBrowser 'https://example.com/page' -Browser Edge
     }
 }
 
+
 #Open-UrlInBrowser -Path 'https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock/0.20255.62363/Content/LICENSE.txt' -Browser Firefox

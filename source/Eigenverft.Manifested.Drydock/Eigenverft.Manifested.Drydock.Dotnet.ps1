@@ -388,6 +388,222 @@ Disable-TempDotnetTools -ManifestFile "$PSScriptRoot\.config\dotnet-tools.json" 
     }
 }
 
+function Register-LocalNuGetDotNetPackageSource {
+<#
+.SYNOPSIS
+    Registers a NuGet source using the dotnet CLI and returns its effective name.
+
+.DESCRIPTION
+    Ensures the given Location (URL or local path) is present in dotnet nuget sources
+    under the chosen name and state (Enabled/Disabled). If -SourceName is omitted,
+    the function reuses an existing name for the same Location or generates a temporary one.
+    Returns the effective SourceName as a string.
+
+.PARAMETER SourceLocation
+    Source location. HTTP(S) URL or local/UNC path. Local paths will be created if missing.
+    Default: "$HOME/source/LocalNuGet".
+
+.PARAMETER SourceName
+    Optional name. If omitted, reuse by Location or generate TempNuGetSrc-xxxxxxxx.
+    Must start/end with a letter or digit; dot, hyphen, underscore allowed inside.
+
+.PARAMETER SourceState
+    Enabled or Disabled. Default: Enabled. If a source exists with a different state,
+    it will be toggled accordingly.
+
+.EXAMPLE
+    $n = Register-LocalNuGetDotNetPackageSource -SourceLocation "C:\nuget-local"
+
+.EXAMPLE
+    $n = Register-LocalNuGetDotNetPackageSource -SourceLocation "https://api.nuget.org/v3/index.json" -SourceName "nuget.org" -SourceState Enabled
+#>
+    [CmdletBinding()]
+    [Alias("rldnps")]
+    param(
+        [Parameter(Mandatory = $false)]
+        [ValidateNotNullOrEmpty()]
+        [string]$SourceLocation = "$HOME/source/LocalNuGet",
+
+        [Parameter(Mandatory = $false)]
+        [string]$SourceName,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Enabled','Disabled')]
+        [string]$SourceState = 'Enabled'
+    )
+
+    function Invoke-DotNetNuGet([string[]]$CmdArgs) {
+        $out = & dotnet @CmdArgs 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "dotnet nuget failed ($LASTEXITCODE): $out" }
+        return $out
+    }
+
+    if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+        throw "dotnet CLI not found on PATH."
+    }
+
+    # Detect URL vs local path; normalize and ensure local dir when needed.
+    $isUrl = $false
+    try {
+        $u = [Uri]$SourceLocation
+        if ($u.IsAbsoluteUri -and ($u.Scheme -eq 'http' -or $u.Scheme -eq 'https')) { $isUrl = $true }
+    } catch { $isUrl = $false }
+
+    if ($isUrl) {
+        Write-Host "Using URL source location: $SourceLocation" -ForegroundColor Cyan
+    } else {
+        try {
+            $SourceLocation = [IO.Path]::GetFullPath((Join-Path -Path $SourceLocation -ChildPath '.'))
+        } catch {
+            throw "Invalid source path '$SourceLocation': $($_.Exception.Message)"
+        }
+        if (-not (Test-Path -Path $SourceLocation -PathType Container)) {
+            try {
+                New-Item -ItemType Directory -Path $SourceLocation -Force -ErrorAction Stop | Out-Null
+                Write-Host "Created local source directory: $SourceLocation" -ForegroundColor Green
+            } catch {
+                throw "Failed to create source directory '$SourceLocation': $($_.Exception.Message)"
+            }
+        } else {
+            Write-Host "Using local source directory: $SourceLocation" -ForegroundColor Cyan
+        }
+    }
+
+    # List and parse existing sources.
+    $lines = (Invoke-DotNetNuGet @('nuget','list','source')) -split '\r?\n'
+    $entries = New-Object System.Collections.Generic.List[object]
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^\s*\d+\.\s*(?<Name>\S+)\s*\[(?<Status>Enabled|Disabled)\]\s*$') {
+            $nm = $Matches['Name']; $st = $Matches['Status']
+            $loc = $null
+            for ($j = $i + 1; $j -lt $lines.Count; $j++) {
+                $t = $lines[$j].Trim()
+                if ($t) { $loc = $t; break }
+            }
+            if ($loc) { $entries.Add([PSCustomObject]@{ Name=$nm; Location=$loc; Status=$st }) }
+        }
+    }
+
+    # Determine or validate name.
+    $namePattern = '^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$'
+    if ([string]::IsNullOrWhiteSpace($SourceName)) {
+        $byLoc = $entries | Where-Object { $_.Location -eq $SourceLocation } | Select-Object -First 1
+        if ($byLoc) {
+            $SourceName = $byLoc.Name
+            Write-Host "Reusing existing source name '$SourceName' for location '$SourceLocation'." -ForegroundColor Yellow
+        }
+        else {
+            $SourceName = 'TempNuGetSrc-' + ([Guid]::NewGuid().ToString('N').Substring(8))
+            Write-Host "Generated temporary source name: $SourceName" -ForegroundColor Yellow
+        }
+    } elseif ($SourceName -notmatch $namePattern) {
+        throw "SourceName '$SourceName' is invalid. Allowed: letters/digits; dot, hyphen, underscore allowed inside."
+    }
+
+    $byName = $entries | Where-Object { $_.Name -eq $SourceName } | Select-Object -First 1
+    $byLoc2 = $entries | Where-Object { $_.Location -eq $SourceLocation } | Select-Object -First 1
+
+    # Reconcile location/name clashes.
+    if ($byLoc2 -and -not $byName) {
+        if ($PSBoundParameters.ContainsKey('SourceName')) {
+            Write-Host "Removing conflicting existing source '$($byLoc2.Name)' for location '$SourceLocation'." -ForegroundColor Yellow
+            Invoke-DotNetNuGet @('nuget','remove','source',$byLoc2.Name) | Out-Null
+        } else {
+            $SourceName = $byLoc2.Name
+            $byName = $byLoc2
+            Write-Host "Reusing existing source '$SourceName' bound to location '$SourceLocation'." -ForegroundColor Yellow
+        }
+    }
+
+    if ($byName) {
+        if ($byName.Location -ne $SourceLocation) {
+            Write-Host "Updating source '$SourceName' location from '$($byName.Location)' to '$SourceLocation'." -ForegroundColor Cyan
+            Invoke-DotNetNuGet @('nuget','remove','source',$SourceName) | Out-Null
+            Invoke-DotNetNuGet @('nuget','add','source',$SourceLocation,'--name',$SourceName) | Out-Null
+            $byName = [PSCustomObject]@{ Name=$SourceName; Location=$SourceLocation; Status='Enabled' }
+            Write-Host "Source '$SourceName' added at '$SourceLocation' (Enabled)." -ForegroundColor Green
+        }
+        if ($SourceState -eq 'Enabled' -and $byName.Status -eq 'Disabled') {
+            Write-Host "Enabling source '$SourceName'." -ForegroundColor Cyan
+            Invoke-DotNetNuGet @('nuget','enable','source',$SourceName) | Out-Null
+            Write-Host "Source '$SourceName' is now Enabled." -ForegroundColor Green
+        } elseif ($SourceState -eq 'Disabled' -and $byName.Status -eq 'Enabled') {
+            Write-Host "Disabling source '$SourceName'." -ForegroundColor Cyan
+            Invoke-DotNetNuGet @('nuget','disable','source',$SourceName) | Out-Null
+            Write-Host "Source '$SourceName' is now Disabled." -ForegroundColor Green
+        } else {
+            Write-Host "No state change needed for '$SourceName' (already $($byName.Status))." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "Adding source '$SourceName' at '$SourceLocation'." -ForegroundColor Cyan
+        Invoke-DotNetNuGet @('nuget','add','source',$SourceLocation,'--name',$SourceName) | Out-Null
+        if ($SourceState -eq 'Disabled') {
+            Write-Host "Disabling source '$SourceName' after add." -ForegroundColor Cyan
+            Invoke-DotNetNuGet @('nuget','disable','source',$SourceName) | Out-Null
+            Write-Host "Source '$SourceName' is now Disabled." -ForegroundColor Green
+        } else {
+            Write-Host "Source '$SourceName' added and Enabled." -ForegroundColor Green
+        }
+    }
+
+    return $SourceName
+}
+
+function Unregister-LocalNuGetDotNetPackageSource {
+<#
+.SYNOPSIS
+    Unregisters a NuGet source by name using the dotnet CLI.
+
+.DESCRIPTION
+    Removes the specified source if present. Safe to call repeatedly; no error if already absent.
+
+.PARAMETER SourceName
+    Source name to remove. Must start/end with a letter or digit; dot, hyphen, underscore allowed inside.
+
+.EXAMPLE
+    $n = Register-LocalNuGetDotNetPackageSource -SourceLocation "C:\nuget-local"
+    Unregister-LocalNuGetDotNetPackageSource -SourceName $n
+#>
+    [CmdletBinding()]
+    [Alias("uldnps")]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [ValidatePattern('^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])$')]
+        [string]$SourceName
+    )
+
+    function Invoke-DotNetNuGet([string[]]$CmdArgs) {
+        $out = & dotnet @CmdArgs 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "dotnet nuget failed ($LASTEXITCODE): $out" }
+        return $out
+    }
+
+    if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+        throw "dotnet CLI not found on PATH."
+    }
+
+    $lines = (Invoke-DotNetNuGet @('nuget','list','source')) -split '\r?\n'
+    $exists = $false
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^\s*\d+\.\s*' + [regex]::Escape($SourceName) + '\s*\[(Enabled|Disabled)\]\s*$') {
+            $exists = $true
+            break
+        }
+    }
+
+    if ($exists) {
+        Write-Host "Removing NuGet source '$SourceName'." -ForegroundColor Cyan
+        Invoke-DotNetNuGet @('nuget','remove','source',$SourceName) | Out-Null
+        Write-Host "NuGet source '$SourceName' removed." -ForegroundColor Green
+    } else {
+        Write-Host "NuGet source '$SourceName' not found; nothing to do." -ForegroundColor Yellow
+    }
+}
+
+
+
+
 
 # One-liner: sticky cache derived from manifest → fast subsequent runs
 #$rep = Enable-TempDotnetTools -ManifestFile "C:\dev\github.com\eigenverft\Eigenverft.Manifested.Drydock\.github\workflows\.config\dotnet-tools\dotnet-tools.json" -NoReturn  # <-- reuse the same temp cache per manifest

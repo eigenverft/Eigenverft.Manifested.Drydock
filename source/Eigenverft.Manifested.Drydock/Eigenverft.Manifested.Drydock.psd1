@@ -12,7 +12,7 @@
 RootModule = 'Eigenverft.Manifested.Drydock.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.20255.62363'
+ModuleVersion = '0.20255.64703'
 
 # Supported PSEditions
 CompatiblePSEditions = @('Desktop','Core')
@@ -51,7 +51,7 @@ PowerShellVersion = '5.1'
 # ProcessorArchitecture = ''
 
 # Modules that must be imported into the global environment prior to importing this module
-# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20255.62363'; })
+# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20255.64703'; })
 
 # Assemblies that must be loaded prior to importing this module
 # RequiredAssemblies = @()
@@ -76,6 +76,8 @@ FunctionsToExport = @(
     # ...Dotnet.ps1
     'Enable-TempDotnetTools',
     'Disable-TempDotnetTools',
+    'Register-LocalNuGetDotNetPackageSource',
+    'Unregister-LocalNuGetDotNetPackageSource',
 
     # ...Execution.ps1
     'Invoke-Exec',
@@ -98,22 +100,28 @@ FunctionsToExport = @(
     'Write-ConsoleLog',
 
     # ...Powershell.ps1
+    'Initialize-PowerShellMiniBootstrap',
+    'Import-Script',
+    'Use-Tls12',
     'Export-OfflineModuleBundle',
     'Uninstall-PreviousModuleVersions',
     'Find-ModuleScopeClutter',
     'Update-ManifestModuleVersion',
     'Update-ManifestReleaseNotes',
     'Update-ManifestPrerelease',
+    'Register-LocalPSGalleryRepository',
+    'Unregister-LocalPSGalleryRepository',
+
+    'Register-DefaultNuGetPackageSource',
+    'Register-LocalNuGetPackageSource',
+    'Unregister-LocalNuGetPackageSource',
     
     # ...Process.ps1
-    'Open-LocalHtml',
+    'Open-UrlInBrowser',
 
-
-    'Get-RunEnvironment',
+    # ...Drydock.ps1
     'Get-ConfigValue',
-    'Initialize-PowerShellMiniBootstrap',
-    'Import-Script',
-    'Use-Tls12',
+    'Get-RunEnvironment',
     'Drydock',
     
     # ...ScheduledTask.ps1
@@ -192,7 +200,7 @@ PrivateData = @{
         ReleaseNotes = ''
 
         # Prerelease string of this module
-        Prerelease = ''
+        Prerelease = 'dev'
 
         # Flag to indicate whether the module requires explicit user acceptance for install/update/save
         # RequireLicenseAcceptance = $false

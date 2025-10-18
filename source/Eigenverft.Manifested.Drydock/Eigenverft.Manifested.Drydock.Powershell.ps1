@@ -1841,3 +1841,389 @@ function Update-ManifestPrerelease {
         [System.IO.File]::WriteAllText($ManifestPath, $content)
     }
 }
+
+function Register-LocalPSGalleryRepository {
+<#
+.SYNOPSIS
+Registers a local PowerShell PSRepository and returns its effective name (string only).
+
+.DESCRIPTION
+Ensures the target folder exists, removes any existing repository with the same name, and
+registers a PSRepository with the requested installation policy. Returns exactly one string:
+the effective repository name. No other pipeline output is produced.
+
+.PARAMETER RepositoryPath
+File system path to the local repository folder. Default: "$HOME/source/LocalPowershellGallery".
+
+.PARAMETER RepositoryName
+Optional name for the repository. If omitted, a temporary name like "TempPSGallery-xxxxxxxx" is
+generated. If provided, it must start/end with a letter/digit and may contain letters, digits,
+dot, hyphen, or underscore in between.
+
+.PARAMETER InstallationPolicy
+Installation policy: Trusted | Untrusted. Default: Trusted.
+
+.EXAMPLE
+$name = Register-LocalPSGalleryRepository
+Unregister-LocalPSGalleryRepository -RepositoryName $name
+
+.EXAMPLE
+$name = Register-LocalPSGalleryRepository -RepositoryName LocalGallery -RepositoryPath "C:\Repo" -InstallationPolicy Untrusted
+#>
+    [CmdletBinding()]
+    [OutputType([string])]
+    [Alias("rlgr")]
+    param(
+        [Parameter(Mandatory = $false)]
+        [ValidateNotNullOrEmpty()]
+        [string]$RepositoryPath = "$HOME/source/LocalPowershellGallery",
+
+        [Parameter(Mandatory = $false)]
+        [string]$RepositoryName,
+
+        [ValidateSet('Trusted','Untrusted')]
+        [string]$InstallationPolicy = 'Trusted'
+    )
+
+    # Reviewer: Validate/generate the name; ensure it is safe and predictable.
+    $namePattern = '^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$'
+    if ([string]::IsNullOrWhiteSpace($RepositoryName)) {
+        $RepositoryName = 'TempPSGallery-' + ([Guid]::NewGuid().ToString('N').Substring(8))
+    } elseif ($RepositoryName -notmatch $namePattern) {
+        throw "RepositoryName '$RepositoryName' is invalid. Allowed: letters/digits; dot, hyphen, underscore allowed inside."
+    }
+
+    # Normalize the repo path; fail clearly if it cannot be made absolute.
+    try {
+        $RepositoryPath = [IO.Path]::GetFullPath((Join-Path -Path $RepositoryPath -ChildPath '.'))
+    } catch {
+        Write-Host "Invalid repository path '$RepositoryPath': $($_.Exception.Message)"
+        throw
+    }
+
+    # Ensure folder exists (idempotent).
+    if (-not (Test-Path -Path $RepositoryPath -PathType Container)) {
+        try {
+            New-Item -ItemType Directory -Path $RepositoryPath -Force -ErrorAction Stop | Out-Null
+        } catch {
+            Write-Host "Failed to create repository directory '$RepositoryPath': $($_.Exception.Message)"
+            throw
+        }
+    }
+
+    # Remove existing repository with the same name to avoid ambiguity.
+    try {
+        $existing = Get-PSRepository -Name $RepositoryName -ErrorAction SilentlyContinue
+        if ($existing) {
+            Write-Host "Repository '$RepositoryName' already exists. Removing it."
+            Unregister-PSRepository -Name $RepositoryName -ErrorAction Stop | Out-Null
+        }
+    } catch {
+        Write-Host "Failed while checking/removing existing repository '$RepositoryName': $($_.Exception.Message)"
+        throw
+    }
+
+    # Register repository; suppress any objects the cmdlet might emit.
+    try {
+        Register-PSRepository -Name $RepositoryName -SourceLocation $RepositoryPath -InstallationPolicy $InstallationPolicy -ErrorAction Stop | Out-Null
+        Write-Host "Local repository '$RepositoryName' registered at: $RepositoryPath (Policy: $InstallationPolicy)"
+    } catch {
+        Write-Host "Failed to register repository '$RepositoryName' at '$RepositoryPath': $($_.Exception.Message)"
+        throw
+    }
+
+    # Only pipeline output: the effective name.
+    return [string]$RepositoryName
+}
+
+function Unregister-LocalPSGalleryRepository {
+    <#
+    .SYNOPSIS
+        Unregisters a local PowerShell gallery repository by name.
+
+    .DESCRIPTION
+        Removes the PowerShellGet PSRepository registration with the specified name
+        if it exists.
+
+    .PARAMETER RepositoryName
+        The name of the repository to unregister. Must start and end with a letter or digit,
+        and may contain letters, digits, dot, hyphen, or underscore in between.
+
+    .EXAMPLE
+        Unregister-LocalPSGalleryRepository -RepositoryName LocalGallery
+        Unregisters the 'LocalGallery' PSRepository if present.
+    #>
+    [CmdletBinding()]
+    [Alias("ulgr")]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [ValidatePattern('^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])$')]
+        [string]$RepositoryName
+    )
+
+    # Attempt to find the repository first for a clean UX.
+    if (Get-PSRepository -Name $RepositoryName -ErrorAction SilentlyContinue) {
+        try {
+            Unregister-PSRepository -Name $RepositoryName -ErrorAction Stop
+            Write-Host "Repository '$RepositoryName' has been unregistered." -ForegroundColor Green
+        }
+        catch {
+            Write-Host "Failed to unregister repository '$RepositoryName': $($_.Exception.Message)" -ForegroundColor Red
+            throw
+        }
+    }
+    else {
+        Write-Host "Repository '$RepositoryName' not found; nothing to do." -ForegroundColor Yellow
+    }
+}
+
+function Register-DefaultNuGetPackageSource {
+<#
+.SYNOPSIS
+    Ensures default NuGet package sources exist and are trusted (idempotent).
+
+.DESCRIPTION
+    Verifies the NuGet provider is available, then ensures the following package sources exist and are Trusted:
+      - nuget.org           (https://api.nuget.org/v3/index.json)
+      - int.nugettest.org   (https://apiint.nugettest.org/v3/index.json)
+    If a source with the same URL exists but is untrusted, it is marked Trusted in-place.
+    Repeated calls are safe and result in no changes once desired state is met.
+    Assumes caller sets $ErrorActionPreference = 'Stop'.
+
+.EXAMPLE
+    Register-DefaultNuGetPackageSource
+    Ensures both default sources are present and trusted.
+
+.NOTES
+    Designed for Windows PowerShell 5/5.1 (PackageManagement/PowerShellGet).
+#>
+    [CmdletBinding()]
+    param()
+
+    # Fail fast if NuGet provider is missing.
+    $nugetProvider = Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue
+    if (-not $nugetProvider) {
+        Write-Host "NuGet package provider not found. Install it with: Install-PackageProvider -Name NuGet -Scope CurrentUser -Force" -ForegroundColor Yellow
+        throw "NuGet package provider is required."
+    }
+
+    # Desired state.
+    $desired = @(
+        @{ Name='nuget.org';         Location='https://api.nuget.org/v3/index.json' },
+        @{ Name='int.nugettest.org'; Location='https://apiint.nugettest.org/v3/index.json' }
+    )
+
+    # Current state snapshot.
+    $existing = Get-PackageSource -ProviderName NuGet -ErrorAction SilentlyContinue
+
+    foreach ($d in $desired) {
+        # Match by URL for stability.
+        $match = $existing | Where-Object { $_.Location -eq $d.Location } | Select-Object -First 1
+
+        if ($match) {
+            if (-not $match.IsTrusted) {
+                # Try in-place trust first to avoid unregister/register churn.
+                try {
+                    Set-PackageSource -Name $match.Name -ProviderName NuGet -Trusted
+                    Write-Host "Trusted NuGet source '$($match.Name)' at '$($d.Location)'." -ForegroundColor Green
+                }
+                catch {
+                    # Fallback: unregister and re-register as trusted. Attempt rollback on failure.
+                    Write-Host "Set-PackageSource failed for '$($match.Name)'. Re-registering as '$($d.Name)'..." -ForegroundColor Yellow
+                    $oldName = $match.Name
+                    try {
+                        Unregister-PackageSource -Name $oldName -ProviderName NuGet -Force
+                        Register-PackageSource   -Name $d.Name -Location $d.Location -ProviderName NuGet -Trusted | Out-Null
+                        Write-Host "Re-registered '$($d.Name)' at '$($d.Location)' as Trusted." -ForegroundColor Green
+                    }
+                    catch {
+                        # Best-effort rollback to avoid leaving a gap.
+                        try {
+                            $stillMissing = -not (Get-PackageSource -ProviderName NuGet -ErrorAction SilentlyContinue | Where-Object { $_.Location -eq $d.Location })
+                            if ($stillMissing) {
+                                Register-PackageSource -Name $oldName -Location $d.Location -ProviderName NuGet | Out-Null
+                            }
+                        } catch { }
+                        throw
+                    }
+                }
+            }
+            # Already present and trusted. No action.
+        }
+        else {
+            # Not present. Register as trusted.
+            try {
+                Register-PackageSource -Name $d.Name -Location $d.Location -ProviderName NuGet -Trusted | Out-Null
+                Write-Host "Registered NuGet source '$($d.Name)' at '$($d.Location)' as Trusted." -ForegroundColor Green
+            }
+            catch {
+                Write-Host "Failed to register NuGet source '$($d.Name)' at '$($d.Location)'. $_" -ForegroundColor Red
+                throw
+            }
+        }
+    }
+}
+
+function Register-LocalNuGetPackageSource {
+<#
+.SYNOPSIS
+    Registers a NuGet PackageManagement source and returns its effective name.
+
+.DESCRIPTION
+    Ensures the target location (file path or URL) is registered as a NuGet package source.
+    If -SourceName is omitted, an existing name for the same Location is reused or a temp name
+    is generated. When -InstallationPolicy Trusted is specified (default), the source is trusted.
+    Note: downgrading trust to Untrusted is not supported by Set-PackageSource; this function
+    only escalates to Trusted when requested.
+
+.PARAMETER SourceLocation
+    Package source location. Local/UNC folder or HTTP(S) URL. Default: "$HOME/source/LocalNuGet".
+
+.PARAMETER SourceName
+    Optional source name. If omitted, reuse by Location or generate TempNuGetSrc-xxxxxxxx.
+    Name must start and end with a letter or digit; dot, hyphen, underscore allowed inside.
+
+.PARAMETER InstallationPolicy
+    Trusted or Untrusted. Default: Trusted. Acts as a policy intent; if Trusted is chosen,
+    the function ensures the source becomes trusted. If Untrusted, no trust escalation is performed.
+
+.EXAMPLE
+    $src = Register-LocalNuGetPackageSource -SourceLocation "C:\nuget-local"
+
+.EXAMPLE
+    $src = Register-LocalNuGetPackageSource -SourceLocation "https://api.nuget.org/v3/index.json" -SourceName "nuget.org" -InstallationPolicy Trusted
+#>
+    [CmdletBinding()]
+    [Alias("rlnps")]
+    param(
+        [Parameter(Mandatory = $false)]
+        [ValidateNotNullOrEmpty()]
+        [string]$SourceLocation = "$HOME/source/LocalNuGet",
+
+        [Parameter(Mandatory = $false)]
+        [string]$SourceName,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Trusted','Untrusted')]
+        [string]$InstallationPolicy = 'Trusted'
+    )
+
+    $namePattern = '^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$'
+
+    # Detect URL vs. local path
+    $isUrl = $false
+    try {
+        $u = [Uri]$SourceLocation
+        if ($u.IsAbsoluteUri -and ($u.Scheme -eq 'http' -or $u.Scheme -eq 'https')) { $isUrl = $true }
+    } catch { $isUrl = $false }
+
+    if (-not $isUrl) {
+        try {
+            $SourceLocation = [IO.Path]::GetFullPath((Join-Path -Path $SourceLocation -ChildPath '.'))
+        } catch {
+            Write-Host "Invalid source path '$SourceLocation': $($_.Exception.Message)" -ForegroundColor Red
+            throw
+        }
+
+        if (-not (Test-Path -Path $SourceLocation -PathType Container)) {
+            try {
+                New-Item -ItemType Directory -Path $SourceLocation -Force -ErrorAction Stop | Out-Null
+            } catch {
+                Write-Host "Failed to create source directory '$SourceLocation': $($_.Exception.Message)" -ForegroundColor Red
+                throw
+            }
+        }
+    }
+
+    $existing = Get-PackageSource -ProviderName NuGet -ErrorAction SilentlyContinue
+
+    # Infer or validate name
+    if ([string]::IsNullOrWhiteSpace($SourceName)) {
+        $byLoc = $existing | Where-Object { $_.Location -eq $SourceLocation } | Select-Object -First 1
+        if ($byLoc) { $SourceName = $byLoc.Name }
+        else { $SourceName = 'TempNuGetSrc-' + ([Guid]::NewGuid().ToString('N').Substring(8)) }
+    } elseif ($SourceName -notmatch $namePattern) {
+        throw "SourceName '$SourceName' is invalid. Allowed: letters/digits; dot, hyphen, underscore allowed inside."
+    }
+
+    $byName = $existing | Where-Object { $_.Name -eq $SourceName } | Select-Object -First 1
+    $wantTrusted = ($InstallationPolicy -eq 'Trusted')
+
+    if ($byName) {
+        if ($byName.Location -ne $SourceLocation) {
+            try {
+                Unregister-PackageSource -Name $SourceName -ProviderName NuGet -Force -ErrorAction Stop
+                if ($wantTrusted) {
+                    Register-PackageSource -Name $SourceName -Location $SourceLocation -ProviderName NuGet -Trusted -ErrorAction Stop | Out-Null
+                } else {
+                    Register-PackageSource -Name $SourceName -Location $SourceLocation -ProviderName NuGet -ErrorAction Stop | Out-Null
+                }
+            } catch {
+                try {
+                    if ($byName.Location) {
+                        Register-PackageSource -Name $SourceName -Location $byName.Location -ProviderName NuGet -ErrorAction SilentlyContinue | Out-Null
+                    }
+                } catch { }
+                throw
+            }
+        } else {
+            if ($wantTrusted -and -not $byName.IsTrusted) {
+                try { Set-PackageSource -Name $SourceName -ProviderName NuGet -Trusted -ErrorAction Stop } catch { throw }
+            }
+            # If Untrusted requested but currently trusted, leave as-is (no supported downgrade).
+        }
+    } else {
+        try {
+            if ($wantTrusted) {
+                Register-PackageSource -Name $SourceName -Location $SourceLocation -ProviderName NuGet -Trusted -ErrorAction Stop | Out-Null
+            } else {
+                Register-PackageSource -Name $SourceName -Location $SourceLocation -ProviderName NuGet -ErrorAction Stop | Out-Null
+            }
+        } catch {
+            Write-Host "Failed to register NuGet source '$SourceName' at '$SourceLocation'." -ForegroundColor Red
+            throw
+        }
+    }
+
+    return $SourceName
+}
+
+function Unregister-LocalNuGetPackageSource {
+<#
+.SYNOPSIS
+    Unregisters a NuGet PackageManagement source by name.
+
+.DESCRIPTION
+    Removes the NuGet package source with the specified name if it exists.
+
+.PARAMETER SourceName
+    The name of the source to unregister. Must start and end with a letter or digit,
+    and may contain letters, digits, dot, hyphen, or underscore in between.
+
+.EXAMPLE
+    $src = Register-LocalNuGetPackageSource -SourceLocation "C:\nuget-local"
+    Unregister-LocalNuGetPackageSource -SourceName $src
+#>
+    [CmdletBinding()]
+    [Alias("ulnps")]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [ValidatePattern('^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])$')]
+        [string]$SourceName
+    )
+
+    $existing = Get-PackageSource -ProviderName NuGet -Name $SourceName -ErrorAction SilentlyContinue
+    if ($existing) {
+        try {
+            Unregister-PackageSource -Name $SourceName -ProviderName NuGet -Force -ErrorAction Stop
+            Write-Host "NuGet source '$SourceName' has been unregistered." -ForegroundColor Green
+        } catch {
+            Write-Host "Failed to unregister NuGet source '$SourceName': $($_.Exception.Message)" -ForegroundColor Red
+            throw
+        }
+    } else {
+        Write-Host "NuGet source '$SourceName' not found; nothing to do." -ForegroundColor Yellow
+    }
+}

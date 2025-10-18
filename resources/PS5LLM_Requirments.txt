@@ -1,0 +1,52 @@
+GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
+
+1) COMPATIBILITY
+   - MUST run on Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
+
+2) AUTOMATIC/RESERVED VARIABLES
+   - MUST NOT assign to automatic variables: $IsWindows, $IsMacOS, $IsLinux, $args.
+   - MUST NOT use reserved $Args. Use unique parameter/local names.
+
+3) EXTERNAL TOOLS
+   - IF an external tool is required (e.g., dotnet, robocopy), THEN fail fast with a clear, actionable error when it is missing.
+
+4) NAMING
+   - USE ONLY PS5/5.1 approved verbs.
+   - PREFER singular nouns (plural may be an alias, not the primary noun).
+
+5) SHOULDPROCESS / PIPELINE
+   - DO NOT include SupportsShouldProcess; DO NOT implement -WhatIf or -Confirm.
+   - DO NOT use ValueFromPipeline or ValueFromPipelineByPropertyName.
+
+6) FLAGS & POLICY PARAMETERS
+   - AVOID default-true switches for policy/behavior.
+   - USE [ValidateSet()] string parameters instead (e.g., InstallationPolicy 'Trusted'|'Untrusted', State 'Enabled'|'Disabled').
+
+7) ERROR BEHAVIOR
+   - ASSUME caller may set $ErrorActionPreference = 'Stop'.
+   - USE try/catch only where it adds value; rethrow with concise, actionable messages.
+
+8) OUTPUT & LOGGING
+   - BE QUIET by default.
+   - EMIT Write-Host ONLY for key actions (created X, added/removed Y, enabled/disabled Z, updated trust). Keep minimal and consistent.
+   - DO NOT use Write-Output, Write-Error, Write-Verbose, or Write-Information.
+
+9) IDEMPOTENCY
+   - FUNCTIONS MUST be idempotent: repeated runs converge to the same state without errors or drift.
+
+10) DOCUMENTATION
+    - PROVIDE comment-based help: Synopsis, Description, Parameters, Examples, Notes.
+    - Examples should cover all relevant case dont serveral if applicable, no examples that are possible but do not make sense.
+
+11) TEXT & STYLE
+    - KEEP code ASCII-only.
+    - KEEP implementations lean, readable, and reviewer-friendly (brief inline comments from an external reviewer’s perspective).
+    
+12) SYNTAX
+    - Enforced ternary ban: Submissions MUST NOT contain the C-style ternary pattern ? : anywhere use if else instead.
+    - Double-check for C-style ternary operators—the pattern is easy to overlook because it feels natural (cond ? a : b), ? : should be if { } else { }, every ? need to be checked.
+
+13) BEHAVIOR 
+    - Do not make changes that a not requested, if you spot a previous error write a statement about it in the end.
+
+DEFINITE: A function is "DONE" only if it meets ALL requirements above.

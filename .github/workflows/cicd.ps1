@@ -49,8 +49,10 @@ Import-Script -File @("$PSScriptRoot\cicd.integration.ps1") -NormalizeSeparators
 Write-IntegrationMsg -Message "This function is defined in the optional integration script. That should be integrated into this main module script."
 
 # In the case the secrets are not passed as parameters, try to get them from the secrets file, local development or CI/CD environment
+# TBD https://learn.microsoft.com/de-de/powershell/utility-modules/secretmanagement/overview?view=ps-modules
 $PsGalleryApiKey = Get-ConfigValue -Check $PsGalleryApiKey -FilePath (Join-Path $PSScriptRoot 'cicd.secrets.json') -Property 'PsGalleryApiKey'
 Test-VariableValue -Variable { $PsGalleryApiKey } -ExitIfNullOrEmpty -HideValue
+
 
 # Verify required commands are available
 if ($cmd = Test-CommandAvailable -Command "git") { Write-Host "Test-CommandAvailable: $($cmd.Name) $($cmd.Version) found at $($cmd.Source)" } else { Write-Error "git not found"; exit 1 }
@@ -84,7 +86,16 @@ $probeGeneratedVersion = Convert-64SecPowershellVersionToDateTime -VersionBuild 
 Test-VariableValue -Variable { $generatedVersion } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
 
-###############################################################
+# Generate a local PowerShell Gallery repository to publish to.
+$LocalPowershellGalleryName = "LocalPowershellGallery"
+$LocalPowershellGalleryName = Register-LocalPSGalleryRepository -RepositoryName "$LocalPowershellGalleryName"
+
+# Generate a local NuGet package source to publish to.
+$LocalNugetSourceName = "LocalNuget"
+$LocalNugetSourceName = Register-LocalNuGetDotNetPackageSource -SourceName "$LocalNugetSourceName"
+
+##############################################################################
+# Main CICD Logic
 
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" | Select-Object -First 1
 Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedVersion.VersionFull)"
@@ -95,8 +106,10 @@ Test-ModuleManifest -Path $($manifestFile.FullName)
 
 if ($remoteResourcesOk)
 {
-    Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$PsGalleryApiKey" -ErrorAction Stop    
+    Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$PsGalleryApiKey"
 }
+
+Publish-Module -Path $($manifestFile.DirectoryName) -Repository "$LocalPowershellGalleryName"
 
 if ($remoteResourcesOk)
 {

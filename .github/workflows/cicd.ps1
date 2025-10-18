@@ -109,7 +109,7 @@ if ($remoteResourcesOk)
     Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$PsGalleryApiKey"
 }
 
-Publish-Module -Path $($manifestFile.DirectoryName) -Repository "$LocalPowershellGalleryName" -Verbose
+Publish-Module -Path $($manifestFile.DirectoryName) -Repository "$LocalPowershellGalleryName"
 
 if ($remoteResourcesOk)
 {

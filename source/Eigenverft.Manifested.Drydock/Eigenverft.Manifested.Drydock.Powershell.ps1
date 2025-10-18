@@ -1936,7 +1936,6 @@ $name = Register-LocalPSGalleryRepository -RepositoryName LocalGallery -Reposito
     return [string]$RepositoryName
 }
 
-
 function Unregister-LocalPSGalleryRepository {
     <#
     .SYNOPSIS
@@ -2228,5 +2227,3 @@ function Unregister-LocalNuGetPackageSource {
         Write-Host "NuGet source '$SourceName' not found; nothing to do." -ForegroundColor Yellow
     }
 }
-
-

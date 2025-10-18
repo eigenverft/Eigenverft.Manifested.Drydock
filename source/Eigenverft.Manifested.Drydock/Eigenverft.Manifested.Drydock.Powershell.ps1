@@ -1841,3 +1841,110 @@ function Update-ManifestPrerelease {
         [System.IO.File]::WriteAllText($ManifestPath, $content)
     }
 }
+
+function Register-LocalPSGalleryRepository {
+    <#
+    .SYNOPSIS
+        Registers a local PowerShell repository for gallery modules.
+
+    .DESCRIPTION
+        Ensures the specified local repository folder exists, removes any existing
+        repository with the given name, and registers the repository with the specified
+        installation policy (default: Trusted).
+
+    .PARAMETER RepositoryPath
+        The file system path to the local repository folder. Default is "$HOME/source/gallery".
+
+    .PARAMETER RepositoryName
+        The name to assign to the registered repository. Must start and end with a letter or digit,
+        and may contain letters, digits, dot, hyphen, or underscore in between.
+
+    .PARAMETER InstallationPolicy
+        The installation policy for the repository. Accepted values: Trusted, Untrusted.
+        Default is Trusted.
+
+    .EXAMPLE
+        Register-LocalPSGalleryRepository -RepositoryName LocalGallery
+        Registers the local repository using the default path with a Trusted policy.
+
+    .EXAMPLE
+        Register-LocalPSGalleryRepository -RepositoryPath "C:\MyRepo" -RepositoryName "My_Gallery-01" -InstallationPolicy Untrusted
+        Registers the repository at "C:\MyRepo" with the name "My_Gallery-01" and sets policy to Untrusted.
+    #>
+    [CmdletBinding()]
+    [Alias("rlgr")]
+    param(
+        [Parameter(Mandatory = $false)]
+        [ValidateNotNullOrEmpty()]
+        [string]$RepositoryPath = "$HOME/source/gallery",
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [ValidatePattern('^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])$')]
+        [string]$RepositoryName,
+
+        [ValidateSet('Trusted','Untrusted')]
+        [string]$InstallationPolicy = 'Trusted'
+    )
+
+    # Normalize to an absolute path (cross-platform friendly).
+    $RepositoryPath = [IO.Path]::GetFullPath((Join-Path -Path $RepositoryPath -ChildPath '.'))
+
+    # Ensure the local repository folder exists (idempotent).
+    if (-not (Test-Path -Path $RepositoryPath -PathType Container)) {
+        New-Item -ItemType Directory -Path $RepositoryPath -Force | Out-Null
+    }
+
+    # If a repository with the specified name exists, unregister it.
+    if (Get-PSRepository -Name $RepositoryName -ErrorAction SilentlyContinue) {
+        Write-Host "Repository '$RepositoryName' already exists. Removing it." -ForegroundColor Yellow
+        Unregister-PSRepository -Name $RepositoryName
+    }
+
+    # Register the local PowerShell repository with the requested installation policy.
+    Register-PSRepository -Name $RepositoryName -SourceLocation $RepositoryPath -InstallationPolicy $InstallationPolicy
+
+    Write-Host "Local repository '$RepositoryName' registered at: $RepositoryPath (Policy: $InstallationPolicy)" -ForegroundColor Green
+}
+
+function Unregister-LocalPSGalleryRepository {
+    <#
+    .SYNOPSIS
+        Unregisters a local PowerShell gallery repository by name.
+
+    .DESCRIPTION
+        Removes the PowerShellGet PSRepository registration with the specified name
+        if it exists.
+
+    .PARAMETER RepositoryName
+        The name of the repository to unregister. Must start and end with a letter or digit,
+        and may contain letters, digits, dot, hyphen, or underscore in between.
+
+    .EXAMPLE
+        Unregister-LocalPSGalleryRepository -RepositoryName LocalGallery
+        Unregisters the 'LocalGallery' PSRepository if present.
+    #>
+    [CmdletBinding()]
+    [Alias("ulgr")]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [ValidatePattern('^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])$')]
+        [string]$RepositoryName
+    )
+
+    # Attempt to find the repository first for a clean UX.
+    if (Get-PSRepository -Name $RepositoryName -ErrorAction SilentlyContinue) {
+        try {
+            Unregister-PSRepository -Name $RepositoryName -ErrorAction Stop
+            Write-Host "Repository '$RepositoryName' has been unregistered." -ForegroundColor Green
+        }
+        catch {
+            Write-Host "Failed to unregister repository '$RepositoryName': $($_.Exception.Message)" -ForegroundColor Red
+            throw
+        }
+    }
+    else {
+        Write-Host "Repository '$RepositoryName' not found; nothing to do." -ForegroundColor Yellow
+    }
+}

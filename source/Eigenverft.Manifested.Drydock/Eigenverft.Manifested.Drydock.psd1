@@ -107,6 +107,8 @@ FunctionsToExport = @(
     'Update-ManifestModuleVersion',
     'Update-ManifestReleaseNotes',
     'Update-ManifestPrerelease',
+    'Register-LocalPSGalleryRepository',
+    'Unregister-LocalPSGalleryRepository',
     
     # ...Process.ps1
     'Open-LocalHtml',

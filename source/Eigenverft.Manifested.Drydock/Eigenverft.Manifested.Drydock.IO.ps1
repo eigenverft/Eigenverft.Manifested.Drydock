@@ -245,10 +245,10 @@ function New-Directory {
 
 .DESCRIPTION
     Accepts heterogeneous inputs in -Paths (strings, nested arrays, DirectoryInfo/FileInfo,
-    hashtables/objects with Path-like members), flattens them, coerces to strings, and combines
+    hashtables/objects with path-like members), flattens them, coerces to strings, and combines
     them into a directory path using .NET APIs. If any later segment is rooted (drive/UNC or / on Unix),
-    earlier segments are ignored (same as System.IO.Path.Combine semantics). The function creates
-    the directory if missing and returns the absolute directory path. Idempotent and cross-platform.
+    earlier segments are ignored (System.IO.Path.Combine semantics). Creates the directory if missing
+    and returns the absolute directory path. Idempotent and cross-platform.
 
 .PARAMETER Paths
     One or more items representing path segments. Supports:
@@ -274,35 +274,31 @@ function New-Directory {
     # Because '/var/tmp' is rooted, 'prefix' is ignored (Path.Combine semantics).
 
 .NOTES
-    Compatibility: Windows PowerShell 5/5.1 and PowerShell 7+ (Windows/macOS/Linux).
+    Compatibility: Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
     Logging: Only announces creation via Write-Host when the directory is newly created.
 #>
     [CmdletBinding()]
     param(
-        # Accept anything so we can robustly flatten/normalize.
         [Parameter(Mandatory=$true)]
         [object[]]$Paths
     )
 
-    # Helper: extract a path-like string from a single input element.
-    function local:_Select-PathLikeValue {
+    # Helper: extract a path-like string from a single element.
+    function _Select-PathLikeValue {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param([object]$Item)
 
         if ($null -eq $Item) { return $null }
 
-        # Strings: trim, drop empty.
         if ($Item -is [string]) {
             $t = $Item.Trim()
             if ($t.Length -gt 0) { return $t } else { return $null }
         }
 
-        # DirectoryInfo/FileInfo and other FileSystemInfo derivatives.
         if ($Item -is [System.IO.FileSystemInfo]) {
             return $Item.FullName
         }
 
-        # Hashtable: prefer Path-like keys.
         if ($Item -is [System.Collections.IDictionary]) {
             foreach ($k in @('FullName','DirectoryName','Path')) {
                 foreach ($key in $Item.Keys) {
@@ -312,17 +308,15 @@ function New-Directory {
                     }
                 }
             }
-            # Fallback: if a single non-null value, use it.
-            if ($Item.Values -and $Item.Values.Count -eq 1 -and $null -ne $Item.Values[0]) {
-                return ($Item.Values[0].ToString().Trim())
+            $vals = @($Item.Values)
+            if ($vals.Count -eq 1 -and $null -ne $vals[0]) {
+                return ($vals[0].ToString().Trim())
             }
             return $null
         }
 
-        # PSCustomObject / other objects: look for common members.
         $type = $Item.GetType()
-        $members = @('FullName','DirectoryName','Path')
-        foreach ($m in $members) {
+        foreach ($m in @('FullName','DirectoryName','Path')) {
             $prop = $type.GetProperty($m)
             if ($null -ne $prop) {
                 $val = $prop.GetValue($Item, $null)
@@ -330,7 +324,6 @@ function New-Directory {
             }
         }
 
-        # Fallback: ToString()
         $s = $Item.ToString()
         if ($null -ne $s) {
             $t = $s.Trim()
@@ -340,7 +333,7 @@ function New-Directory {
     }
 
     # Helper: recursively flatten arbitrary/nested inputs into a list of non-empty strings.
-    function local:_Flatten-PathInputs {
+    function _Flatten-PathInputs {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param([object[]]$Items)
 
@@ -350,31 +343,27 @@ function New-Directory {
         foreach ($it in $Items) {
             if ($null -eq $it) { continue }
 
-            # Do not treat string as IEnumerable of chars.
             if ($it -is [string]) {
-                $val = local:_Select-PathLikeValue $it
+                $val = _Select-PathLikeValue $it
                 if ($val) { [void]$acc.Add($val) }
                 continue
             }
 
-            # If IEnumerable (arrays, lists), flatten recursively.
             if ($it -is [System.Collections.IEnumerable]) {
-                # Avoid iterating dictionaries as key/value pairs; handle them via selector.
                 if ($it -is [System.Collections.IDictionary]) {
-                    $val = local:_Select-PathLikeValue $it
+                    $val = _Select-PathLikeValue $it
                     if ($val) { [void]$acc.Add($val) }
                 }
                 else {
                     $nested = @()
                     foreach ($n in $it) { $nested += ,$n }
-                    $flatNested = local:_Flatten-PathInputs $nested
+                    $flatNested = _Flatten-PathInputs $nested
                     foreach ($s in $flatNested) { [void]$acc.Add($s) }
                 }
                 continue
             }
 
-            # Single object.
-            $v = local:_Select-PathLikeValue $it
+            $v = _Select-PathLikeValue $it
             if ($v) { [void]$acc.Add($v) }
         }
 
@@ -382,14 +371,13 @@ function New-Directory {
         return $acc.ToArray()
     }
 
-    # Normalize all incoming segments.
-    $segments = local:_Flatten-PathInputs $Paths
+    # Normalize segments.
+    $segments = _Flatten-PathInputs $Paths
     if (-not $segments -or $segments.Count -eq 0) {
         throw "Paths must contain at least one resolvable segment."
     }
 
-    # Apply explicit rooted-segment policy (documented): last rooted wins.
-    # This mirrors System.IO.Path.Combine behavior but we make it clear and predictable.
+    # Rooted segment policy: last rooted wins (explicitly documented).
     $lastRooted = -1
     for ($i = 0; $i -lt $segments.Count; $i++) {
         if ([System.IO.Path]::IsPathRooted($segments[$i])) { $lastRooted = $i }
@@ -398,7 +386,7 @@ function New-Directory {
         $segments = $segments[$lastRooted..($segments.Count - 1)]
     }
 
-    # Combine using .NET; then resolve to absolute path for stable return.
+    # Combine and resolve to absolute.
     $combined = [System.IO.Path]::Combine($segments)
     if ([string]::IsNullOrWhiteSpace($combined)) {
         throw "The combined path is empty after normalization."
@@ -406,12 +394,12 @@ function New-Directory {
 
     $fullPath = [System.IO.Path]::GetFullPath($combined)
 
-    # Sanity checks: if a file already exists at that full path, fail with a clear message.
+    # Directory sanity: fail if a file is already at the target path.
     if ([System.IO.File]::Exists($fullPath)) {
         throw ("A file already exists at '{0}'; cannot create a directory at this path." -f $fullPath)
     }
 
-    # Idempotent creation; announce only on first creation.
+    # Idempotent creation; announce only if newly created.
     $existed = [System.IO.Directory]::Exists($fullPath)
     try {
         [System.IO.Directory]::CreateDirectory($fullPath) | Out-Null
@@ -424,7 +412,7 @@ function New-Directory {
         Write-Host ("Created directory: {0}" -f $fullPath)
     }
 
-    # Return absolute path as string.
+    # Return absolute path string.
     $fullPath
 }
 

@@ -107,8 +107,6 @@ $docsFolderName = "docs"
 #$ne = New-Directory -Paths @("$gitTopLevelDirectory","$reportsFolderName",'2025')
 #$ne = New-Directory -Paths @("$gitTopLevelDirectory","$docsFolderName",'2025')
 
-
-exit
 $manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" | Select-Object -First 1
 Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedVersion.VersionFull)"
 Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPrerelease "$($deploymentInfo.Affix.Label)"

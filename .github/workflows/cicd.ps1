@@ -102,7 +102,8 @@ $artifactsFolderName = "artifacts"
 $reportsFolderName = "reports"
 $docsFolderName = "docs"
 
-$ne = New-Directory -Paths @("$gitTopLevelDirectory","$artifactsFolderName",$deploymentInfo.Branch.PathSegmentsSanitized)
+
+#$ne = New-Directory -Paths @("$gitTopLevelDirectory","$artifactsFolderName",$deploymentInfo.Branch.PathSegmentsSanitized)
 #$ne = New-Directory -Paths @("$gitTopLevelDirectory","$reportsFolderName",'2025')
 #$ne = New-Directory -Paths @("$gitTopLevelDirectory","$docsFolderName",'2025')
 

@@ -84,6 +84,161 @@ function Find-FilesByPattern {
     return @($fmatches.ToArray())
 }
 
+function Remove-FilesByPattern {
+<#
+.SYNOPSIS
+    Delete files by filename wildcard(s) using explicit traversal; optionally remove empty subdirectories.
+
+.DESCRIPTION
+    Walks the directory tree manually (deep-first) without using -Recurse and matches file names against
+    one or more Windows-style wildcard patterns (e.g. *.log, *.tmp). Continues on listing/deletion errors.
+    After deletions, it can remove empty subdirectories (deepest-first). Emits only brief summary via Write-Host.
+
+.PARAMETER Path
+    Root directory where the deletion should begin.
+
+.PARAMETER Pattern
+    Filename wildcard(s). Accepts array or comma/semicolon list (e.g. "*.log;*.tmp,*.bak").
+
+.PARAMETER RemoveEmptyDirs
+    Policy to remove empty subdirectories after deleting files.
+    Allowed: 'Yes' | 'No'. Default: 'Yes'.
+
+.EXAMPLE
+    Remove-FilesByPattern -Path "C:\Temp" -Pattern "*.log"
+
+.EXAMPLE
+    Remove-FilesByPattern -Path "/var/tmp" -Pattern "*.log;*.tmp" -RemoveEmptyDirs No
+
+.EXAMPLE
+    Remove-FilesByPattern -Path "D:\Build" -Pattern @("*.obj","*.pch","*.ipch")
+
+.NOTES
+    Requirements: Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
+    Behavior: Idempotent; subsequent runs converge (no output objects, summary only).
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Path,
+
+        [Parameter(Mandatory=$true)]
+        [string[]]$Pattern,
+
+        [Parameter()]
+        [ValidateSet('Yes','No')]
+        [string]$RemoveEmptyDirs = 'Yes'
+    )
+
+    # [reviewer] Validate root path early and fail fast with concise message.
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw "The specified path '$Path' does not exist or is not a directory."
+    }
+
+    # Inline helper: normalize pattern list; local scope; no pipeline output.
+    function local:_Norm-List {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([string[]]$Patterns)
+
+        if (-not $Patterns) { return @() }
+        $list = New-Object System.Collections.Generic.List[string]
+        foreach ($p in $Patterns) {
+            if ([string]::IsNullOrWhiteSpace($p)) { continue }
+            foreach ($seg in ($p -split '[,;]')) {
+                $t = $seg.Trim()
+                if ($t.Length -gt 0) { [void]$list.Add($t) }
+            }
+        }
+        if ($list.Count -eq 0) { return @() }
+        $list.ToArray()
+    }
+
+    # Normalize patterns; keep parity with Find-FilesByPattern behavior.
+    $pat = local:_Norm-List $Pattern
+    if (-not $pat -or $pat.Count -eq 0) {
+        throw "Pattern must not be empty."
+    }
+
+    # Prepare traversal using explicit stack; avoid -Recurse.
+    $rootItem = $null
+    try { $rootItem = Get-Item -LiteralPath $Path -ErrorAction Stop }
+    catch { throw "Path '$Path' is not accessible: $_" }
+
+    $stack      = New-Object System.Collections.Stack
+    $stack.Push($rootItem)
+
+    $candidates = New-Object System.Collections.Generic.List[System.IO.FileInfo]
+    $allDirs    = New-Object System.Collections.Generic.List[System.IO.DirectoryInfo]
+    $rootFull   = $rootItem.FullName
+
+    while ($stack.Count -gt 0) {
+        $dir = $stack.Pop()
+
+        # [reviewer] Track directories for later empty-dir cleanup; skip the root itself.
+        if ($dir.FullName -ne $rootFull) { [void]$allDirs.Add($dir) }
+
+        # Discover subdirectories; continue on errors.
+        $subs = @()
+        try { $subs = Get-ChildItem -LiteralPath $dir.FullName -Directory -ErrorAction Stop }
+        catch { Write-Warning "Cannot list directories in '$($dir.FullName)': $_" }
+        foreach ($sd in $subs) { $stack.Push($sd) }
+
+        # List files; continue on errors.
+        $files = @()
+        try { $files = Get-ChildItem -LiteralPath $dir.FullName -File -ErrorAction Stop }
+        catch { Write-Warning "Cannot list files in '$($dir.FullName)': $_" }
+
+        # Match filenames against wildcard set; first-hit wins.
+        foreach ($f in $files) {
+            foreach ($p in $pat) {
+                if ($f.Name -like $p) { [void]$candidates.Add($f); break }
+            }
+        }
+    }
+
+    # Delete matched files; keep going on individual failures.
+    $deleted = 0
+    foreach ($fi in $candidates) {
+        try {
+            if (Test-Path -LiteralPath $fi.FullName -PathType Leaf) {
+                Remove-Item -LiteralPath $fi.FullName -Force -ErrorAction Stop
+                $deleted += 1
+            }
+        }
+        catch {
+            Write-Warning "Failed to delete '$($fi.FullName)': $_"
+        }
+    }
+
+    # Optionally remove empty subdirectories (deepest-first), never the root.
+    $removedDirs = 0
+    if ($RemoveEmptyDirs -eq 'Yes') {
+        $sorted = $allDirs | Sort-Object {
+            ($_.FullName.Split([System.IO.Path]::DirectorySeparatorChar)).Count
+        } -Descending
+
+        foreach ($d in $sorted) {
+            try {
+                $items = Get-ChildItem -LiteralPath $d.FullName -Force -ErrorAction Stop
+                if (-not $items -or $items.Count -eq 0) {
+                    Remove-Item -LiteralPath $d.FullName -Force -ErrorAction Stop
+                    $removedDirs += 1
+                }
+            }
+            catch {
+                # [reviewer] Ignore cleanup failures; keep traversal robust/cross-platform.
+            }
+        }
+    }
+
+    # Minimal, consistent logging per policy.
+    Write-Host ("Deleted files: {0}" -f $deleted)
+    if ($RemoveEmptyDirs -eq 'Yes') {
+        Write-Host ("Removed empty directories: {0}" -f $removedDirs)
+    }
+}
+
+
 function Find-TreeContent {
 <#
 .SYNOPSIS

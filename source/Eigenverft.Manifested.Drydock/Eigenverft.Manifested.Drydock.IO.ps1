@@ -245,37 +245,23 @@ function New-Directory {
 
 .DESCRIPTION
     Accepts heterogeneous inputs in -Paths (strings, nested arrays, DirectoryInfo/FileInfo,
-    hashtables/objects with path-like members), flattens them, coerces to strings, and combines
-    them into a directory path using .NET APIs. If any later segment is rooted (drive/UNC or / on Unix),
-    earlier segments are ignored (System.IO.Path.Combine semantics). Creates the directory if missing
+    hashtables/objects with path-like members), flattens and sanitizes them, and then
+    iteratively combines segments (cross-version safe). Creates the directory if missing
     and returns the absolute directory path. Idempotent and cross-platform.
 
 .PARAMETER Paths
     One or more items representing path segments. Supports:
-      - String(s) or nested arrays of strings
+      - String(s) or nested arrays
       - DirectoryInfo/FileInfo (uses .FullName)
-      - PSCustomObject/Hashtable with one of: FullName, DirectoryName, Path (case-insensitive)
-      - Mixed/nested structures (e.g., @('out', $obj.Subitem, $arrOfSegments))
+      - PSCustomObject/Hashtable with one of: FullName, DirectoryName, Path
 
 .EXAMPLE
-    $outDir = New-Directory -Paths @('C:\Logs','App','2025')
-    # Ensures C:\Logs\App\2025 exists; returns absolute path.
-
-.EXAMPLE
-    $outDir = New-Directory -Paths @('./build','reports')
-    # Cross-platform relative segments; returns absolute path.
-
-.EXAMPLE
-    $outDir = New-Directory -Paths @('root', $project.Directory, @('bin','release'))
-    # Accepts nested arrays and DirectoryInfo-like objects.
-
-.EXAMPLE
-    $outDir = New-Directory -Paths @('prefix', @{ Path = '/var/tmp' }, 'child')
-    # Because '/var/tmp' is rooted, 'prefix' is ignored (Path.Combine semantics).
+    $ne = New-Directory -Paths @("$gitTopLevelDirectory","$artifactsFolderName",$deploymentInfo.Branch.PathSegmentsSanitized)
+    # Produces: <top>/artifacts/feature/stabilize (OS-specific separators), creates if missing.
 
 .NOTES
     Compatibility: Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
-    Logging: Only announces creation via Write-Host when the directory is newly created.
+    Logging: Only announces creation via Write-Host when newly created.
 #>
     [CmdletBinding()]
     param(
@@ -309,9 +295,7 @@ function New-Directory {
                 }
             }
             $vals = @($Item.Values)
-            if ($vals.Count -eq 1 -and $null -ne $vals[0]) {
-                return ($vals[0].ToString().Trim())
-            }
+            if ($vals.Count -eq 1 -and $null -ne $vals[0]) { return ($vals[0].ToString().Trim()) }
             return $null
         }
 
@@ -371,13 +355,31 @@ function New-Directory {
         return $acc.ToArray()
     }
 
-    # Normalize segments.
+    # Helper: basic segment sanity (invalid path chars).
+    function _Validate-Segments {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([string[]]$Segments)
+
+        $bad = [System.IO.Path]::GetInvalidPathChars()
+        foreach ($seg in $Segments) {
+            if ([string]::IsNullOrWhiteSpace($seg)) { throw "Encountered an empty path segment." }
+            foreach ($ch in $bad) {
+                if ($seg.IndexOf($ch) -ge 0) {
+                    throw ("Invalid character '{0}' found in segment '{1}'." -f $ch, $seg)
+                }
+            }
+        }
+    }
+
+    # Normalize.
     $segments = _Flatten-PathInputs $Paths
     if (-not $segments -or $segments.Count -eq 0) {
         throw "Paths must contain at least one resolvable segment."
     }
 
-    # Rooted segment policy: last rooted wins (explicitly documented).
+    _Validate-Segments $segments
+
+    # Rooted policy: last rooted wins (mirrors typical Combine semantics).
     $lastRooted = -1
     for ($i = 0; $i -lt $segments.Count; $i++) {
         if ([System.IO.Path]::IsPathRooted($segments[$i])) { $lastRooted = $i }
@@ -386,35 +388,36 @@ function New-Directory {
         $segments = $segments[$lastRooted..($segments.Count - 1)]
     }
 
-    # Combine and resolve to absolute.
-    $combined = [System.IO.Path]::Combine($segments)
+    # Cross-version safe: iteratively combine (do NOT rely on Combine(string[])).
+    $current = $segments[0]
+    for ($i = 1; $i -lt $segments.Count; $i++) {
+        $current = [System.IO.Path]::Combine($current, $segments[$i])
+    }
+    $combined = $current
+
     if ([string]::IsNullOrWhiteSpace($combined)) {
         throw "The combined path is empty after normalization."
     }
 
     $fullPath = [System.IO.Path]::GetFullPath($combined)
 
-    # Directory sanity: fail if a file is already at the target path.
+    # Sanity: fail if a file exists at the target.
     if ([System.IO.File]::Exists($fullPath)) {
         throw ("A file already exists at '{0}'; cannot create a directory at this path." -f $fullPath)
     }
 
     # Idempotent creation; announce only if newly created.
     $existed = [System.IO.Directory]::Exists($fullPath)
-    try {
-        [System.IO.Directory]::CreateDirectory($fullPath) | Out-Null
-    }
-    catch {
-        throw ("Failed to create or access directory '{0}': {1}" -f $fullPath, $_)
-    }
+    try { [System.IO.Directory]::CreateDirectory($fullPath) | Out-Null }
+    catch { throw ("Failed to create or access directory '{0}': {1}" -f $fullPath, $_) }
 
     if (-not $existed) {
         Write-Host ("Created directory: {0}" -f $fullPath)
     }
 
-    # Return absolute path string.
     $fullPath
 }
+
 
 function Find-TreeContent {
 <#

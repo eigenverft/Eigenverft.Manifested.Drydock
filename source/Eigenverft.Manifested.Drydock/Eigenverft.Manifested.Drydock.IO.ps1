@@ -238,6 +238,44 @@ function Remove-FilesByPattern {
     }
 }
 
+function New-Directory {
+    <#
+    .SYNOPSIS
+        Combines path segments into a full directory path and creates the directory.
+    
+    .DESCRIPTION
+        This function takes an array of strings representing parts of a file system path,
+        combines them using [System.IO.Path]::Combine, validates the resulting path, creates
+        the directory if it does not exist, and returns the full directory path.
+    
+    .PARAMETER Paths
+        An array of strings that represents the individual segments of the directory path.
+    
+    .EXAMPLE
+        $outputReportDirectory = New-Directory -Paths @($outputRootReportResultsDirectory, "$($projectFile.BaseName)", "$branchVersionFolder")
+        # This combines the three parts, creates the directory if needed, and returns the full path.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string[]]$Paths
+    )
+    
+    # Combine the provided path segments into a single path.
+    $combinedPath = [System.IO.Path]::Combine($Paths)
+    
+    # Validate that the combined path is not null or empty.
+    if ([string]::IsNullOrEmpty($combinedPath)) {
+        Write-Error "The combined path is null or empty."
+        exit 1
+    }
+    
+    # Create the directory if it does not exist.
+    [System.IO.Directory]::CreateDirectory($combinedPath) | Out-Null
+    
+    # Return the combined directory path.
+    return $combinedPath
+}
 
 function Find-TreeContent {
 <#

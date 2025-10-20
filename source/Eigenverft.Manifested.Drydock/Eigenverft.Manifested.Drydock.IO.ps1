@@ -241,40 +241,45 @@ function Remove-FilesByPattern {
 function Get-Path {
 <#
 .SYNOPSIS
-    Normalize flexible inputs in -Paths, combine them, and return only the leaf segment.
+  Combine flexible inputs in -Paths into a single path string (no filesystem I/O).
 
 .DESCRIPTION
-    Accepts heterogeneous inputs via -Paths (strings, nested arrays, DirectoryInfo/FileInfo,
-    hashtables/objects with path-like members). Flattens and validates segments, applies
-    "last rooted wins", combines iteratively (cross-version safe), resolves to a full path,
-    trims trailing separators, and returns only the final path segment (leaf).
-    No filesystem changes are made.
+  Accepts heterogeneous inputs (strings, nested arrays, DirectoryInfo/FileInfo, and
+  hashtables/objects with path-like members). Flattens & validates, applies “last rooted wins”,
+  then combines segments iteratively using System.IO.Path. Returns the combined path string
+  with OS-appropriate separators. Does not resolve to absolute, does not touch the filesystem.
 
 .PARAMETER Paths
-    One or more items representing path segments. Supports:
-      - String(s) or nested arrays
-      - DirectoryInfo/FileInfo (uses .FullName)
-      - PSCustomObject/Hashtable with a path-like member: FullName, DirectoryName, Path
+  One or more path-like items:
+    - String(s) or nested arrays
+    - DirectoryInfo/FileInfo (.FullName)
+    - Hashtable/PSCustomObject with FullName / DirectoryName / Path (case-insensitive)
 
 .EXAMPLE
-    Get-Path -Paths @("C:\repo","artifacts","build\output\file.txt")
-    # Returns: file.txt
+  Get-Path -Paths @("ddd","build")
+  # Returns: ddd\build   (on Windows)   or   ddd/build   (on Unix)
 
 .EXAMPLE
-    Get-Path -Paths @("/var","log","nginx/")
-    # Returns: nginx
+  Get-Path -Paths @("C:\repo","artifacts","build\output\file.txt")
+  # Returns: C:\repo\artifacts\build\output\file.txt
+
+.EXAMPLE
+  # Mixed types are fine:
+  $d = [IO.DirectoryInfo]"C:\repo"
+  Get-Path -Paths @($d, @{Path='artifacts'}, 'build','output')
 
 .NOTES
-    Compatibility: Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
-    Behavior: If the resulting path is a root (e.g., 'C:\' or '/'), the root string is returned.
+  PowerShell 5/5.1 and 7+. To convert the result to an absolute path later (without touching the FS):
+    [IO.Path]::GetFullPath( (Get-Path -Paths $Paths) )
 #>
     [CmdletBinding()]
+    [OutputType([string])]
     param(
         [Parameter(Mandatory=$true, Position=0)]
         [object[]]$Paths
     )
 
-    # Reviewer note: Keep helpers local for portability and easy inlining/review.
+    # --- Helpers (kept local for portability) ---------------------------------------------------
 
     function _Select-PathLikeValue {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
@@ -294,9 +299,8 @@ function Get-Path {
         if ($Item -is [System.Collections.IDictionary]) {
             foreach ($k in @('FullName','DirectoryName','Path')) {
                 foreach ($key in $Item.Keys) {
-                    if ($key -is [string] -and $key.Equals($k, [System.StringComparison]::OrdinalIgnoreCase)) {
-                        $v = $Item[$key]
-                        if ($null -ne $v) { return ($v.ToString().Trim()) }
+                    if ($key -is [string] -and $key.Equals($k,[StringComparison]::OrdinalIgnoreCase)) {
+                        $v = $Item[$key]; if ($null -ne $v) { return ($v.ToString().Trim()) }
                     }
                 }
             }
@@ -375,7 +379,8 @@ function Get-Path {
         }
     }
 
-    # Normalize inputs
+    # --- Normalize & Combine --------------------------------------------------------------------
+
     $segments = _Flatten-PathInputs $Paths
     if (-not $segments -or $segments.Count -eq 0) {
         throw "Paths must contain at least one resolvable segment."
@@ -383,7 +388,7 @@ function Get-Path {
 
     _Validate-Segments $segments
 
-    # Rooted rule: last rooted wins (mirrors typical Combine semantics).
+    # Last rooted wins: if a later segment is rooted, drop everything before it.
     $lastRooted = -1
     for ($i = 0; $i -lt $segments.Count; $i++) {
         if ([System.IO.Path]::IsPathRooted($segments[$i])) { $lastRooted = $i }
@@ -392,28 +397,20 @@ function Get-Path {
         $segments = $segments[$lastRooted..($segments.Count - 1)]
     }
 
-    # Iteratively combine (cross-version safe).
+    # Iteratively combine (avoids Combine(string[]) quirkiness across runtimes).
     $current = $segments[0]
     for ($i = 1; $i -lt $segments.Count; $i++) {
         $current = [System.IO.Path]::Combine($current, $segments[$i])
     }
-    $combined = $current
 
-    if ([string]::IsNullOrWhiteSpace($combined)) {
+    if ([string]::IsNullOrWhiteSpace($current)) {
         throw "The combined path is empty after normalization."
     }
 
-    # Resolve and extract leaf; return root string if there's no leaf (e.g., 'C:\' or '/').
-    $fullPath = [System.IO.Path]::GetFullPath($combined)
-    $trimmed  = $fullPath.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-    $leaf     = [System.IO.Path]::GetFileName($trimmed)
-
-    if ([string]::IsNullOrEmpty($leaf)) {
-        return [System.IO.Path]::GetPathRoot($fullPath)
-    }
-
-    return $leaf
+    # Return the combined (possibly relative) path — no resolution to absolute.
+    return $current
 }
+
 
 function New-Directory {
 <#

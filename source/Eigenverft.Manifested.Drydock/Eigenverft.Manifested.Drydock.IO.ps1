@@ -238,6 +238,183 @@ function Remove-FilesByPattern {
     }
 }
 
+function Get-Path {
+<#
+.SYNOPSIS
+    Normalize flexible inputs in -Paths, combine them, and return only the leaf segment.
+
+.DESCRIPTION
+    Accepts heterogeneous inputs via -Paths (strings, nested arrays, DirectoryInfo/FileInfo,
+    hashtables/objects with path-like members). Flattens and validates segments, applies
+    "last rooted wins", combines iteratively (cross-version safe), resolves to a full path,
+    trims trailing separators, and returns only the final path segment (leaf).
+    No filesystem changes are made.
+
+.PARAMETER Paths
+    One or more items representing path segments. Supports:
+      - String(s) or nested arrays
+      - DirectoryInfo/FileInfo (uses .FullName)
+      - PSCustomObject/Hashtable with a path-like member: FullName, DirectoryName, Path
+
+.EXAMPLE
+    Get-Path -Paths @("C:\repo","artifacts","build\output\file.txt")
+    # Returns: file.txt
+
+.EXAMPLE
+    Get-Path -Paths @("/var","log","nginx/")
+    # Returns: nginx
+
+.NOTES
+    Compatibility: Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
+    Behavior: If the resulting path is a root (e.g., 'C:\' or '/'), the root string is returned.
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true, Position=0)]
+        [object[]]$Paths
+    )
+
+    # Reviewer note: Keep helpers local for portability and easy inlining/review.
+
+    function _Select-PathLikeValue {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([object]$Item)
+
+        if ($null -eq $Item) { return $null }
+
+        if ($Item -is [string]) {
+            $t = $Item.Trim()
+            if ($t.Length -gt 0) { return $t } else { return $null }
+        }
+
+        if ($Item -is [System.IO.FileSystemInfo]) {
+            return $Item.FullName
+        }
+
+        if ($Item -is [System.Collections.IDictionary]) {
+            foreach ($k in @('FullName','DirectoryName','Path')) {
+                foreach ($key in $Item.Keys) {
+                    if ($key -is [string] -and $key.Equals($k, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $v = $Item[$key]
+                        if ($null -ne $v) { return ($v.ToString().Trim()) }
+                    }
+                }
+            }
+            $vals = @($Item.Values)
+            if ($vals.Count -eq 1 -and $null -ne $vals[0]) { return ($vals[0].ToString().Trim()) }
+            return $null
+        }
+
+        $type = $Item.GetType()
+        foreach ($m in @('FullName','DirectoryName','Path')) {
+            $prop = $type.GetProperty($m)
+            if ($null -ne $prop) {
+                $val = $prop.GetValue($Item, $null)
+                if ($null -ne $val) { return ($val.ToString().Trim()) }
+            }
+        }
+
+        $s = $Item.ToString()
+        if ($null -ne $s) {
+            $t = $s.Trim()
+            if ($t.Length -gt 0) { return $t }
+        }
+        return $null
+    }
+
+    function _Flatten-PathInputs {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([object[]]$Items)
+
+        $acc = New-Object System.Collections.Generic.List[string]
+        if (-not $Items) { return @() }
+
+        foreach ($it in $Items) {
+            if ($null -eq $it) { continue }
+
+            if ($it -is [string]) {
+                $val = _Select-PathLikeValue $it
+                if ($val) { [void]$acc.Add($val) }
+                continue
+            }
+
+            if ($it -is [System.Collections.IEnumerable]) {
+                if ($it -is [System.Collections.IDictionary]) {
+                    $val = _Select-PathLikeValue $it
+                    if ($val) { [void]$acc.Add($val) }
+                }
+                else {
+                    $nested = @()
+                    foreach ($n in $it) { $nested += ,$n }
+                    $flatNested = _Flatten-PathInputs $nested
+                    foreach ($s in $flatNested) { [void]$acc.Add($s) }
+                }
+                continue
+            }
+
+            $v = _Select-PathLikeValue $it
+            if ($v) { [void]$acc.Add($v) }
+        }
+
+        if ($acc.Count -eq 0) { return @() }
+        return $acc.ToArray()
+    }
+
+    function _Validate-Segments {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([string[]]$Segments)
+
+        $bad = [System.IO.Path]::GetInvalidPathChars()
+        foreach ($seg in $Segments) {
+            if ([string]::IsNullOrWhiteSpace($seg)) { throw "Encountered an empty path segment." }
+            foreach ($ch in $bad) {
+                if ($seg.IndexOf($ch) -ge 0) {
+                    throw ("Invalid character '{0}' found in segment '{1}'." -f $ch, $seg)
+                }
+            }
+        }
+    }
+
+    # Normalize inputs
+    $segments = _Flatten-PathInputs $Paths
+    if (-not $segments -or $segments.Count -eq 0) {
+        throw "Paths must contain at least one resolvable segment."
+    }
+
+    _Validate-Segments $segments
+
+    # Rooted rule: last rooted wins (mirrors typical Combine semantics).
+    $lastRooted = -1
+    for ($i = 0; $i -lt $segments.Count; $i++) {
+        if ([System.IO.Path]::IsPathRooted($segments[$i])) { $lastRooted = $i }
+    }
+    if ($lastRooted -ge 0) {
+        $segments = $segments[$lastRooted..($segments.Count - 1)]
+    }
+
+    # Iteratively combine (cross-version safe).
+    $current = $segments[0]
+    for ($i = 1; $i -lt $segments.Count; $i++) {
+        $current = [System.IO.Path]::Combine($current, $segments[$i])
+    }
+    $combined = $current
+
+    if ([string]::IsNullOrWhiteSpace($combined)) {
+        throw "The combined path is empty after normalization."
+    }
+
+    # Resolve and extract leaf; return root string if there's no leaf (e.g., 'C:\' or '/').
+    $fullPath = [System.IO.Path]::GetFullPath($combined)
+    $trimmed  = $fullPath.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $leaf     = [System.IO.Path]::GetFileName($trimmed)
+
+    if ([string]::IsNullOrEmpty($leaf)) {
+        return [System.IO.Path]::GetPathRoot($fullPath)
+    }
+
+    return $leaf
+}
+
 function New-Directory {
 <#
 .SYNOPSIS
@@ -417,7 +594,6 @@ function New-Directory {
 
     $fullPath
 }
-
 
 function Find-TreeContent {
 <#
@@ -1092,5 +1268,4 @@ Resolve-ModulePath -ModuleName Pester -All -VersionScope IncludePrerelease
         throw "Module '$ModuleName' not found in $scope installations on PSModulePath."
     }
 }
-
 

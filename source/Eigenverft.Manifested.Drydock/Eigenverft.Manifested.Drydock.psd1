@@ -93,6 +93,7 @@ FunctionsToExport = @(
     # ...IO.ps1
     'Find-FilesByPattern',
     'Remove-FilesByPattern',
+    'Get-Path',
     'New-Directory',
     'Find-TreeContent',
     'Find-TreeContentByFile',

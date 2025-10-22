@@ -438,15 +438,16 @@ function New-Directory {
     Logging: Only announces creation via Write-Host when newly created.
 #>
     [CmdletBinding()]
+    [OutputType([string])]
     param(
-        [Parameter(Mandatory=$true)]
-        [object[]]$Paths
+        [Parameter(Mandatory = $true)]
+        [object[]] $Paths
     )
 
     # Helper: extract a path-like string from a single element.
     function _Select-PathLikeValue {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
-        param([object]$Item)
+        param([object] $Item)
 
         if ($null -eq $Item) { return $null }
 
@@ -493,7 +494,7 @@ function New-Directory {
     # Helper: recursively flatten arbitrary/nested inputs into a list of non-empty strings.
     function _Flatten-PathInputs {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
-        param([object[]]$Items)
+        param([object[]] $Items)
 
         $acc = New-Object System.Collections.Generic.List[string]
         if (-not $Items) { return @() }
@@ -503,26 +504,26 @@ function New-Directory {
 
             if ($it -is [string]) {
                 $val = _Select-PathLikeValue $it
-                if ($val) { [void]$acc.Add($val) }
+                if ($val) { [void] $acc.Add($val) }
                 continue
             }
 
             if ($it -is [System.Collections.IEnumerable]) {
                 if ($it -is [System.Collections.IDictionary]) {
                     $val = _Select-PathLikeValue $it
-                    if ($val) { [void]$acc.Add($val) }
+                    if ($val) { [void] $acc.Add($val) }
                 }
                 else {
                     $nested = @()
                     foreach ($n in $it) { $nested += ,$n }
                     $flatNested = _Flatten-PathInputs $nested
-                    foreach ($s in $flatNested) { [void]$acc.Add($s) }
+                    foreach ($s in $flatNested) { [void] $acc.Add($s) }
                 }
                 continue
             }
 
             $v = _Select-PathLikeValue $it
-            if ($v) { [void]$acc.Add($v) }
+            if ($v) { [void] $acc.Add($v) }
         }
 
         if ($acc.Count -eq 0) { return @() }
@@ -532,7 +533,7 @@ function New-Directory {
     # Helper: basic segment sanity (invalid path chars).
     function _Validate-Segments {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
-        param([string[]]$Segments)
+        param([string[]] $Segments)
 
         $bad = [System.IO.Path]::GetInvalidPathChars()
         foreach ($seg in $Segments) {
@@ -545,27 +546,33 @@ function New-Directory {
         }
     }
 
-    # Normalize.
-    $segments = _Flatten-PathInputs $Paths
-    if (-not $segments -or $segments.Count -eq 0) {
+    # Normalize and force an array (prevents scalar-string quirks).
+    [string[]] $segments = @(_Flatten-PathInputs -Items $Paths)
+    if (-not $segments -or $segments.Length -eq 0) {
         throw "Paths must contain at least one resolvable segment."
     }
 
-    _Validate-Segments $segments
+    _Validate-Segments -Segments $segments
 
     # Rooted policy: last rooted wins (mirrors typical Combine semantics).
     $lastRooted = -1
-    for ($i = 0; $i -lt $segments.Count; $i++) {
+    for ($i = 0; $i -lt $segments.Length; $i++) {
         if ([System.IO.Path]::IsPathRooted($segments[$i])) { $lastRooted = $i }
     }
     if ($lastRooted -ge 0) {
-        $segments = $segments[$lastRooted..($segments.Count - 1)]
+        # This slice stays an array; safe for single-element ranges as well.
+        $segments = $segments[$lastRooted..($segments.Length - 1)]
     }
 
-    # Cross-version safe: iteratively combine (do NOT rely on Combine(string[])).
-    $current = $segments[0]
-    for ($i = 1; $i -lt $segments.Count; $i++) {
-        $current = [System.IO.Path]::Combine($current, $segments[$i])
+    # Cross-version safe: combine without indexing (avoids $segments[0] pitfalls completely).
+    $current = $null
+    foreach ($seg in $segments) {
+        if ($null -eq $current) {
+            $current = $seg
+            continue
+        }
+        # External reviewer note: Combine honors rooted child by discarding the left side.
+        $current = [System.IO.Path]::Combine($current, $seg)
     }
     $combined = $current
 

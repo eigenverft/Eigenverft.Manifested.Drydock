@@ -78,6 +78,10 @@ FunctionsToExport = @(
     'Disable-TempDotnetTools',
     'Register-LocalNuGetDotNetPackageSource',
     'Unregister-LocalNuGetDotNetPackageSource',
+    'New-DotnetBillOfMaterialsReport',
+    'New-DotnetVulnerabilitiesReport',
+    'New-DotnetDeprecatedReport',
+    'New-DotnetOutdatedReport',
 
     # ...Execution.ps1
     'Invoke-Exec',

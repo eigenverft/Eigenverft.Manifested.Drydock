@@ -366,7 +366,7 @@ Optional description.
 
 
         $TASK_CREATE_OR_UPDATE = 6
-        $taskPath = ("{0}{1}" -f $TaskFolder, $TaskName)
+        $taskPath = ("{0}\{1}" -f $TaskFolder, $TaskName)
         try{
             $null = $folder.RegisterTaskDefinition($TaskName, $def, $TASK_CREATE_OR_UPDATE, $RegUser, $RegPwd, $RegLogon, $null)
             if(-not $Quiet){

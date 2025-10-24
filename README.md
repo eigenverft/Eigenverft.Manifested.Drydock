@@ -69,7 +69,7 @@ Below is a concise reference grouped by area. See built-in help for parameters a
 ### Deployment/channel mapping
 
 - **Convert-BranchToDeploymentInfo** Validate/split branch, map first segment to channel, and generate label/prefix/suffix tokens.
-  Example: `Convert-BranchToDeploymentInfo -BranchName 'feature/awesome'`
+  Example: `Convert-BranchToDeploymentInfo -BranchName 'feature/awesome' | ConvertTo-Json`
 
 ### CI/runtime utilities
 
@@ -113,7 +113,7 @@ Below is a concise reference grouped by area. See built-in help for parameters a
 - **Uninstall-PreviousModuleVersions** Remove older versions of a module.
   Example: `Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'`
 - **Find-ModuleScopeClutter** Detect modules installed in both user and system scopes.
-  Example: `Find-ModuleScopeClutter -ModuleName 'PowerShellGet'`
+  Example: `Find-ModuleScopeClutter -detailed`
 - **Update-ManifestModuleVersion (ummv)** Update `ModuleVersion` in a `.psd1` manifest.
   Example: `Update-ManifestModuleVersion -ManifestPath .\ -NewVersion '2.0.0'`
 - **Update-ManifestReleaseNotes (umrn)** Update `PSData.ReleaseNotes` in a `.psd1` manifest.

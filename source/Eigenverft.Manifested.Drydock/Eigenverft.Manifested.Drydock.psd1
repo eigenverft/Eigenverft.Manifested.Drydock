@@ -107,6 +107,12 @@ FunctionsToExport = @(
     'Write-ConsoleLog',
 
     # ...Powershell.ps1
+    'Test-InstallationScopeCapability'
+    'Set-PSGalleryTrust',
+    'Initialize-NugetPackageProvider',
+    'Initialize-PowerShellGet',
+    'Initialize-PackageManagement',
+    'Initialize-PowerShellBootstrap',
     'Initialize-PowerShellMiniBootstrap',
     'Import-Script',
     'Use-Tls12',

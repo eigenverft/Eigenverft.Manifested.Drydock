@@ -21,22 +21,20 @@ Install-Module -Name Eigenverft.Manifested.Drydock -Repository PSGallery -Scope 
 # Export-OfflineModuleBundle -Folder C:\temp\export -Name @('PowerShellGet','PackageManagement','Pester','PSScriptAnalyzer','Eigenverft.Manifested.Drydock')
 ```
 
-Windows PowerShell 5.1 (legacy bootstrap):
+### First-time bootstrap (Windows PowerShell 5.1)
 
+Upgrades PowerShellGet, PackageManagement, and installs Eigenverft.Manifested.Drydock for the CurrentUser.
+No admin rights needed. A policy change is include, `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Unrestricted` revert to defaults if required.
+
+
+Windows Command prompt:
 ```batch
-powershell -NoProfile -ExecutionPolicy Unrestricted -Command "& { $Install=@('PowerShellGet','PackageManagement','Eigenverft.Manifested.Drydock');$Scope='CurrentUser';if($PSVersionTable.PSVersion.Major -ne 5){return};Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Unrestricted -Force;[Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; $minNuget=[Version]'2.8.5.201'; Install-PackageProvider -Name NuGet -MinimumVersion $minNuget -Scope $Scope -Force -ForceBootstrap | Out-Null; try { Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop } catch { Register-PSRepository -Name PSGallery -SourceLocation 'https://www.powershellgallery.com/api/v2' -ScriptSourceLocation 'https://www.powershellgallery.com/api/v2' -InstallationPolicy Trusted -ErrorAction Stop }; Find-Module -Name $Install -Repository PSGallery | Select-Object Name,Version | Where-Object { -not (Get-Module -ListAvailable -Name $_.Name | Sort-Object Version -Descending | Select-Object -First 1 | Where-Object Version -eq $_.Version) } | ForEach-Object { Install-Module -Name $_.Name -RequiredVersion $_.Version -Repository PSGallery -Scope $Scope -Force -AllowClobber; try { Remove-Module -Name $_.Name -ErrorAction SilentlyContinue } catch {}; Import-Module -Name $_.Name -MinimumVersion $_.Version -Force }; Write-Host 'Setup complete. Please close this window and start a NEW PowerShell session.' -ForegroundColor Green };"
+powershell -NoProfile -ExecutionPolicy Unrestricted -Command "& { irm -Uri https://tinyurl.com/DrydockInit | iex }"
 ```
 
-```batch
-powershell -NoProfile -ExecutionPolicy Unrestricted -Command "& { irm -Uri https://raw.githubusercontent.com/eigenverft/Eigenverft.Manifested.Drydock/refs/heads/feature/stabilize/install/DrydockInit.ps1 | iex }"
-```
-
+Windows PowerShell 5.1 prompt: 
 ```powershell
-$Install=@('PowerShellGet','PackageManagement','Eigenverft.Manifested.Drydock');$Scope='CurrentUser';if($PSVersionTable.PSVersion.Major -ne 5){return};Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Unrestricted -Force;[Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; $minNuget=[Version]'2.8.5.201'; Install-PackageProvider -Name NuGet -MinimumVersion $minNuget -Scope $Scope -Force -ForceBootstrap | Out-Null; try { Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop } catch { Register-PSRepository -Name PSGallery -SourceLocation 'https://www.powershellgallery.com/api/v2' -ScriptSourceLocation 'https://www.powershellgallery.com/api/v2' -InstallationPolicy Trusted -ErrorAction Stop }; Find-Module -Name $Install -Repository PSGallery | Select-Object Name,Version | Where-Object { -not (Get-Module -ListAvailable -Name $_.Name | Sort-Object Version -Descending | Select-Object -First 1 | Where-Object Version -eq $_.Version) } | ForEach-Object { Install-Module -Name $_.Name -RequiredVersion $_.Version -Repository PSGallery -Scope $Scope -Force -AllowClobber; try { Remove-Module -Name $_.Name -ErrorAction SilentlyContinue } catch {}; Import-Module -Name $_.Name -MinimumVersion $_.Version -Force }; Write-Host 'Setup complete. Please close this window and start a NEW PowerShell session.' -ForegroundColor Green
-```
-
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope Process ; irm -Uri https://raw.githubusercontent.com/eigenverft/Eigenverft.Manifested.Drydock/refs/heads/feature/stabilize/install/DrydockInit.ps1 | iex
+Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope Process ; irm -Uri https://tinyurl.com/DrydockInit | iex
 ```
 
 ## Module function reference

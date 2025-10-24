@@ -32,7 +32,7 @@ $Install=@('PowerShellGet','PackageManagement','Eigenverft.Manifested.Drydock');
 ```
 
 ```
-Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope Process ; irm -Uri https://get.scoop.sh | iex
+Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope Process ; irm -Uri https://raw.githubusercontent.com/eigenverft/Eigenverft.Manifested.Drydock/refs/heads/feature/stabilize/install/DrydockInit.ps1 | iex
 ```
 
 ## Module function reference

@@ -126,7 +126,7 @@ Below is a concise reference grouped by area. See built-in help for parameters a
 - **New-CompatScheduledTask** Create/update a Windows Scheduled Task via COM with clear run context, triggers, and guidance.
   Example:
   ````powershell
-  New-CompatScheduledTask -TaskName 'MyDaily' -RunAsAccount System -DailyAtTime '02:00' `
+  New-CompatScheduledTask -TaskFolder "MyTasks" -TaskName 'MyDaily' -DailyAtTime '02:00' `
     -ActionPath "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" `
     -ActionArguments '-NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\job.ps1"'
   ````

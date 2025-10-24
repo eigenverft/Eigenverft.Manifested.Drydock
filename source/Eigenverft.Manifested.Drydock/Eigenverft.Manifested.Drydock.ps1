@@ -296,12 +296,12 @@ Drydock -Commands
             $rows = foreach ($f in $funcs) {
                 $n = $f.Name.Replace("'", "''")   # robust quoting for odd names
                 [pscustomobject]@{
-                    Help     = ("Get-Help -Name '{0}'" -f $n)
+                    #Help     = ("Get-Help -Name '{0}'" -f $n)
                     Examples = ("Get-Help -Name '{0}' -Examples" -f $n)
                 }
             }
 
-            $rows | Format-Table Help,Examples -AutoSize -Wrap
+            $rows | Format-Table Examples -AutoSize -Wrap
             return
         }
 

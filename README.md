@@ -21,7 +21,7 @@ Install-Module -Name Eigenverft.Manifested.Drydock -Repository PSGallery -Scope 
 # Export-OfflineModuleBundle -Folder C:\temp\export -Name @('PowerShellGet','PackageManagement','Pester','PSScriptAnalyzer','Eigenverft.Manifested.Drydock')
 ```
 
-### First-time bootstrap (Windows PowerShell 5.1)
+### First-time bootstrap (Windows)
 
 Upgrades PowerShellGet, PackageManagement, and installs Eigenverft.Manifested.Drydock for the CurrentUser.
 No admin rights needed. A policy change is include, `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Unrestricted` revert to defaults if required.

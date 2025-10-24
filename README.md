@@ -28,7 +28,7 @@ powershell -NoProfile -ExecutionPolicy Unrestricted -Command "& { $Install=@('Po
 ```
 
 ```batch
-powershell -NoProfile -ExecutionPolicy Unrestricted -Command "& { Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope Process ; irm -Uri https://raw.githubusercontent.com/eigenverft/Eigenverft.Manifested.Drydock/refs/heads/feature/stabilize/install/DrydockInit.ps1 | iex }"
+powershell -NoProfile -ExecutionPolicy Unrestricted -Command "& { irm -Uri https://raw.githubusercontent.com/eigenverft/Eigenverft.Manifested.Drydock/refs/heads/feature/stabilize/install/DrydockInit.ps1 | iex }"
 ```
 
 ```powershell

@@ -21,10 +21,20 @@ Install-Module -Name Eigenverft.Manifested.Drydock -Repository PSGallery -Scope 
 # Export-OfflineModuleBundle -Folder C:\temp\export -Name @('PowerShellGet','PackageManagement','Pester','PSScriptAnalyzer','Eigenverft.Manifested.Drydock')
 ```
 
-Windows PowerShell 5.1 (legacy bootstrap):
+### First-time bootstrap (Windows)
 
+Upgrades PowerShellGet, PackageManagement, and installs Eigenverft.Manifested.Drydock for the CurrentUser.
+No admin rights needed. A policy change is include, `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Unrestricted` revert to defaults if required.
+
+
+Windows Command prompt:
 ```batch
-powershell -NoProfile -ExecutionPolicy Unrestricted -Command "& { $Install=@('PowerShellGet','PackageManagement','Eigenverft.Manifested.Drydock');$Scope='CurrentUser';if($PSVersionTable.PSVersion.Major -ne 5){return};Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Unrestricted -Force;[Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; $minNuget=[Version]'2.8.5.201'; Install-PackageProvider -Name NuGet -MinimumVersion $minNuget -Scope $Scope -Force -ForceBootstrap | Out-Null; try { Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop } catch { Register-PSRepository -Name PSGallery -SourceLocation 'https://www.powershellgallery.com/api/v2' -ScriptSourceLocation 'https://www.powershellgallery.com/api/v2' -InstallationPolicy Trusted -ErrorAction Stop }; Find-Module -Name $Install -Repository PSGallery | Select-Object Name,Version | Where-Object { -not (Get-Module -ListAvailable -Name $_.Name | Sort-Object Version -Descending | Select-Object -First 1 | Where-Object Version -eq $_.Version) } | ForEach-Object { Install-Module -Name $_.Name -RequiredVersion $_.Version -Repository PSGallery -Scope $Scope -Force -AllowClobber; try { Remove-Module -Name $_.Name -ErrorAction SilentlyContinue } catch {}; Import-Module -Name $_.Name -MinimumVersion $_.Version -Force }; Write-Host 'Done' }; "
+powershell -NoProfile -ExecutionPolicy Unrestricted -Command "& { irm -Uri https://tinyurl.com/DrydockInit | iex }"
+```
+
+Windows PowerShell 5.1 prompt: 
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope Process ; irm -Uri https://tinyurl.com/DrydockInit | iex
 ```
 
 ## Module function reference
@@ -59,7 +69,7 @@ Below is a concise reference grouped by area. See built-in help for parameters a
 ### Deployment/channel mapping
 
 - **Convert-BranchToDeploymentInfo** Validate/split branch, map first segment to channel, and generate label/prefix/suffix tokens.
-  Example: `Convert-BranchToDeploymentInfo -BranchName 'feature/awesome'`
+  Example: `Convert-BranchToDeploymentInfo -BranchName 'feature/awesome' | ConvertTo-Json`
 
 ### CI/runtime utilities
 
@@ -103,7 +113,7 @@ Below is a concise reference grouped by area. See built-in help for parameters a
 - **Uninstall-PreviousModuleVersions** Remove older versions of a module.
   Example: `Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'`
 - **Find-ModuleScopeClutter** Detect modules installed in both user and system scopes.
-  Example: `Find-ModuleScopeClutter -ModuleName 'PowerShellGet'`
+  Example: `Find-ModuleScopeClutter -detailed`
 - **Update-ManifestModuleVersion (ummv)** Update `ModuleVersion` in a `.psd1` manifest.
   Example: `Update-ManifestModuleVersion -ManifestPath .\ -NewVersion '2.0.0'`
 - **Update-ManifestReleaseNotes (umrn)** Update `PSData.ReleaseNotes` in a `.psd1` manifest.
@@ -115,11 +125,15 @@ Below is a concise reference grouped by area. See built-in help for parameters a
 
 - **New-CompatScheduledTask** Create/update a Windows Scheduled Task via COM with clear run context, triggers, and guidance.
   Example:
-  ````powershell
-  New-CompatScheduledTask -TaskName 'MyDaily' -RunAsAccount System -DailyAtTime '02:00' `
+  ```powershell
+  New-CompatScheduledTask -TaskFolder "MyTasks" -TaskName 'MyDaily' -DailyAtTime '12:00' `
     -ActionPath "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" `
     -ActionArguments '-NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\job.ps1"'
-  ````
+  
+  New-CompatScheduledTask -TaskFolder "MyTasks" -TaskName 'MyLogin' -LogonThisUser `
+     -ActionPath "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" `
+     -ActionArguments '-NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\job.ps1"'
+  ```
 
 Notes:
 - Use `Get-Help <FunctionName> -Detailed` for parameters, examples, and notes.

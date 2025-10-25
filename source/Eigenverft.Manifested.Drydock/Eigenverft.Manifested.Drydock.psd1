@@ -12,7 +12,7 @@
 RootModule = 'Eigenverft.Manifested.Drydock.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.20255.64773'
+ModuleVersion = '0.20256.8206'
 
 # Supported PSEditions
 CompatiblePSEditions = @('Desktop','Core')
@@ -51,7 +51,7 @@ PowerShellVersion = '5.1'
 # ProcessorArchitecture = ''
 
 # Modules that must be imported into the global environment prior to importing this module
-# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20255.64773'; })
+# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20256.8206'; })
 
 # Assemblies that must be loaded prior to importing this module
 # RequiredAssemblies = @()
@@ -78,6 +78,10 @@ FunctionsToExport = @(
     'Disable-TempDotnetTools',
     'Register-LocalNuGetDotNetPackageSource',
     'Unregister-LocalNuGetDotNetPackageSource',
+    'New-DotnetBillOfMaterialsReport',
+    'New-DotnetVulnerabilitiesReport',
+    'New-DotnetDeprecatedReport',
+    'New-DotnetOutdatedReport',
 
     # ...Execution.ps1
     'Invoke-Exec',
@@ -92,6 +96,9 @@ FunctionsToExport = @(
 
     # ...IO.ps1
     'Find-FilesByPattern',
+    'Remove-FilesByPattern',
+    'Get-Path',
+    'New-Directory',
     'Find-TreeContent',
     'Find-TreeContentByFile',
     'Resolve-ModulePath',
@@ -100,6 +107,12 @@ FunctionsToExport = @(
     'Write-ConsoleLog',
 
     # ...Powershell.ps1
+    'Test-InstallationScopeCapability'
+    'Set-PSGalleryTrust',
+    'Initialize-NugetPackageProvider',
+    'Initialize-PowerShellGet',
+    'Initialize-PackageManagement',
+    'Initialize-PowerShellBootstrap',
     'Initialize-PowerShellMiniBootstrap',
     'Import-Script',
     'Use-Tls12',
@@ -200,7 +213,7 @@ PrivateData = @{
         ReleaseNotes = ''
 
         # Prerelease string of this module
-        Prerelease = ''
+        Prerelease = 'dev'
 
         # Flag to indicate whether the module requires explicit user acceptance for install/update/save
         # RequireLicenseAcceptance = $false

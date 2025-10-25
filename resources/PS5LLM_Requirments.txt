@@ -9,7 +9,7 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
 3) EXTERNAL TOOLS
    - IF an external tool is required (e.g., dotnet, robocopy), THEN fail fast with a clear, actionable error when it is missing.
 
-4) NAMING
+4) NAMING 
    - USE ONLY PS5/5.1 approved verbs.
    - PREFER singular nouns (plural may be an alias, not the primary noun).
 
@@ -43,17 +43,26 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
 12) SYNTAX
     - Enforced ternary ban: Submissions MUST NOT contain the C-style ternary pattern ? : anywhere use if else instead.
     - Double-check for C-style ternary operators—the pattern is easy to overlook because it feels natural (cond ? a : b), ? : should be if { } else { }, every ? need to be checked.
+    - If $null comparisons are used, $null should be on the left side of equality comparisons. 
 
 13) BEHAVIOR 
     - Do not make changes that a not requested, if you spot a previous error write a statement about it in the end.
 
 14) INLINE HELPERS (SAFE MODE)
-    - SCOPE: Inline (nested) helpers defined with function MUST be created in the local scope: function local:Name { ... }.
-    - NAMING: Use a distinct prefix to avoid collisions, e.g. _ (example: function local:_Norm-List { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param(...params...) ...code... }).
+    - SCOPE: Inline (nested) helpers defined with function MUST be created in the local scope: function _Name { ... }.
+    - NAMING: Use a distinct prefix to avoid collisions, e.g. _ (example: function _Norm-List { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param(...params...) ...code... }).
+    - COMMON PROBLEMS: Don't forget [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] in inline helper functions.
     - NO OUTPUT: Helpers MUST NOT write to the pipeline. If needed, return values explicitly and keep them inside the outer function.
     - QUIET LOGGING: Helpers MUST NOT use Write-Output, Write-Error, Write-Verbose, or Write-Information. Use Write-Host only in the outer function for key actions.
     - NO EXPORT: Inline helpers MUST NOT be exported; they exist only for the duration of the outer function call.
     - IDEMPOTENT: Helpers MUST NOT rely on session-global state; they must be deterministic given their inputs.
+
+15) Assume StrictMode-safe 3 is active before the function call; the function must be StrictMode-safe 3.
+   - Forbid references to uninitialized variables, including inside strings.
+   - Forbid references to non-existent object properties.
+   - Forbid function calls that use method-call syntax.
+   - Forbid out-of-bounds or unresolved array indices.
+   - Definitive: The function must fully comply with StrictMode-safe 3.
 
 DEFINITE: A function is "DONE" only if it meets ALL requirements above.
     

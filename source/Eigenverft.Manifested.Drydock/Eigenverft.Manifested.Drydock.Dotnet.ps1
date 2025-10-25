@@ -601,3 +601,1473 @@ function Unregister-LocalNuGetDotNetPackageSource {
     }
 }
 
+function New-DotnetVulnerabilitiesReport {
+<#
+.SYNOPSIS
+Generate a vulnerabilities report from one or more 'dotnet list ... package --vulnerable --format json' documents.
+
+.DESCRIPTION
+StrictMode-safe parser that accepts:
+- a complete JSON string,
+- an array of lines forming one JSON document,
+- an already-parsed PSCustomObject/hashtable,
+- or a mixture.
+
+Traverses projects -> frameworks -> packages (top-level and optionally transitive) -> vulnerabilities.
+Aggregates results (by Project, Package, ResolvedVersion, and optionally PackageType) when requested.
+Supports whitelist/blacklist filtering and emits text or markdown with an optional title.
+If -ExitOnVulnerability is set and any vulnerability is found, the function throws (no 'exit').
+
+.PARAMETER jsonInput
+Object array where each element is either:
+- a full JSON string,
+- lines forming one JSON,
+- an already-parsed PSCustomObject/hashtable,
+- or a mixture.
+
+.PARAMETER OutputFile
+Optional file path; UTF-8 content is written if provided.
+
+.PARAMETER OutputFormat
+'text' or 'markdown'. Default 'text'.
+
+.PARAMETER ExitOnVulnerability
+If $true and any vulnerability is found, throws a terminating error after producing the output.
+
+.PARAMETER Aggregate
+If $true, aggregate by Project, Package, ResolvedVersion (and optionally PackageType).
+
+.PARAMETER IgnoreTransitivePackages
+If $true, ignore transitive packages. Default $true.
+
+.PARAMETER IncludePackageType
+If $true and Aggregate is $true, include PackageType column.
+
+.PARAMETER GenerateTitle
+If $true, prepend a professional title. (No underline to avoid string length ops.)
+
+.PARAMETER SetMarkDownTitle
+Custom markdown H2 when OutputFormat is markdown.
+
+.PARAMETER ProjectWhitelist
+Project names (file name without extension) to always include.
+
+.PARAMETER ProjectBlacklist
+Project names to exclude unless whitelisted.
+
+.EXAMPLE
+# Single full JSON string
+New-DotnetVulnerabilitiesReport -jsonInput $json -OutputFormat markdown
+
+.EXAMPLE
+# Lines captured from CLI output (joined and parsed)
+$lines = dotnet list . package --vulnerable --format json 2>$null | Out-String -Stream
+New-DotnetVulnerabilitiesReport -jsonInput $lines -IgnoreTransitivePackages:$false -ExitOnVulnerability:$true
+
+.EXAMPLE
+# Write to file
+New-DotnetVulnerabilitiesReport -jsonInput $json -OutputFile 'reports/vuln.md' -OutputFormat markdown
+
+.NOTES
+- Compatible with Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
+- No ShouldProcess; no pipeline-bound params; minimal Write-Host; ASCII-only; no ternary; idempotent.
+#>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]] $jsonInput,
+
+        [string] $OutputFile,
+        [ValidateSet("text","markdown")]
+        [string] $OutputFormat = "text",
+
+        [bool] $ExitOnVulnerability = $false,
+        [bool] $Aggregate = $true,
+        [bool] $IgnoreTransitivePackages = $true,
+        [bool] $IncludePackageType = $false,
+        [bool] $GenerateTitle = $true,
+        [string] $SetMarkDownTitle,
+        [string[]] $ProjectWhitelist,
+        [string[]] $ProjectBlacklist
+    )
+
+    # ---------------- helpers (local scope; no pipeline writes) ----------------
+    function _ToArray { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([object] $v)
+        if ($null -eq $v) { return @() }
+        if ($v -is [System.Array]) { return $v }
+        if ($v -is [System.Collections.IEnumerable] -and -not ($v -is [string])) {
+            $tmp = New-Object 'System.Collections.Generic.List[object]'
+            foreach ($e in $v) { [void]$tmp.Add($e) }
+            return $tmp.ToArray()
+        }
+        return ,$v
+    }
+    function _StripBom { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string] $t)
+        if ([string]::IsNullOrEmpty($t)) { return "" }
+        if ($t[0] -eq [char]0xFEFF) { return $t.Substring(1) }
+        return $t
+    }
+    function _UnwrapQuotes { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string] $t)
+        if ([string]::IsNullOrEmpty($t)) { return "" }
+        $s = $t.Trim()
+        if ($s.StartsWith('"') -and $s.EndsWith('"')) { return $s.Substring(1, $s.Length-2) }
+        return $s
+    }
+    function _TryFromJson { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string] $text)
+        try { return (ConvertFrom-Json -InputObject $text) } catch { return $null }
+    }
+    function _CoerceDocs { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([object[]] $items)
+        $docs = New-Object 'System.Collections.Generic.List[object]'
+        $arr  = _ToArray $items
+
+        # Single-element fast path
+        $hasOne = $false; $e = $null
+        foreach ($x in $arr) { $e = $x; $hasOne = $true; break }
+        if ($hasOne) {
+            if ($e -is [string]) {
+                $s = _UnwrapQuotes (_StripBom ([string]$e))
+                $p = _TryFromJson $s
+                if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
+                $p = _TryFromJson (($s -split "(`r`n|`n|`r)") -join "`n")
+                if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
+                throw "Failed to parse JSON input. Provide a complete JSON document."
+            } elseif ($e -is [System.Collections.IDictionary] -or $null -ne $e.PSObject) {
+                [void]$docs.Add($e); return $docs.ToArray()
+            }
+        }
+
+        # All strings -> join once
+        $allStr = $true
+        foreach ($x in $arr) { if (-not ($x -is [string])) { $allStr = $false; break } }
+        if ($allStr) {
+            $joined = _UnwrapQuotes (_StripBom ([string]::Join("`n", (_ToArray $arr))))
+            $p = _TryFromJson $joined
+            if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
+            # Fallback: per-line parse
+            $any = $false
+            foreach ($ln in (_ToArray $arr)) {
+                $q = _TryFromJson (_UnwrapQuotes (_StripBom ([string]$ln)))
+                if ($null -ne $q) { [void]$docs.Add($q); $any = $true }
+            }
+            if ($any) { return $docs.ToArray() }
+            throw "Failed to parse JSON from lines; ensure they form one complete document."
+        }
+
+        # Mixed: accept already-parsed and self-parsing strings
+        foreach ($x in $arr) {
+            if ($x -is [string]) {
+                $p = _TryFromJson (_UnwrapQuotes (_StripBom ([string]$x)))
+                if ($null -ne $p) { [void]$docs.Add($p) }
+            } elseif ($x -is [System.Collections.IDictionary] -or $null -ne $x.PSObject) {
+                [void]$docs.Add($x)
+            }
+        }
+        if ((_ToArray $docs).Length -gt 0) { return $docs.ToArray() }
+        throw "Failed to coerce input into JSON documents."
+    }
+
+    # ---------------- parse input ----------------
+    $docs = _CoerceDocs -items $jsonInput
+
+    # ---------------- traverse & collect ----------------
+    $rowsList    = New-Object 'System.Collections.Generic.List[psobject]'
+    $allProjects = New-Object 'System.Collections.Generic.HashSet[string]'
+
+    foreach ($doc in $docs) {
+        foreach ($proj in @($doc.projects)) {
+            if ($null -eq $proj) { continue }
+            $projPath = [string]$proj.path
+            if (-not [string]::IsNullOrEmpty($projPath)) {
+                [void]$allProjects.Add([System.IO.Path]::GetFileNameWithoutExtension($projPath))
+            }
+
+            foreach ($fw in @($proj.frameworks)) {
+                if ($null -eq $fw) { continue }
+                $fwName = $fw.framework
+
+                # Top-level packages
+                foreach ($pkg in @($fw.topLevelPackages)) {
+                    if ($null -eq $pkg) { continue }
+                    $vulns = @($pkg.vulnerabilities)
+                    $hasV = $false
+                    foreach ($v in $vulns) { $hasV = $true; break }
+                    if ($hasV) {
+                        foreach ($v in $vulns) {
+                            # AdvisoryUrl appears as 'advisoryurl' in some outputs; support both
+                            $adv = $v.advisoryUrl
+                            if ([string]::IsNullOrEmpty($adv)) { $adv = $v.advisoryurl }
+                            [void]$rowsList.Add([PSCustomObject]@{
+                                Project         = [System.IO.Path]::GetFileNameWithoutExtension($projPath)
+                                Framework       = $fwName
+                                Package         = $pkg.id
+                                ResolvedVersion = $pkg.resolvedVersion
+                                Severity        = $v.severity
+                                AdvisoryUrl     = $adv
+                                PackageType     = 'TopLevel'
+                            })
+                        }
+                    }
+                }
+
+                # Transitive packages (optional)
+                if (-not $IgnoreTransitivePackages) {
+                    foreach ($pkg in @($fw.transitivePackages)) {
+                        if ($null -eq $pkg) { continue }
+                        $vulns = @($pkg.vulnerabilities)
+                        $hasV = $false
+                        foreach ($v in $vulns) { $hasV = $true; break }
+                        if ($hasV) {
+                            foreach ($v in $vulns) {
+                                $adv = $v.advisoryUrl
+                                if ([string]::IsNullOrEmpty($adv)) { $adv = $v.advisoryurl }
+                                [void]$rowsList.Add([PSCustomObject]@{
+                                    Project         = [System.IO.Path]::GetFileNameWithoutExtension($projPath)
+                                    Framework       = $fwName
+                                    Package         = $pkg.id
+                                    ResolvedVersion = $pkg.resolvedVersion
+                                    Severity        = $v.severity
+                                    AdvisoryUrl     = $adv
+                                    PackageType     = 'Transitive'
+                                })
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    # Materialize
+    $rows = @($rowsList)
+
+    # ---------------- whitelist/blacklist ----------------
+    if (($null -ne $ProjectWhitelist) -or ($null -ne $ProjectBlacklist)) {
+        $tmp = New-Object 'System.Collections.Generic.List[psobject]'
+        foreach ($r in $rows) {
+            $incl = $true
+            if (($null -ne $ProjectWhitelist) -and ($ProjectWhitelist -contains $r.Project)) { $incl = $true }
+            elseif (($null -ne $ProjectBlacklist) -and ($ProjectBlacklist -contains $r.Project)) { $incl = $false }
+            else { $incl = $true }
+            if ($incl) { [void]$tmp.Add($r) }
+        }
+        $rows = @($tmp)
+    }
+
+    # ---------------- aggregate ----------------
+    if ($Aggregate) {
+        $map = @{}
+        if ($IncludePackageType) {
+            foreach ($r in $rows) {
+                $k = ('{0}||{1}||{2}||{3}' -f $r.Project, $r.Package, $r.ResolvedVersion, $r.PackageType)
+                if (-not $map.ContainsKey($k)) {
+                    $map[$k] = [PSCustomObject]@{
+                        Project         = $r.Project
+                        Package         = $r.Package
+                        ResolvedVersion = $r.ResolvedVersion
+                        PackageType     = $r.PackageType
+                        Severity        = $r.Severity
+                        AdvisoryUrl     = $r.AdvisoryUrl
+                    }
+                }
+            }
+        } else {
+            foreach ($r in $rows) {
+                $k = ('{0}||{1}||{2}' -f $r.Project, $r.Package, $r.ResolvedVersion)
+                if (-not $map.ContainsKey($k)) {
+                    $map[$k] = [PSCustomObject]@{
+                        Project         = $r.Project
+                        Package         = $r.Package
+                        ResolvedVersion = $r.ResolvedVersion
+                        Severity        = $r.Severity
+                        AdvisoryUrl     = $r.AdvisoryUrl
+                    }
+                }
+            }
+        }
+        $vals = New-Object 'System.Collections.Generic.List[psobject]'
+        foreach ($v in $map.Values) { [void]$vals.Add($v) }
+        $rows = @($vals)
+    }
+
+    # ---------------- body ----------------
+    $hasRows = $false; foreach ($x in $rows) { $hasRows = $true; break }
+    $body = ""
+    if ($OutputFormat -eq "text") {
+        if ($hasRows) {
+            if ($Aggregate) {
+                if ($IncludePackageType) {
+                    $body = ($rows | Format-Table Project, Package, ResolvedVersion, PackageType, Severity, AdvisoryUrl -AutoSize | Out-String)
+                } else {
+                    $body = ($rows | Format-Table Project, Package, ResolvedVersion, Severity, AdvisoryUrl -AutoSize | Out-String)
+                }
+            } else {
+                $body = ($rows | Format-Table Project, Framework, Package, ResolvedVersion, PackageType, Severity, AdvisoryUrl -AutoSize | Out-String)
+            }
+        } else {
+            $body = "No vulnerabilities found."
+        }
+    } else {
+        if ($hasRows) {
+            $md = New-Object 'System.Collections.Generic.List[string]'
+            if ($Aggregate) {
+                if ($IncludePackageType) {
+                    [void]$md.Add("| Project | Package | ResolvedVersion | PackageType | Severity | AdvisoryUrl |")
+                    [void]$md.Add("|---------|---------|-----------------|-------------|----------|-------------|")
+                    foreach ($it in $rows) { [void]$md.Add(("| {0} | {1} | {2} | {3} | {4} | {5} |" -f $it.Project,$it.Package,$it.ResolvedVersion,$it.PackageType,$it.Severity,$it.AdvisoryUrl)) }
+                } else {
+                    [void]$md.Add("| Project | Package | ResolvedVersion | Severity | AdvisoryUrl |")
+                    [void]$md.Add("|---------|---------|-----------------|----------|-------------|")
+                    foreach ($it in $rows) { [void]$md.Add(("| {0} | {1} | {2} | {3} | {4} |" -f $it.Project,$it.Package,$it.ResolvedVersion,$it.Severity,$it.AdvisoryUrl)) }
+                }
+            } else {
+                [void]$md.Add("| Project | Framework | Package | ResolvedVersion | PackageType | Severity | AdvisoryUrl |")
+                [void]$md.Add("|---------|-----------|---------|-----------------|-------------|----------|-------------|")
+                foreach ($it in $rows) { [void]$md.Add(("| {0} | {1} | {2} | {3} | {4} | {5} | {6} |" -f $it.Project,$it.Framework,$it.Package,$it.ResolvedVersion,$it.PackageType,$it.Severity,$it.AdvisoryUrl)) }
+            }
+            $body = [string]::Join("`n", $md.ToArray())
+        } else {
+            $body = "No vulnerabilities found."
+        }
+    }
+
+    # ---------------- title ----------------
+    $projectsForTitle = New-Object 'System.Collections.Generic.List[string]'
+    if ($hasRows) {
+        $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($r in $rows) { if ($seen.Add($r.Project)) { [void]$projectsForTitle.Add($r.Project) } }
+        $projectsForTitle.Sort()
+    } else {
+        $nameList = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($n in $allProjects) { if (-not [string]::IsNullOrEmpty($n)) { [void]$nameList.Add([string]$n) } }
+        $nameList.Sort()
+        $names = $nameList.ToArray()
+        foreach ($name in $names) {
+            $incl = $true
+            if (($null -ne $ProjectWhitelist) -and ($ProjectWhitelist -contains $name)) { $incl = $true }
+            elseif (($null -ne $ProjectBlacklist) -and ($ProjectBlacklist -contains $name)) { $incl = $false }
+            else { $incl = $true }
+            if ($incl) { [void]$projectsForTitle.Add($name) }
+        }
+    }
+
+    $projectsStr = "None"; $anyProj = $false; foreach ($p in $projectsForTitle) { $anyProj = $true; break }
+    if ($anyProj) { $projectsStr = ($projectsForTitle -join ", ") }
+    $defaultTitle = ("Vulnerabilities Report for Projects: {0}" -f $projectsStr)
+
+    $prefix = ""
+    if ($GenerateTitle) {
+        if ($OutputFormat -eq "markdown") {
+            if ([string]::IsNullOrEmpty($SetMarkDownTitle)) { $prefix = "## $defaultTitle`n`n" } else { $prefix = "## $SetMarkDownTitle`n`n" }
+        } else {
+            $prefix = "$defaultTitle`n`n"
+        }
+    }
+
+    $final = $prefix + $body
+
+    # ---------------- write or return ----------------
+    if (-not [string]::IsNullOrEmpty($OutputFile)) {
+        $normalized = $OutputFile -replace '[\\/]', [System.IO.Path]::DirectorySeparatorChar
+        $dir = Split-Path -Path $normalized -Parent
+        if (-not [string]::IsNullOrEmpty($dir)) {
+            if (-not (Test-Path -Path $dir)) {
+                [void][System.IO.Directory]::CreateDirectory($dir)
+                Write-Host ("Created directory: {0}" -f $dir)
+            }
+        }
+        [System.IO.File]::WriteAllText($normalized, $final, [System.Text.Encoding]::UTF8)
+        Write-Host ("Output written to {0}" -f $normalized)
+    } else {
+        return $final
+    }
+
+    if ($hasRows -and $ExitOnVulnerability) {
+        Write-Host "Vulnerabilities detected. Throwing as configured."
+        throw "Vulnerabilities detected."
+    } elseif ($hasRows) {
+        Write-Host "Vulnerabilities detected, but not failing due to configuration."
+    }
+}
+
+function New-DotnetDeprecatedReport {
+<#
+.SYNOPSIS
+Generate a deprecation report from one or more 'dotnet ... --deprecated --format json' documents (StrictMode-safe).
+
+.DESCRIPTION
+Accepts input as a complete JSON string, an array of lines (auto-joined), an already-parsed PSCustomObject/hashtable,
+or a mixture. Safely handles missing 'frameworks' or package arrays. Aggregates deprecated packages, supports whitelist/blacklist,
+and emits text or markdown. No reliance on .Count/.Length for unknown types; everything is enumerated defensively.
+
+.PARAMETER jsonInput
+Array whose elements can be:
+- a complete JSON string,
+- lines that together form one JSON document,
+- an already-parsed object,
+- or a mixture of the above.
+
+.PARAMETER OutputFile
+Optional file path to save UTF-8 output.
+
+.PARAMETER OutputFormat
+'text' or 'markdown'. Default 'text'.
+
+.PARAMETER ExitOnDeprecated
+If $true and any deprecated package is found, throws.
+
+.PARAMETER Aggregate
+If $true, aggregate by Project, Package, ResolvedVersion (and optionally PackageType).
+
+.PARAMETER IgnoreTransitivePackages
+If $true, ignore transitive packages. Default $true.
+
+.PARAMETER IncludePackageType
+If $true and Aggregate is $true, include PackageType column.
+
+.PARAMETER GenerateTitle
+If $true, prepend a professional title.
+
+.PARAMETER SetMarkDownTitle
+Optional custom markdown title (only when OutputFormat is markdown).
+
+.PARAMETER ProjectWhitelist
+Project names (file name without extension) to always include.
+
+.PARAMETER ProjectBlacklist
+Project names to exclude unless whitelisted.
+
+.NOTES
+PS5/5.1 and PS7+ on Windows/macOS/Linux. No ShouldProcess; no pipeline-bound params.
+No Write-Output/Write-Error/Write-Verbose/Write-Information. Minimal Write-Host only for key actions.
+ASCII-only. Idempotent. No ternary. No automatic/reserved vars used.
+#>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory = $true)]
+        [object[]] $jsonInput,
+
+        [string] $OutputFile,
+        [ValidateSet("text","markdown")]
+        [string] $OutputFormat = "text",
+        [bool] $ExitOnDeprecated = $false,
+        [bool] $Aggregate = $true,
+        [bool] $IgnoreTransitivePackages = $true,
+        [bool] $IncludePackageType = $false,
+        [bool] $GenerateTitle = $true,
+        [string] $SetMarkDownTitle,
+        [string[]] $ProjectWhitelist,
+        [string[]] $ProjectBlacklist
+    )
+
+    # ----------------- helpers (local scope; no pipeline writes) -----------------
+    function _ToArray { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([object] $v)
+        if ($null -eq $v) { return @() }
+        if ($v -is [System.Array]) { return $v }
+        if ($v -is [System.Collections.IEnumerable] -and -not ($v -is [string])) {
+            $tmp = New-Object 'System.Collections.Generic.List[object]'
+            foreach ($e in $v) { [void]$tmp.Add($e) }
+            return $tmp.ToArray()
+        }
+        return ,$v
+    }
+    function _StripBom { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string] $t)
+        if ([string]::IsNullOrEmpty($t)) { return "" }
+        if ($t[0] -eq [char]0xFEFF) { return $t.Substring(1) }
+        return $t
+    }
+    function _UnwrapQuotes { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string] $t)
+        if ([string]::IsNullOrEmpty($t)) { return "" }
+        $s = $t.Trim()
+        if ($s.StartsWith('"') -and $s.EndsWith('"')) { return $s.Substring(1, $s.Length-2) }
+        return $s
+    }
+    function _TryFromJson { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string] $text)
+        try { return (ConvertFrom-Json -InputObject $text) } catch { return $null }
+    }
+    function _CoerceDocs { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([object[]] $items)
+        $docs = New-Object 'System.Collections.Generic.List[object]'
+        $arr  = _ToArray $items
+        # single element fast path
+        $one = $false; $elem = $null
+        foreach ($x in $arr) { $elem = $x; $one = $true; break }
+        if ($one) {
+            if ($elem -is [string]) {
+                $s = _UnwrapQuotes (_StripBom ([string]$elem))
+                $p = _TryFromJson $s
+                if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
+                $p = _TryFromJson (($s -split "(`r`n|`n|`r)") -join "`n")
+                if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
+                throw "Failed to parse JSON input. Provide a complete JSON document."
+            } elseif ($elem -is [System.Collections.IDictionary] -or $null -ne $elem.PSObject) {
+                [void]$docs.Add($elem); return $docs.ToArray()
+            }
+        }
+        # all strings -> join as one
+        $allStr = $true
+        foreach ($x in $arr) { if (-not ($x -is [string])) { $allStr = $false; break } }
+        if ($allStr) {
+            $joined = _UnwrapQuotes (_StripBom ([string]::Join("`n", (_ToArray $arr))))
+            $p = _TryFromJson $joined
+            if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
+            $any = $false
+            foreach ($ln in (_ToArray $arr)) {
+                $q = _TryFromJson (_UnwrapQuotes (_StripBom ([string]$ln)))
+                if ($null -ne $q) { [void]$docs.Add($q); $any = $true }
+            }
+            if ($any) { return $docs.ToArray() }
+            throw "Failed to parse JSON from lines; ensure they form one complete document."
+        }
+        # mixed: accept already-parsed and parsable strings
+        foreach ($x in $arr) {
+            if ($x -is [string]) {
+                $p = _TryFromJson (_UnwrapQuotes (_StripBom ([string]$x)))
+                if ($null -ne $p) { [void]$docs.Add($p) }
+            } elseif ($x -is [System.Collections.IDictionary] -or $null -ne $x.PSObject) {
+                [void]$docs.Add($x)
+            }
+        }
+        if ((_ToArray $docs).GetType().IsArray -or (_ToArray $docs).Length -gt 0) { return $docs.ToArray() }
+        throw "Failed to coerce input into JSON documents."
+    }
+
+    # ----------------- parse input -----------------
+    $docs = _CoerceDocs -items $jsonInput
+
+    # ----------------- traverse and collect rows -----------------
+    $rowsList    = New-Object 'System.Collections.Generic.List[psobject]'
+    $allProjects = New-Object 'System.Collections.Generic.HashSet[string]'
+
+    foreach ($doc in $docs) {
+        $projects = @($doc.projects)
+        foreach ($proj in $projects) {
+            if ($null -eq $proj) { continue }
+            $projPath = [string]$proj.path
+            if (-not [string]::IsNullOrEmpty($projPath)) {
+                [void]$allProjects.Add([System.IO.Path]::GetFileNameWithoutExtension($projPath))
+            }
+
+            foreach ($fw in @($proj.frameworks)) {
+                if ($null -eq $fw) { continue }
+                $fwName = $fw.framework
+
+                # top-level
+                foreach ($pkg in @($fw.topLevelPackages)) {
+                    if ($null -eq $pkg) { continue }
+                    $hasReasons = $false
+                    foreach ($r in @($pkg.deprecationReasons)) { $hasReasons = $true; break }
+                    if ($hasReasons) {
+                        [void]$rowsList.Add([PSCustomObject]@{
+                            Project            = [System.IO.Path]::GetFileNameWithoutExtension($projPath)
+                            Framework          = $fwName
+                            Package            = $pkg.id
+                            ResolvedVersion    = $pkg.resolvedVersion
+                            DeprecationReasons = ([string]::Join(", ", @($pkg.deprecationReasons)))
+                            PackageType        = 'TopLevel'
+                        })
+                    }
+                }
+
+                # transitive (optional)
+                if (-not $IgnoreTransitivePackages) {
+                    foreach ($pkg in @($fw.transitivePackages)) {
+                        if ($null -eq $pkg) { continue }
+                        $hasReasons = $false
+                        foreach ($r in @($pkg.deprecationReasons)) { $hasReasons = $true; break }
+                        if ($hasReasons) {
+                            [void]$rowsList.Add([PSCustomObject]@{
+                                Project            = [System.IO.Path]::GetFileNameWithoutExtension($projPath)
+                                Framework          = $fwName
+                                Package            = $pkg.id
+                                ResolvedVersion    = $pkg.resolvedVersion
+                                DeprecationReasons = ([string]::Join(", ", @($pkg.deprecationReasons)))
+                                PackageType        = 'Transitive'
+                            })
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    # materialize
+    $rows = @($rowsList)
+
+    # ----------------- whitelist/blacklist -----------------
+    if (($null -ne $ProjectWhitelist) -or ($null -ne $ProjectBlacklist)) {
+        $tmp = New-Object 'System.Collections.Generic.List[psobject]'
+        foreach ($r in $rows) {
+            $incl = $true
+            if (($null -ne $ProjectWhitelist) -and ($ProjectWhitelist -contains $r.Project)) { $incl = $true }
+            elseif (($null -ne $ProjectBlacklist) -and ($ProjectBlacklist -contains $r.Project)) { $incl = $false }
+            else { $incl = $true }
+            if ($incl) { [void]$tmp.Add($r) }
+        }
+        $rows = @($tmp)
+    }
+
+    # ----------------- aggregate -----------------
+    if ($Aggregate) {
+        $map = @{}
+        if ($IncludePackageType) {
+            foreach ($r in $rows) {
+                $k = ('{0}||{1}||{2}||{3}' -f $r.Project, $r.Package, $r.ResolvedVersion, $r.PackageType)
+                if (-not $map.ContainsKey($k)) {
+                    $map[$k] = [PSCustomObject]@{
+                        Project            = $r.Project
+                        Package            = $r.Package
+                        ResolvedVersion    = $r.ResolvedVersion
+                        PackageType        = $r.PackageType
+                        DeprecationReasons = $r.DeprecationReasons
+                    }
+                }
+            }
+        } else {
+            foreach ($r in $rows) {
+                $k = ('{0}||{1}||{2}' -f $r.Project, $r.Package, $r.ResolvedVersion)
+                if (-not $map.ContainsKey($k)) {
+                    $map[$k] = [PSCustomObject]@{
+                        Project            = $r.Project
+                        Package            = $r.Package
+                        ResolvedVersion    = $r.ResolvedVersion
+                        DeprecationReasons = $r.DeprecationReasons
+                    }
+                }
+            }
+        }
+        $agg = New-Object 'System.Collections.Generic.List[psobject]'
+        foreach ($v in $map.Values) { [void]$agg.Add($v) }
+        $rows = @($agg)
+    }
+
+    # ----------------- body -----------------
+    $hasRows = $false; foreach ($x in $rows) { $hasRows = $true; break }
+    $body = ""
+    if ($OutputFormat -eq "text") {
+        if ($hasRows) {
+            if ($Aggregate) {
+                if ($IncludePackageType) {
+                    $body = ($rows | Format-Table Project, Package, ResolvedVersion, PackageType, DeprecationReasons -AutoSize | Out-String)
+                } else {
+                    $body = ($rows | Format-Table Project, Package, ResolvedVersion, DeprecationReasons -AutoSize | Out-String)
+                }
+            } else {
+                $body = ($rows | Format-Table Project, Framework, Package, ResolvedVersion, PackageType, DeprecationReasons -AutoSize | Out-String)
+            }
+        } else {
+            $body = "No deprecated packages found."
+        }
+    } else {
+        if ($hasRows) {
+            $md = New-Object 'System.Collections.Generic.List[string]'
+            if ($Aggregate) {
+                if ($IncludePackageType) {
+                    [void]$md.Add("| Project | Package | ResolvedVersion | PackageType | DeprecationReasons |")
+                    [void]$md.Add("|---------|---------|-----------------|-------------|--------------------|")
+                    foreach ($it in $rows) { [void]$md.Add(("| {0} | {1} | {2} | {3} | {4} |" -f $it.Project,$it.Package,$it.ResolvedVersion,$it.PackageType,$it.DeprecationReasons)) }
+                } else {
+                    [void]$md.Add("| Project | Package | ResolvedVersion | DeprecationReasons |")
+                    [void]$md.Add("|---------|---------|-----------------|--------------------|")
+                    foreach ($it in $rows) { [void]$md.Add(("| {0} | {1} | {2} | {3} |" -f $it.Project,$it.Package,$it.ResolvedVersion,$it.DeprecationReasons)) }
+                }
+            } else {
+                [void]$md.Add("| Project | Framework | Package | ResolvedVersion | PackageType | DeprecationReasons |")
+                [void]$md.Add("|---------|-----------|---------|-----------------|-------------|--------------------|")
+                foreach ($it in $rows) { [void]$md.Add(("| {0} | {1} | {2} | {3} | {4} | {5} |" -f $it.Project,$it.Framework,$it.Package,$it.ResolvedVersion,$it.PackageType,$it.DeprecationReasons)) }
+            }
+            $body = [string]::Join("`n", $md.ToArray())
+        } else {
+            $body = "No deprecated packages found."
+        }
+    }
+
+    # ----------------- title -----------------
+    $projectsForTitle = New-Object 'System.Collections.Generic.List[string]'
+    if ($hasRows) {
+        $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($r in $rows) { if ($seen.Add($r.Project)) { [void]$projectsForTitle.Add($r.Project) } }
+        $projectsForTitle.Sort()
+    } else {
+        # copy + sort HashSet safely on PS5
+        $nameList = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($n in $allProjects) { if (-not [string]::IsNullOrEmpty($n)) { [void]$nameList.Add([string]$n) } }
+        $nameList.Sort()
+        $names = $nameList.ToArray()
+        foreach ($name in $names) {
+            $incl = $true
+            if (($null -ne $ProjectWhitelist) -and ($ProjectWhitelist -contains $name)) { $incl = $true }
+            elseif (($null -ne $ProjectBlacklist) -and ($ProjectBlacklist -contains $name)) { $incl = $false }
+            else { $incl = $true }
+            if ($incl) { [void]$projectsForTitle.Add($name) }
+        }
+    }
+
+    $projectsStr = "None"; $anyProj = $false; foreach ($p in $projectsForTitle) { $anyProj = $true; break }
+    if ($anyProj) { $projectsStr = ($projectsForTitle -join ", ") }
+    $defaultTitle = ("Deprecated Packages Report for Projects: {0}" -f $projectsStr)
+
+    $prefix = ""
+    if ($GenerateTitle) {
+        if ($OutputFormat -eq "markdown") {
+            if ([string]::IsNullOrEmpty($SetMarkDownTitle)) { $prefix = "## $defaultTitle`n`n" } else { $prefix = "## $SetMarkDownTitle`n`n" }
+        } else {
+            $prefix = "$defaultTitle`n`n"  # avoid underline (length ops)
+        }
+    }
+
+    $final = $prefix + $body
+
+    # ----------------- write or return -----------------
+    if (-not [string]::IsNullOrEmpty($OutputFile)) {
+        $normalized = $OutputFile -replace '[\\/]', [System.IO.Path]::DirectorySeparatorChar
+        $dir = Split-Path -Path $normalized -Parent
+        if (-not [string]::IsNullOrEmpty($dir)) {
+            if (-not (Test-Path -Path $dir)) {
+                [void][System.IO.Directory]::CreateDirectory($dir)
+                Write-Host ("Created directory: {0}" -f $dir)
+            }
+        }
+        [System.IO.File]::WriteAllText($normalized, $final, [System.Text.Encoding]::UTF8)
+        Write-Host ("Output written to {0}" -f $normalized)
+    } else {
+        return $final
+    }
+
+    if ($hasRows -and $ExitOnDeprecated) {
+        Write-Host "Deprecated packages detected. Throwing as configured."
+        throw "Deprecated packages detected."
+    } elseif ($hasRows) {
+        Write-Host "Deprecated packages detected, but not failing due to configuration."
+    }
+}
+
+function New-DotnetOutdatedReport {
+<#
+.SYNOPSIS
+Generate an outdated packages report from one or more 'dotnet list ... package --outdated --format json' documents.
+
+.DESCRIPTION
+StrictMode-safe parser that accepts:
+- a complete JSON string,
+- an array of lines forming one JSON document,
+- an already-parsed PSCustomObject/hashtable,
+- or a mixture.
+
+Traverses projects -> frameworks -> packages (top-level and optionally transitive) and flags items where
+resolvedVersion != latestVersion. Aggregates results (by Project, Package, ResolvedVersion, LatestVersion, and
+optionally PackageType) when requested. Supports whitelist/blacklist filtering and emits text or markdown with
+an optional title. If -ExitOnOutdated is set and any outdated package is found, the function throws (no 'exit').
+
+.PARAMETER jsonInput
+Object array where each element is either:
+- a full JSON string,
+- lines forming one JSON,
+- an already-parsed PSCustomObject/hashtable,
+- or a mixture.
+
+.PARAMETER OutputFile
+Optional file path; UTF-8 content is written if provided.
+
+.PARAMETER OutputFormat
+'text' or 'markdown'. Default 'text'.
+
+.PARAMETER ExitOnOutdated
+If $true and any outdated package is found, throws a terminating error after producing the output.
+
+.PARAMETER Aggregate
+If $true, aggregate by Project, Package, ResolvedVersion, LatestVersion (and optionally PackageType).
+
+.PARAMETER IgnoreTransitivePackages
+If $true, ignore transitive packages. Default $true.
+
+.PARAMETER IncludePackageType
+If $true and Aggregate is $true, include PackageType column.
+
+.PARAMETER GenerateTitle
+If $true, prepend a professional title. (No underline to avoid length ops.)
+
+.PARAMETER SetMarkDownTitle
+Custom markdown H2 when OutputFormat is markdown.
+
+.PARAMETER ProjectWhitelist
+Project names (file name without extension) to always include.
+
+.PARAMETER ProjectBlacklist
+Project names to exclude unless whitelisted.
+
+.EXAMPLE
+# Single full JSON string
+New-DotnetOutdatedReport -jsonInput $json -OutputFormat markdown
+
+.EXAMPLE
+# Lines captured from CLI output (joined and parsed)
+$lines = dotnet list . package --outdated --format json 2>$null | Out-String -Stream
+New-DotnetOutdatedReport -jsonInput $lines -IgnoreTransitivePackages:$false -ExitOnOutdated:$true
+
+.EXAMPLE
+# Write to file
+New-DotnetOutdatedReport -jsonInput $json -OutputFile 'reports/outdated.md' -OutputFormat markdown
+
+.NOTES
+- Compatible with Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
+- No ShouldProcess; no pipeline-bound params; minimal Write-Host; ASCII-only; no ternary; idempotent.
+#>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]] $jsonInput,
+
+        [string] $OutputFile,
+        [ValidateSet("text","markdown")]
+        [string] $OutputFormat = "text",
+
+        [bool] $ExitOnOutdated = $false,
+        [bool] $Aggregate = $true,
+        [bool] $IgnoreTransitivePackages = $true,
+        [bool] $IncludePackageType = $false,
+        [bool] $GenerateTitle = $true,
+        [string] $SetMarkDownTitle,
+        [string[]] $ProjectWhitelist,
+        [string[]] $ProjectBlacklist
+    )
+
+    # ---------------- helpers (local scope; no pipeline writes) ----------------
+    function _ToArray { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([object] $v)
+        if ($null -eq $v) { return @() }
+        if ($v -is [System.Array]) { return $v }
+        if ($v -is [System.Collections.IEnumerable] -and -not ($v -is [string])) {
+            $tmp = New-Object 'System.Collections.Generic.List[object]'
+            foreach ($e in $v) { [void]$tmp.Add($e) }
+            return $tmp.ToArray()
+        }
+        return ,$v
+    }
+    function _StripBom { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string] $t)
+        if ([string]::IsNullOrEmpty($t)) { return "" }
+        if ($t[0] -eq [char]0xFEFF) { return $t.Substring(1) }
+        return $t
+    }
+    function _UnwrapQuotes { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string] $t)
+        if ([string]::IsNullOrEmpty($t)) { return "" }
+        $s = $t.Trim()
+        if ($s.StartsWith('"') -and $s.EndsWith('"')) { return $s.Substring(1, $s.Length-2) }
+        return $s
+    }
+    function _TryFromJson { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string] $text)
+        try { return (ConvertFrom-Json -InputObject $text) } catch { return $null }
+    }
+    function _CoerceDocs { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([object[]] $items)
+        $docs = New-Object 'System.Collections.Generic.List[object]'
+        $arr  = _ToArray $items
+
+        # Single-element fast path
+        $hasOne = $false; $e = $null
+        foreach ($x in $arr) { $e = $x; $hasOne = $true; break }
+        if ($hasOne) {
+            if ($e -is [string]) {
+                $s = _UnwrapQuotes (_StripBom ([string]$e))
+                $p = _TryFromJson $s
+                if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
+                $p = _TryFromJson (($s -split "(`r`n|`n|`r)") -join "`n")
+                if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
+                throw "Failed to parse JSON input. Provide a complete JSON document."
+            } elseif ($e -is [System.Collections.IDictionary] -or $null -ne $e.PSObject) {
+                [void]$docs.Add($e); return $docs.ToArray()
+            }
+        }
+
+        # All strings -> join once
+        $allStr = $true
+        foreach ($x in $arr) { if (-not ($x -is [string])) { $allStr = $false; break } }
+        if ($allStr) {
+            $joined = _UnwrapQuotes (_StripBom ([string]::Join("`n", (_ToArray $arr))))
+            $p = _TryFromJson $joined
+            if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
+            # Fallback: per-line parse
+            $any = $false
+            foreach ($ln in (_ToArray $arr)) {
+                $q = _TryFromJson (_UnwrapQuotes (_StripBom ([string]$ln)))
+                if ($null -ne $q) { [void]$docs.Add($q); $any = $true }
+            }
+            if ($any) { return $docs.ToArray() }
+            throw "Failed to parse JSON from lines; ensure they form one complete document."
+        }
+
+        # Mixed: accept already-parsed and self-parsing strings
+        foreach ($x in $arr) {
+            if ($x -is [string]) {
+                $p = _TryFromJson (_UnwrapQuotes (_StripBom ([string]$x)))
+                if ($null -ne $p) { [void]$docs.Add($p) }
+            } elseif ($x -is [System.Collections.IDictionary] -or $null -ne $x.PSObject) {
+                [void]$docs.Add($x)
+            }
+        }
+        if ((_ToArray $docs).Length -gt 0) { return $docs.ToArray() }
+        throw "Failed to coerce input into JSON documents."
+    }
+
+    # ---------------- parse input ----------------
+    $docs = _CoerceDocs -items $jsonInput
+
+    # ---------------- traverse & collect ----------------
+    $rowsList    = New-Object 'System.Collections.Generic.List[psobject]'
+    $allProjects = New-Object 'System.Collections.Generic.HashSet[string]'
+
+    foreach ($doc in $docs) {
+        foreach ($proj in @($doc.projects)) {
+            if ($null -eq $proj) { continue }
+            $projPath = [string]$proj.path
+            if (-not [string]::IsNullOrEmpty($projPath)) {
+                [void]$allProjects.Add([System.IO.Path]::GetFileNameWithoutExtension($projPath))
+            }
+
+            foreach ($fw in @($proj.frameworks)) {
+                if ($null -eq $fw) { continue }
+                $fwName = $fw.framework
+
+                # Top-level packages
+                foreach ($pkg in @($fw.topLevelPackages)) {
+                    if ($null -eq $pkg) { continue }
+                    $latest   = [string]$pkg.latestVersion
+                    $resolved = [string]$pkg.resolvedVersion
+                    $hasDelta = (-not [string]::IsNullOrEmpty($latest)) -and ($resolved -ne $latest)
+                    if ($hasDelta) {
+                        [void]$rowsList.Add([PSCustomObject]@{
+                            Project         = [System.IO.Path]::GetFileNameWithoutExtension($projPath)
+                            Framework       = $fwName
+                            Package         = $pkg.id
+                            ResolvedVersion = $resolved
+                            LatestVersion   = $latest
+                            PackageType     = 'TopLevel'
+                        })
+                    }
+                }
+
+                # Transitive packages (optional)
+                if (-not $IgnoreTransitivePackages) {
+                    foreach ($pkg in @($fw.transitivePackages)) {
+                        if ($null -eq $pkg) { continue }
+                        $latest   = [string]$pkg.latestVersion
+                        $resolved = [string]$pkg.resolvedVersion
+                        $hasDelta = (-not [string]::IsNullOrEmpty($latest)) -and ($resolved -ne $latest)
+                        if ($hasDelta) {
+                            [void]$rowsList.Add([PSCustomObject]@{
+                                Project         = [System.IO.Path]::GetFileNameWithoutExtension($projPath)
+                                Framework       = $fwName
+                                Package         = $pkg.id
+                                ResolvedVersion = $resolved
+                                LatestVersion   = $latest
+                                PackageType     = 'Transitive'
+                            })
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    # Materialize
+    $rows = @($rowsList)
+
+    # ---------------- whitelist/blacklist ----------------
+    if (($null -ne $ProjectWhitelist) -or ($null -ne $ProjectBlacklist)) {
+        $tmp = New-Object 'System.Collections.Generic.List[psobject]'
+        foreach ($r in $rows) {
+            $incl = $true
+            if (($null -ne $ProjectWhitelist) -and ($ProjectWhitelist -contains $r.Project)) { $incl = $true }
+            elseif (($null -ne $ProjectBlacklist) -and ($ProjectBlacklist -contains $r.Project)) { $incl = $false }
+            else { $incl = $true }
+            if ($incl) { [void]$tmp.Add($r) }
+        }
+        $rows = @($tmp)
+    }
+
+    # ---------------- aggregate ----------------
+    if ($Aggregate) {
+        $map = @{}
+        if ($IncludePackageType) {
+            foreach ($r in $rows) {
+                $k = ('{0}||{1}||{2}||{3}||{4}' -f $r.Project, $r.Package, $r.ResolvedVersion, $r.LatestVersion, $r.PackageType)
+                if (-not $map.ContainsKey($k)) {
+                    $map[$k] = [PSCustomObject]@{
+                        Project         = $r.Project
+                        Package         = $r.Package
+                        ResolvedVersion = $r.ResolvedVersion
+                        LatestVersion   = $r.LatestVersion
+                        PackageType     = $r.PackageType
+                    }
+                }
+            }
+        } else {
+            foreach ($r in $rows) {
+                $k = ('{0}||{1}||{2}||{3}' -f $r.Project, $r.Package, $r.ResolvedVersion, $r.LatestVersion)
+                if (-not $map.ContainsKey($k)) {
+                    $map[$k] = [PSCustomObject]@{
+                        Project         = $r.Project
+                        Package         = $r.Package
+                        ResolvedVersion = $r.ResolvedVersion
+                        LatestVersion   = $r.LatestVersion
+                    }
+                }
+            }
+        }
+        $vals = New-Object 'System.Collections.Generic.List[psobject]'
+        foreach ($v in $map.Values) { [void]$vals.Add($v) }
+        $rows = @($vals)
+    }
+
+    # ---------------- body ----------------
+    $hasRows = $false; foreach ($x in $rows) { $hasRows = $true; break }
+    $body = ""
+    if ($OutputFormat -eq "text") {
+        if ($hasRows) {
+            if ($Aggregate) {
+                if ($IncludePackageType) {
+                    $body = ($rows | Format-Table Project, Package, ResolvedVersion, LatestVersion, PackageType -AutoSize | Out-String)
+                } else {
+                    $body = ($rows | Format-Table Project, Package, ResolvedVersion, LatestVersion -AutoSize | Out-String)
+                }
+            } else {
+                $body = ($rows | Format-Table Project, Framework, Package, ResolvedVersion, LatestVersion, PackageType -AutoSize | Out-String)
+            }
+        } else {
+            $body = "No outdated packages found."
+        }
+    } else {
+        if ($hasRows) {
+            $md = New-Object 'System.Collections.Generic.List[string]'
+            if ($Aggregate) {
+                if ($IncludePackageType) {
+                    [void]$md.Add("| Project | Package | ResolvedVersion | LatestVersion | PackageType |")
+                    [void]$md.Add("|---------|---------|-----------------|---------------|-------------|")
+                    foreach ($it in $rows) { [void]$md.Add(("| {0} | {1} | {2} | {3} | {4} |" -f $it.Project,$it.Package,$it.ResolvedVersion,$it.LatestVersion,$it.PackageType)) }
+                } else {
+                    [void]$md.Add("| Project | Package | ResolvedVersion | LatestVersion |")
+                    [void]$md.Add("|---------|---------|-----------------|---------------|")
+                    foreach ($it in $rows) { [void]$md.Add(("| {0} | {1} | {2} | {3} |" -f $it.Project,$it.Package,$it.ResolvedVersion,$it.LatestVersion)) }
+                }
+            } else {
+                [void]$md.Add("| Project | Framework | Package | ResolvedVersion | LatestVersion | PackageType |")
+                [void]$md.Add("|---------|-----------|---------|-----------------|---------------|-------------|")
+                foreach ($it in $rows) { [void]$md.Add(("| {0} | {1} | {2} | {3} | {4} | {5} |" -f $it.Project,$it.Framework,$it.Package,$it.ResolvedVersion,$it.LatestVersion,$it.PackageType)) }
+            }
+            $body = [string]::Join("`n", $md.ToArray())
+        } else {
+            $body = "No outdated packages found."
+        }
+    }
+
+    # ---------------- title ----------------
+    $projectsForTitle = New-Object 'System.Collections.Generic.List[string]'
+    if ($hasRows) {
+        $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($r in $rows) { if ($seen.Add($r.Project)) { [void]$projectsForTitle.Add($r.Project) } }
+        $projectsForTitle.Sort()
+    } else {
+        # copy + sort HashSet safely on PS5
+        $nameList = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($n in $allProjects) { if (-not [string]::IsNullOrEmpty($n)) { [void]$nameList.Add([string]$n) } }
+        $nameList.Sort()
+        $names = $nameList.ToArray()
+        foreach ($name in $names) {
+            $incl = $true
+            if (($null -ne $ProjectWhitelist) -and ($ProjectWhitelist -contains $name)) { $incl = $true }
+            elseif (($null -ne $ProjectBlacklist) -and ($ProjectBlacklist -contains $name)) { $incl = $false }
+            else { $incl = $true }
+            if ($incl) { [void]$projectsForTitle.Add($name) }
+        }
+    }
+
+    $projectsStr = "None"; $anyProj = $false; foreach ($p in $projectsForTitle) { $anyProj = $true; break }
+    if ($anyProj) { $projectsStr = ($projectsForTitle -join ", ") }
+    $defaultTitle = ("Outdated Packages Report for Projects: {0}" -f $projectsStr)
+
+    $prefix = ""
+    if ($GenerateTitle) {
+        if ($OutputFormat -eq "markdown") {
+            if ([string]::IsNullOrEmpty($SetMarkDownTitle)) { $prefix = "## $defaultTitle`n`n" } else { $prefix = "## $SetMarkDownTitle`n`n" }
+        } else {
+            $prefix = "$defaultTitle`n`n"
+        }
+    }
+
+    $final = $prefix + $body
+
+    # ---------------- write or return ----------------
+    if (-not [string]::IsNullOrEmpty($OutputFile)) {
+        $normalized = $OutputFile -replace '[\\/]', [System.IO.Path]::DirectorySeparatorChar
+        $dir = Split-Path -Path $normalized -Parent
+        if (-not [string]::IsNullOrEmpty($dir)) {
+            if (-not (Test-Path -Path $dir)) {
+                [void][System.IO.Directory]::CreateDirectory($dir)
+                Write-Host ("Created directory: {0}" -f $dir)
+            }
+        }
+        [System.IO.File]::WriteAllText($normalized, $final, [System.Text.Encoding]::UTF8)
+        Write-Host ("Output written to {0}" -f $normalized)
+    } else {
+        return $final
+    }
+
+    if ($hasRows -and $ExitOnOutdated) {
+        Write-Host "Outdated packages detected. Throwing as configured."
+        throw "Outdated packages detected."
+    } elseif ($hasRows) {
+        Write-Host "Outdated packages detected, but not failing due to configuration."
+    }
+}
+
+function New-DotnetBillOfMaterialsReport {
+<#
+.SYNOPSIS
+Generate a Bill of Materials (BOM) from one or more 'dotnet list ... --format json' documents.
+
+.DESCRIPTION
+StrictMode-safe parser that accepts:
+- a complete JSON string,
+- an array of lines forming one JSON document,
+- an already-parsed PSCustomObject/hashtable,
+- or a mixture.
+
+Traverses projects -> frameworks -> packages (top-level and optionally transitive).
+Supports whitelist/blacklist, optional aggregation (by ProjectName, Package, ResolvedVersion, and optionally PackageType),
+and outputs as text or markdown with an optional title. Idempotent, PS5/PS7-compatible, no pipeline-bound params, no ShouldProcess,
+no reliance on .Count/.Length for unknown types, and minimal Write-Host.
+
+.PARAMETER jsonInput
+Object array where each element is either:
+- a full JSON string,
+- lines forming one JSON,
+- an already-parsed PSCustomObject/hashtable,
+- or a mixture.
+
+.PARAMETER OutputFile
+Optional file path; UTF-8 content is written if provided.
+
+.PARAMETER OutputFormat
+'text' or 'markdown'. Default 'text'.
+
+.PARAMETER IgnoreTransitivePackages
+If $true, exclude transitive packages. Default $true.
+
+.PARAMETER Aggregate
+If $true, aggregate by ProjectName, Package, ResolvedVersion (and optionally PackageType). Default $true.
+
+.PARAMETER IncludePackageType
+If $true and Aggregate is $true, include PackageType column. Default $false.
+
+.PARAMETER GenerateTitle
+If $true, prepend a professional title (no underline to avoid length ops). Default $true.
+
+.PARAMETER SetMarkDownTitle
+Custom markdown H2 when OutputFormat is markdown.
+
+.PARAMETER ProjectWhitelist
+Project names (file name without extension) to always include.
+
+.PARAMETER ProjectBlacklist
+Project names to exclude unless whitelisted.
+
+.EXAMPLE
+# Single full JSON string
+New-DotnetBillOfMaterialsReport -jsonInput $json -OutputFormat markdown
+
+.EXAMPLE
+# Lines captured from CLI output (joined and parsed)
+$lines = dotnet list . package --format json 2>$null | Out-String -Stream
+New-DotnetBillOfMaterialsReport -jsonInput $lines -IgnoreTransitivePackages:$false
+
+.EXAMPLE
+# Write to file
+New-DotnetBillOfMaterialsReport -jsonInput $json -OutputFile 'reports/bom.md' -OutputFormat markdown
+
+.NOTES
+- Compatible with Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
+- No ShouldProcess; no pipeline-bound params; ASCII-only; no ternary; idempotent.
+#>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory = $true)]
+        [object[]] $jsonInput,
+
+        [string] $OutputFile,
+        [ValidateSet("text","markdown")]
+        [string] $OutputFormat = "text",
+
+        [bool] $IgnoreTransitivePackages = $true,
+        [bool] $Aggregate = $true,
+        [bool] $IncludePackageType = $false,
+        [bool] $GenerateTitle = $true,
+        [string] $SetMarkDownTitle,
+        [string[]] $ProjectWhitelist,
+        [string[]] $ProjectBlacklist
+    )
+
+    # ---------------- helpers (local scope; no pipeline writes) ----------------
+    function _ToArray { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([object] $v)
+        if ($null -eq $v) { return @() }
+        if ($v -is [System.Array]) { return $v }
+        if ($v -is [System.Collections.IEnumerable] -and -not ($v -is [string])) {
+            $tmp = New-Object 'System.Collections.Generic.List[object]'
+            foreach ($e in $v) { [void]$tmp.Add($e) }
+            return $tmp.ToArray()
+        }
+        return ,$v
+    }
+    function _StripBom { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string] $t)
+        if ([string]::IsNullOrEmpty($t)) { return "" }
+        if ($t[0] -eq [char]0xFEFF) { return $t.Substring(1) }
+        return $t
+    }
+    function _UnwrapQuotes { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string] $t)
+        if ([string]::IsNullOrEmpty($t)) { return "" }
+        $s = $t.Trim()
+        if ($s.StartsWith('"') -and $s.EndsWith('"')) { return $s.Substring(1, $s.Length-2) }
+        return $s
+    }
+    function _TryFromJson { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string] $text)
+        try { return (ConvertFrom-Json -InputObject $text) } catch { return $null }
+    }
+    function _CoerceDocs { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([object[]] $items)
+        $docs = New-Object 'System.Collections.Generic.List[object]'
+        $arr  = _ToArray $items
+
+        # Single-element fast path
+        $hasOne = $false; $e = $null
+        foreach ($x in $arr) { $e = $x; $hasOne = $true; break }
+        if ($hasOne) {
+            if ($e -is [string]) {
+                $s = _UnwrapQuotes (_StripBom ([string]$e))
+                $p = _TryFromJson $s
+                if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
+                $p = _TryFromJson (($s -split "(`r`n|`n|`r)") -join "`n")
+                if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
+                throw "Failed to parse JSON input. Provide a complete JSON document."
+            } elseif ($e -is [System.Collections.IDictionary] -or $null -ne $e.PSObject) {
+                [void]$docs.Add($e); return $docs.ToArray()
+            }
+        }
+
+        # All strings -> join once
+        $allStr = $true
+        foreach ($x in $arr) { if (-not ($x -is [string])) { $allStr = $false; break } }
+        if ($allStr) {
+            $joined = _UnwrapQuotes (_StripBom ([string]::Join("`n", (_ToArray $arr))))
+            $p = _TryFromJson $joined
+            if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
+            # Fallback: per-line parse
+            $any = $false
+            foreach ($ln in (_ToArray $arr)) {
+                $q = _TryFromJson (_UnwrapQuotes (_StripBom ([string]$ln)))
+                if ($null -ne $q) { [void]$docs.Add($q); $any = $true }
+            }
+            if ($any) { return $docs.ToArray() }
+            throw "Failed to parse JSON from lines; ensure they form one complete document."
+        }
+
+        # Mixed: accept already-parsed and self-parsing strings
+        foreach ($x in $arr) {
+            if ($x -is [string]) {
+                $p = _TryFromJson (_UnwrapQuotes (_StripBom ([string]$x)))
+                if ($null -ne $p) { [void]$docs.Add($p) }
+            } elseif ($x -is [System.Collections.IDictionary] -or $null -ne $x.PSObject) {
+                [void]$docs.Add($x)
+            }
+        }
+        if ((_ToArray $docs).Length -gt 0) { return $docs.ToArray() }
+        throw "Failed to coerce input into JSON documents."
+    }
+
+    # ---------------- parse input ----------------
+    $docs = _CoerceDocs -items $jsonInput
+
+    # ---------------- traverse & collect ----------------
+    $rowsList    = New-Object 'System.Collections.Generic.List[psobject]'
+    $allProjects = New-Object 'System.Collections.Generic.HashSet[string]'
+
+    foreach ($doc in $docs) {
+        foreach ($proj in @($doc.projects)) {
+            if ($null -eq $proj) { continue }
+            $projPath = [string]$proj.path
+            if (-not [string]::IsNullOrEmpty($projPath)) {
+                [void]$allProjects.Add([System.IO.Path]::GetFileNameWithoutExtension($projPath))
+            }
+
+            foreach ($fw in @($proj.frameworks)) {
+                if ($null -eq $fw) { continue }
+                $fwName = $fw.framework
+
+                # Top-level packages
+                foreach ($pkg in @($fw.topLevelPackages)) {
+                    if ($null -eq $pkg) { continue }
+                    [void]$rowsList.Add([PSCustomObject]@{
+                        ProjectName     = [System.IO.Path]::GetFileNameWithoutExtension($projPath)
+                        Framework       = $fwName
+                        Package         = $pkg.id
+                        ResolvedVersion = $pkg.resolvedVersion
+                        PackageType     = 'TopLevel'
+                    })
+                }
+
+                # Transitive packages (optional)
+                if (-not $IgnoreTransitivePackages) {
+                    foreach ($pkg in @($fw.transitivePackages)) {
+                        if ($null -eq $pkg) { continue }
+                        [void]$rowsList.Add([PSCustomObject]@{
+                            ProjectName     = [System.IO.Path]::GetFileNameWithoutExtension($projPath)
+                            Framework       = $fwName
+                            Package         = $pkg.id
+                            ResolvedVersion = $pkg.resolvedVersion
+                            PackageType     = 'Transitive'
+                        })
+                    }
+                }
+            }
+        }
+    }
+
+    # Materialize
+    $rows = @($rowsList)
+
+    # ---------------- whitelist/blacklist ----------------
+    if (($null -ne $ProjectWhitelist) -or ($null -ne $ProjectBlacklist)) {
+        $tmp = New-Object 'System.Collections.Generic.List[psobject]'
+        foreach ($r in $rows) {
+            $incl = $true
+            if (($null -ne $ProjectWhitelist) -and ($ProjectWhitelist -contains $r.ProjectName)) { $incl = $true }
+            elseif (($null -ne $ProjectBlacklist) -and ($ProjectBlacklist -contains $r.ProjectName)) { $incl = $false }
+            else { $incl = $true }
+            if ($incl) { [void]$tmp.Add($r) }
+        }
+        $rows = @($tmp)
+    }
+
+    # ---------------- aggregate ----------------
+    if ($Aggregate) {
+        $map = @{}
+        if ($IncludePackageType) {
+            foreach ($r in $rows) {
+                $k = ('{0}||{1}||{2}||{3}' -f $r.ProjectName, $r.Package, $r.ResolvedVersion, $r.PackageType)
+                if (-not $map.ContainsKey($k)) {
+                    $map[$k] = [PSCustomObject]@{
+                        ProjectName     = $r.ProjectName
+                        Package         = $r.Package
+                        ResolvedVersion = $r.ResolvedVersion
+                        PackageType     = $r.PackageType
+                    }
+                }
+            }
+        } else {
+            foreach ($r in $rows) {
+                $k = ('{0}||{1}||{2}' -f $r.ProjectName, $r.Package, $r.ResolvedVersion)
+                if (-not $map.ContainsKey($k)) {
+                    $map[$k] = [PSCustomObject]@{
+                        ProjectName     = $r.ProjectName
+                        Package         = $r.Package
+                        ResolvedVersion = $r.ResolvedVersion
+                    }
+                }
+            }
+        }
+        $vals = New-Object 'System.Collections.Generic.List[psobject]'
+        foreach ($v in $map.Values) { [void]$vals.Add($v) }
+        $rows = @($vals)
+    }
+
+    # ---------------- body ----------------
+    $hasRows = $false; foreach ($x in $rows) { $hasRows = $true; break }
+    $body = ""
+    if ($OutputFormat -eq "text") {
+        if ($hasRows) {
+            if ($Aggregate) {
+                if ($IncludePackageType) {
+                    $body = ($rows | Format-Table ProjectName, Package, ResolvedVersion, PackageType -AutoSize | Out-String)
+                } else {
+                    $body = ($rows | Format-Table ProjectName, Package, ResolvedVersion -AutoSize | Out-String)
+                }
+            } else {
+                $body = ($rows | Format-Table ProjectName, Framework, Package, ResolvedVersion, PackageType -AutoSize | Out-String)
+            }
+        } else {
+            $body = "No BOM entries found."
+        }
+    } else {
+        if ($hasRows) {
+            $md = New-Object 'System.Collections.Generic.List[string]'
+            if ($Aggregate) {
+                if ($IncludePackageType) {
+                    [void]$md.Add("| ProjectName | Package | ResolvedVersion | PackageType |")
+                    [void]$md.Add("|-------------|---------|-----------------|-------------|")
+                    foreach ($it in $rows) { [void]$md.Add(("| {0} | {1} | {2} | {3} |" -f $it.ProjectName,$it.Package,$it.ResolvedVersion,$it.PackageType)) }
+                } else {
+                    [void]$md.Add("| ProjectName | Package | ResolvedVersion |")
+                    [void]$md.Add("|-------------|---------|-----------------|")
+                    foreach ($it in $rows) { [void]$md.Add(("| {0} | {1} | {2} |" -f $it.ProjectName,$it.Package,$it.ResolvedVersion)) }
+                }
+            } else {
+                [void]$md.Add("| ProjectName | Framework | Package | ResolvedVersion | PackageType |")
+                [void]$md.Add("|-------------|-----------|---------|-----------------|-------------|")
+                foreach ($it in $rows) { [void]$md.Add(("| {0} | {1} | {2} | {3} | {4} |" -f $it.ProjectName,$it.Framework,$it.Package,$it.ResolvedVersion,$it.PackageType)) }
+            }
+            $body = [string]::Join("`n", $md.ToArray())
+        } else {
+            $body = "No BOM entries found."
+        }
+    }
+
+    # ---------------- title ----------------
+    $projectsForTitle = New-Object 'System.Collections.Generic.List[string]'
+    if ($hasRows) {
+        $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($r in $rows) { if ($seen.Add($r.ProjectName)) { [void]$projectsForTitle.Add($r.ProjectName) } }
+        $projectsForTitle.Sort()
+    } else {
+        # copy + sort HashSet safely on PS5
+        $nameList = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($n in $allProjects) { if (-not [string]::IsNullOrEmpty($n)) { [void]$nameList.Add([string]$n) } }
+        $nameList.Sort()
+        $names = $nameList.ToArray()
+        foreach ($name in $names) {
+            $incl = $true
+            if (($null -ne $ProjectWhitelist) -and ($ProjectWhitelist -contains $name)) { $incl = $true }
+            elseif (($null -ne $ProjectBlacklist) -and ($ProjectBlacklist -contains $name)) { $incl = $false }
+            else { $incl = $true }
+            if ($incl) { [void]$projectsForTitle.Add($name) }
+        }
+    }
+
+    $projectsStr = "None"; $anyProj = $false; foreach ($p in $projectsForTitle) { $anyProj = $true; break }
+    if ($anyProj) { $projectsStr = ($projectsForTitle -join ", ") }
+    $defaultTitle = ("Bill of Materials Report for Projects: {0}" -f $projectsStr)
+
+    $prefix = ""
+    if ($GenerateTitle) {
+        if ($OutputFormat -eq "markdown") {
+            if ([string]::IsNullOrEmpty($SetMarkDownTitle)) { $prefix = "## $defaultTitle`n`n" } else { $prefix = "## $SetMarkDownTitle`n`n" }
+        } else {
+            $prefix = "$defaultTitle`n`n"
+        }
+    }
+
+    $final = $prefix + $body
+
+    # ---------------- write or return ----------------
+    if (-not [string]::IsNullOrEmpty($OutputFile)) {
+        $normalized = $OutputFile -replace '[\\/]', [System.IO.Path]::DirectorySeparatorChar
+        $dir = Split-Path -Path $normalized -Parent
+        if (-not [string]::IsNullOrEmpty($dir)) {
+            if (-not (Test-Path -Path $dir)) {
+                [void][System.IO.Directory]::CreateDirectory($dir)
+                Write-Host ("Created directory: {0}" -f $dir)
+            }
+        }
+        [System.IO.File]::WriteAllText($normalized, $final, [System.Text.Encoding]::UTF8)
+        Write-Host ("Output written to {0}" -f $normalized)
+    } else {
+        return $final
+    }
+}
+

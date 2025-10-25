@@ -84,6 +84,521 @@ function Find-FilesByPattern {
     return @($fmatches.ToArray())
 }
 
+function Remove-FilesByPattern {
+<#
+.SYNOPSIS
+    Delete files by filename wildcard(s) using explicit traversal; optionally remove empty subdirectories.
+
+.DESCRIPTION
+    Walks the directory tree manually (deep-first) without using -Recurse and matches file names against
+    one or more Windows-style wildcard patterns (e.g. *.log, *.tmp). Continues on listing/deletion errors.
+    After deletions, it can remove empty subdirectories (deepest-first). Emits only brief summary via Write-Host.
+
+.PARAMETER Path
+    Root directory where the deletion should begin.
+
+.PARAMETER Pattern
+    Filename wildcard(s). Accepts array or comma/semicolon list (e.g. "*.log;*.tmp,*.bak").
+
+.PARAMETER RemoveEmptyDirs
+    Policy to remove empty subdirectories after deleting files.
+    Allowed: 'Yes' | 'No'. Default: 'Yes'.
+
+.EXAMPLE
+    Remove-FilesByPattern -Path "C:\Temp" -Pattern "*.log"
+
+.EXAMPLE
+    Remove-FilesByPattern -Path "/var/tmp" -Pattern "*.log;*.tmp" -RemoveEmptyDirs No
+
+.EXAMPLE
+    Remove-FilesByPattern -Path "D:\Build" -Pattern @("*.obj","*.pch","*.ipch")
+
+.NOTES
+    Requirements: Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
+    Behavior: Idempotent; subsequent runs converge (no output objects, summary only).
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Path,
+
+        [Parameter(Mandatory=$true)]
+        [string[]]$Pattern,
+
+        [Parameter()]
+        [ValidateSet('Yes','No')]
+        [string]$RemoveEmptyDirs = 'Yes'
+    )
+
+    # [reviewer] Validate root path early and fail fast with concise message.
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw "The specified path '$Path' does not exist or is not a directory."
+    }
+
+    # Inline helper: normalize pattern list; local scope; no pipeline output.
+    function local:_Norm-List {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([string[]]$Patterns)
+
+        if (-not $Patterns) { return @() }
+        $list = New-Object System.Collections.Generic.List[string]
+        foreach ($p in $Patterns) {
+            if ([string]::IsNullOrWhiteSpace($p)) { continue }
+            foreach ($seg in ($p -split '[,;]')) {
+                $t = $seg.Trim()
+                if ($t.Length -gt 0) { [void]$list.Add($t) }
+            }
+        }
+        if ($list.Count -eq 0) { return @() }
+        $list.ToArray()
+    }
+
+    # Normalize patterns; keep parity with Find-FilesByPattern behavior.
+    $pat = local:_Norm-List $Pattern
+    if (-not $pat -or $pat.Count -eq 0) {
+        throw "Pattern must not be empty."
+    }
+
+    # Prepare traversal using explicit stack; avoid -Recurse.
+    $rootItem = $null
+    try { $rootItem = Get-Item -LiteralPath $Path -ErrorAction Stop }
+    catch { throw "Path '$Path' is not accessible: $_" }
+
+    $stack      = New-Object System.Collections.Stack
+    $stack.Push($rootItem)
+
+    $candidates = New-Object System.Collections.Generic.List[System.IO.FileInfo]
+    $allDirs    = New-Object System.Collections.Generic.List[System.IO.DirectoryInfo]
+    $rootFull   = $rootItem.FullName
+
+    while ($stack.Count -gt 0) {
+        $dir = $stack.Pop()
+
+        # [reviewer] Track directories for later empty-dir cleanup; skip the root itself.
+        if ($dir.FullName -ne $rootFull) { [void]$allDirs.Add($dir) }
+
+        # Discover subdirectories; continue on errors.
+        $subs = @()
+        try { $subs = Get-ChildItem -LiteralPath $dir.FullName -Directory -ErrorAction Stop }
+        catch { Write-Warning "Cannot list directories in '$($dir.FullName)': $_" }
+        foreach ($sd in $subs) { $stack.Push($sd) }
+
+        # List files; continue on errors.
+        $files = @()
+        try { $files = Get-ChildItem -LiteralPath $dir.FullName -File -ErrorAction Stop }
+        catch { Write-Warning "Cannot list files in '$($dir.FullName)': $_" }
+
+        # Match filenames against wildcard set; first-hit wins.
+        foreach ($f in $files) {
+            foreach ($p in $pat) {
+                if ($f.Name -like $p) { [void]$candidates.Add($f); break }
+            }
+        }
+    }
+
+    # Delete matched files; keep going on individual failures.
+    $deleted = 0
+    foreach ($fi in $candidates) {
+        try {
+            if (Test-Path -LiteralPath $fi.FullName -PathType Leaf) {
+                Remove-Item -LiteralPath $fi.FullName -Force -ErrorAction Stop
+                $deleted += 1
+            }
+        }
+        catch {
+            Write-Warning "Failed to delete '$($fi.FullName)': $_"
+        }
+    }
+
+    # Optionally remove empty subdirectories (deepest-first), never the root.
+    $removedDirs = 0
+    if ($RemoveEmptyDirs -eq 'Yes') {
+        $sorted = $allDirs | Sort-Object {
+            ($_.FullName.Split([System.IO.Path]::DirectorySeparatorChar)).Count
+        } -Descending
+
+        foreach ($d in $sorted) {
+            try {
+                $items = Get-ChildItem -LiteralPath $d.FullName -Force -ErrorAction Stop
+                if (-not $items -or $items.Count -eq 0) {
+                    Remove-Item -LiteralPath $d.FullName -Force -ErrorAction Stop
+                    $removedDirs += 1
+                }
+            }
+            catch {
+                # [reviewer] Ignore cleanup failures; keep traversal robust/cross-platform.
+            }
+        }
+    }
+
+    # Minimal, consistent logging per policy.
+    Write-Host ("Deleted files: {0}" -f $deleted)
+    if ($RemoveEmptyDirs -eq 'Yes') {
+        Write-Host ("Removed empty directories: {0}" -f $removedDirs)
+    }
+}
+
+function Get-Path {
+<#
+.SYNOPSIS
+  Combine flexible inputs in -Paths into a single path string (no filesystem I/O).
+
+.DESCRIPTION
+  Accepts heterogeneous inputs (strings, nested arrays, DirectoryInfo/FileInfo, and
+  hashtables/objects with path-like members). Flattens & validates, applies “last rooted wins”,
+  then combines segments iteratively using System.IO.Path. Returns the combined path string
+  with OS-appropriate separators. Does not resolve to absolute, does not touch the filesystem.
+
+.PARAMETER Paths
+  One or more path-like items:
+    - String(s) or nested arrays
+    - DirectoryInfo/FileInfo (.FullName)
+    - Hashtable/PSCustomObject with FullName / DirectoryName / Path (case-insensitive)
+
+.EXAMPLE
+  Get-Path -Paths @("ddd","build")
+  # Returns: ddd\build   (on Windows)   or   ddd/build   (on Unix)
+
+.EXAMPLE
+  Get-Path -Paths @("C:\repo","artifacts","build\output\file.txt")
+  # Returns: C:\repo\artifacts\build\output\file.txt
+
+.EXAMPLE
+  # Mixed types are fine:
+  $d = [IO.DirectoryInfo]"C:\repo"
+  Get-Path -Paths @($d, @{Path='artifacts'}, 'build','output')
+
+.NOTES
+  PowerShell 5/5.1 and 7+. To convert the result to an absolute path later (without touching the FS):
+    [IO.Path]::GetFullPath( (Get-Path -Paths $Paths) )
+#>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory=$true, Position=0)]
+        [object[]]$Paths
+    )
+
+    # --- Helpers (kept local for portability) ---------------------------------------------------
+
+    function _Select-PathLikeValue {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([object]$Item)
+
+        if ($null -eq $Item) { return $null }
+
+        if ($Item -is [string]) {
+            $t = $Item.Trim()
+            if ($t.Length -gt 0) { return $t } else { return $null }
+        }
+
+        if ($Item -is [System.IO.FileSystemInfo]) {
+            return $Item.FullName
+        }
+
+        if ($Item -is [System.Collections.IDictionary]) {
+            foreach ($k in @('FullName','DirectoryName','Path')) {
+                foreach ($key in $Item.Keys) {
+                    if ($key -is [string] -and $key.Equals($k,[StringComparison]::OrdinalIgnoreCase)) {
+                        $v = $Item[$key]; if ($null -ne $v) { return ($v.ToString().Trim()) }
+                    }
+                }
+            }
+            $vals = @($Item.Values)
+            if ($vals.Count -eq 1 -and $null -ne $vals[0]) { return ($vals[0].ToString().Trim()) }
+            return $null
+        }
+
+        $type = $Item.GetType()
+        foreach ($m in @('FullName','DirectoryName','Path')) {
+            $prop = $type.GetProperty($m)
+            if ($null -ne $prop) {
+                $val = $prop.GetValue($Item, $null)
+                if ($null -ne $val) { return ($val.ToString().Trim()) }
+            }
+        }
+
+        $s = $Item.ToString()
+        if ($null -ne $s) {
+            $t = $s.Trim()
+            if ($t.Length -gt 0) { return $t }
+        }
+        return $null
+    }
+
+    function _Flatten-PathInputs {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([object[]]$Items)
+
+        $acc = New-Object System.Collections.Generic.List[string]
+        if (-not $Items) { return @() }
+
+        foreach ($it in $Items) {
+            if ($null -eq $it) { continue }
+
+            if ($it -is [string]) {
+                $val = _Select-PathLikeValue $it
+                if ($val) { [void]$acc.Add($val) }
+                continue
+            }
+
+            if ($it -is [System.Collections.IEnumerable]) {
+                if ($it -is [System.Collections.IDictionary]) {
+                    $val = _Select-PathLikeValue $it
+                    if ($val) { [void]$acc.Add($val) }
+                }
+                else {
+                    $nested = @()
+                    foreach ($n in $it) { $nested += ,$n }
+                    $flatNested = _Flatten-PathInputs $nested
+                    foreach ($s in $flatNested) { [void]$acc.Add($s) }
+                }
+                continue
+            }
+
+            $v = _Select-PathLikeValue $it
+            if ($v) { [void]$acc.Add($v) }
+        }
+
+        if ($acc.Count -eq 0) { return @() }
+        return $acc.ToArray()
+    }
+
+    function _Validate-Segments {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([string[]]$Segments)
+
+        $bad = [System.IO.Path]::GetInvalidPathChars()
+        foreach ($seg in $Segments) {
+            if ([string]::IsNullOrWhiteSpace($seg)) { throw "Encountered an empty path segment." }
+            foreach ($ch in $bad) {
+                if ($seg.IndexOf($ch) -ge 0) {
+                    throw ("Invalid character '{0}' found in segment '{1}'." -f $ch, $seg)
+                }
+            }
+        }
+    }
+
+    # --- Normalize & Combine --------------------------------------------------------------------
+
+    $segments = _Flatten-PathInputs $Paths
+    if (-not $segments -or $segments.Count -eq 0) {
+        throw "Paths must contain at least one resolvable segment."
+    }
+
+    _Validate-Segments $segments
+
+    # Last rooted wins: if a later segment is rooted, drop everything before it.
+    $lastRooted = -1
+    for ($i = 0; $i -lt $segments.Count; $i++) {
+        if ([System.IO.Path]::IsPathRooted($segments[$i])) { $lastRooted = $i }
+    }
+    if ($lastRooted -ge 0) {
+        $segments = $segments[$lastRooted..($segments.Count - 1)]
+    }
+
+    # Iteratively combine (avoids Combine(string[]) quirkiness across runtimes).
+    $current = $segments[0]
+    for ($i = 1; $i -lt $segments.Count; $i++) {
+        $current = [System.IO.Path]::Combine($current, $segments[$i])
+    }
+
+    if ([string]::IsNullOrWhiteSpace($current)) {
+        throw "The combined path is empty after normalization."
+    }
+
+    # Return the combined (possibly relative) path — no resolution to absolute.
+    return $current
+}
+
+
+function New-Directory {
+<#
+.SYNOPSIS
+    Combine flexible path inputs and ensure the directory exists.
+
+.DESCRIPTION
+    Accepts heterogeneous inputs in -Paths (strings, nested arrays, DirectoryInfo/FileInfo,
+    hashtables/objects with path-like members), flattens and sanitizes them, and then
+    iteratively combines segments (cross-version safe). Creates the directory if missing
+    and returns the absolute directory path. Idempotent and cross-platform.
+
+.PARAMETER Paths
+    One or more items representing path segments. Supports:
+      - String(s) or nested arrays
+      - DirectoryInfo/FileInfo (uses .FullName)
+      - PSCustomObject/Hashtable with one of: FullName, DirectoryName, Path
+
+.EXAMPLE
+    $ne = New-Directory -Paths @("$gitTopLevelDirectory","$artifactsFolderName",$deploymentInfo.Branch.PathSegmentsSanitized)
+    # Produces: <top>/artifacts/feature/stabilize (OS-specific separators), creates if missing.
+
+.NOTES
+    Compatibility: Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
+    Logging: Only announces creation via Write-Host when newly created.
+#>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]] $Paths
+    )
+
+    # Helper: extract a path-like string from a single element.
+    function _Select-PathLikeValue {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([object] $Item)
+
+        if ($null -eq $Item) { return $null }
+
+        if ($Item -is [string]) {
+            $t = $Item.Trim()
+            if ($t.Length -gt 0) { return $t } else { return $null }
+        }
+
+        if ($Item -is [System.IO.FileSystemInfo]) {
+            return $Item.FullName
+        }
+
+        if ($Item -is [System.Collections.IDictionary]) {
+            foreach ($k in @('FullName','DirectoryName','Path')) {
+                foreach ($key in $Item.Keys) {
+                    if ($key -is [string] -and $key.Equals($k, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $v = $Item[$key]
+                        if ($null -ne $v) { return ($v.ToString().Trim()) }
+                    }
+                }
+            }
+            $vals = @($Item.Values)
+            if ($vals.Count -eq 1 -and $null -ne $vals[0]) { return ($vals[0].ToString().Trim()) }
+            return $null
+        }
+
+        $type = $Item.GetType()
+        foreach ($m in @('FullName','DirectoryName','Path')) {
+            $prop = $type.GetProperty($m)
+            if ($null -ne $prop) {
+                $val = $prop.GetValue($Item, $null)
+                if ($null -ne $val) { return ($val.ToString().Trim()) }
+            }
+        }
+
+        $s = $Item.ToString()
+        if ($null -ne $s) {
+            $t = $s.Trim()
+            if ($t.Length -gt 0) { return $t }
+        }
+        return $null
+    }
+
+    # Helper: recursively flatten arbitrary/nested inputs into a list of non-empty strings.
+    function _Flatten-PathInputs {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([object[]] $Items)
+
+        $acc = New-Object System.Collections.Generic.List[string]
+        if (-not $Items) { return @() }
+
+        foreach ($it in $Items) {
+            if ($null -eq $it) { continue }
+
+            if ($it -is [string]) {
+                $val = _Select-PathLikeValue $it
+                if ($val) { [void] $acc.Add($val) }
+                continue
+            }
+
+            if ($it -is [System.Collections.IEnumerable]) {
+                if ($it -is [System.Collections.IDictionary]) {
+                    $val = _Select-PathLikeValue $it
+                    if ($val) { [void] $acc.Add($val) }
+                }
+                else {
+                    $nested = @()
+                    foreach ($n in $it) { $nested += ,$n }
+                    $flatNested = _Flatten-PathInputs $nested
+                    foreach ($s in $flatNested) { [void] $acc.Add($s) }
+                }
+                continue
+            }
+
+            $v = _Select-PathLikeValue $it
+            if ($v) { [void] $acc.Add($v) }
+        }
+
+        if ($acc.Count -eq 0) { return @() }
+        return $acc.ToArray()
+    }
+
+    # Helper: basic segment sanity (invalid path chars).
+    function _Validate-Segments {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([string[]] $Segments)
+
+        $bad = [System.IO.Path]::GetInvalidPathChars()
+        foreach ($seg in $Segments) {
+            if ([string]::IsNullOrWhiteSpace($seg)) { throw "Encountered an empty path segment." }
+            foreach ($ch in $bad) {
+                if ($seg.IndexOf($ch) -ge 0) {
+                    throw ("Invalid character '{0}' found in segment '{1}'." -f $ch, $seg)
+                }
+            }
+        }
+    }
+
+    # Normalize and force an array (prevents scalar-string quirks).
+    [string[]] $segments = @(_Flatten-PathInputs -Items $Paths)
+    if (-not $segments -or $segments.Length -eq 0) {
+        throw "Paths must contain at least one resolvable segment."
+    }
+
+    _Validate-Segments -Segments $segments
+
+    # Rooted policy: last rooted wins (mirrors typical Combine semantics).
+    $lastRooted = -1
+    for ($i = 0; $i -lt $segments.Length; $i++) {
+        if ([System.IO.Path]::IsPathRooted($segments[$i])) { $lastRooted = $i }
+    }
+    if ($lastRooted -ge 0) {
+        # This slice stays an array; safe for single-element ranges as well.
+        $segments = $segments[$lastRooted..($segments.Length - 1)]
+    }
+
+    # Cross-version safe: combine without indexing (avoids $segments[0] pitfalls completely).
+    $current = $null
+    foreach ($seg in $segments) {
+        if ($null -eq $current) {
+            $current = $seg
+            continue
+        }
+        # External reviewer note: Combine honors rooted child by discarding the left side.
+        $current = [System.IO.Path]::Combine($current, $seg)
+    }
+    $combined = $current
+
+    if ([string]::IsNullOrWhiteSpace($combined)) {
+        throw "The combined path is empty after normalization."
+    }
+
+    $fullPath = [System.IO.Path]::GetFullPath($combined)
+
+    # Sanity: fail if a file exists at the target.
+    if ([System.IO.File]::Exists($fullPath)) {
+        throw ("A file already exists at '{0}'; cannot create a directory at this path." -f $fullPath)
+    }
+
+    # Idempotent creation; announce only if newly created.
+    $existed = [System.IO.Directory]::Exists($fullPath)
+    try { [System.IO.Directory]::CreateDirectory($fullPath) | Out-Null }
+    catch { throw ("Failed to create or access directory '{0}': {1}" -f $fullPath, $_) }
+
+    if (-not $existed) {
+        Write-Host ("Created directory: {0}" -f $fullPath)
+    }
+
+    $fullPath
+}
+
 function Find-TreeContent {
 <#
 .SYNOPSIS

@@ -88,7 +88,6 @@ FunctionsToExport = @(
 
     # ...Execution.ps1
     'Invoke-Exec',
-    'Invoke-Exec2',
 
     # ...Git.ps1
     'Get-GitTopLevelDirectory',

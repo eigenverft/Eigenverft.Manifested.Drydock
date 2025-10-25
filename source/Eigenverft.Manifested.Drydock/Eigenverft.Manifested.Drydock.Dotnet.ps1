@@ -600,6 +600,7 @@ function Unregister-LocalNuGetDotNetPackageSource {
         Write-Host "NuGet source '$SourceName' not found; nothing to do." -ForegroundColor Yellow
     }
 }
+
 function New-DotnetVulnerabilitiesReport {
 <#
 .SYNOPSIS
@@ -731,7 +732,7 @@ New-DotnetVulnerabilitiesReport -jsonInput $json -OutputFile 'reports/vuln.md' -
                 $p = _TryFromJson (($s -split "(`r`n|`n|`r)") -join "`n")
                 if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
                 throw "Failed to parse JSON input. Provide a complete JSON document."
-            } elseif ($e -is [System.Collections.IDictionary] -or $e.PSObject -ne $null) {
+            } elseif ($e -is [System.Collections.IDictionary] -or $null -ne $e.PSObject) {
                 [void]$docs.Add($e); return $docs.ToArray()
             }
         }
@@ -758,7 +759,7 @@ New-DotnetVulnerabilitiesReport -jsonInput $json -OutputFile 'reports/vuln.md' -
             if ($x -is [string]) {
                 $p = _TryFromJson (_UnwrapQuotes (_StripBom ([string]$x)))
                 if ($null -ne $p) { [void]$docs.Add($p) }
-            } elseif ($x -is [System.Collections.IDictionary] -or $x.PSObject -ne $null) {
+            } elseif ($x -is [System.Collections.IDictionary] -or $null -ne $x.PSObject) {
                 [void]$docs.Add($x)
             }
         }
@@ -1099,7 +1100,7 @@ ASCII-only. Idempotent. No ternary. No automatic/reserved vars used.
                 $p = _TryFromJson (($s -split "(`r`n|`n|`r)") -join "`n")
                 if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
                 throw "Failed to parse JSON input. Provide a complete JSON document."
-            } elseif ($elem -is [System.Collections.IDictionary] -or $elem.PSObject -ne $null) {
+            } elseif ($elem -is [System.Collections.IDictionary] -or $null -ne $elem.PSObject) {
                 [void]$docs.Add($elem); return $docs.ToArray()
             }
         }
@@ -1123,7 +1124,7 @@ ASCII-only. Idempotent. No ternary. No automatic/reserved vars used.
             if ($x -is [string]) {
                 $p = _TryFromJson (_UnwrapQuotes (_StripBom ([string]$x)))
                 if ($null -ne $p) { [void]$docs.Add($p) }
-            } elseif ($x -is [System.Collections.IDictionary] -or $x.PSObject -ne $null) {
+            } elseif ($x -is [System.Collections.IDictionary] -or $null -ne $x.PSObject) {
                 [void]$docs.Add($x)
             }
         }
@@ -1472,7 +1473,7 @@ New-DotnetOutdatedReport -jsonInput $json -OutputFile 'reports/outdated.md' -Out
                 $p = _TryFromJson (($s -split "(`r`n|`n|`r)") -join "`n")
                 if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
                 throw "Failed to parse JSON input. Provide a complete JSON document."
-            } elseif ($e -is [System.Collections.IDictionary] -or $e.PSObject -ne $null) {
+            } elseif ($e -is [System.Collections.IDictionary] -or $null -ne $e.PSObject) {
                 [void]$docs.Add($e); return $docs.ToArray()
             }
         }
@@ -1499,7 +1500,7 @@ New-DotnetOutdatedReport -jsonInput $json -OutputFile 'reports/outdated.md' -Out
             if ($x -is [string]) {
                 $p = _TryFromJson (_UnwrapQuotes (_StripBom ([string]$x)))
                 if ($null -ne $p) { [void]$docs.Add($p) }
-            } elseif ($x -is [System.Collections.IDictionary] -or $x.PSObject -ne $null) {
+            } elseif ($x -is [System.Collections.IDictionary] -or $null -ne $x.PSObject) {
                 [void]$docs.Add($x)
             }
         }
@@ -1845,7 +1846,7 @@ New-DotnetBillOfMaterialsReport -jsonInput $json -OutputFile 'reports/bom.md' -O
                 $p = _TryFromJson (($s -split "(`r`n|`n|`r)") -join "`n")
                 if ($null -ne $p) { [void]$docs.Add($p); return $docs.ToArray() }
                 throw "Failed to parse JSON input. Provide a complete JSON document."
-            } elseif ($e -is [System.Collections.IDictionary] -or $e.PSObject -ne $null) {
+            } elseif ($e -is [System.Collections.IDictionary] -or $null -ne $e.PSObject) {
                 [void]$docs.Add($e); return $docs.ToArray()
             }
         }
@@ -1872,7 +1873,7 @@ New-DotnetBillOfMaterialsReport -jsonInput $json -OutputFile 'reports/bom.md' -O
             if ($x -is [string]) {
                 $p = _TryFromJson (_UnwrapQuotes (_StripBom ([string]$x)))
                 if ($null -ne $p) { [void]$docs.Add($p) }
-            } elseif ($x -is [System.Collections.IDictionary] -or $x.PSObject -ne $null) {
+            } elseif ($x -is [System.Collections.IDictionary] -or $null -ne $x.PSObject) {
                 [void]$docs.Add($x)
             }
         }

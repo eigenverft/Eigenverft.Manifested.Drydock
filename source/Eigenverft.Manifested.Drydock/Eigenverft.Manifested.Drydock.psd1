@@ -30,7 +30,7 @@ CompanyName = ''
 Copyright = 'Copyright (c) 2025 Eigenverft'
 
 # Description of the functionality provided by this module
-Description = 'PowerShell helper functions for the Eigenverft Manifested Drydock, optimized for lightning-fast iteration and reliable local + CI/CD workflows. Expect frequent releases—auto-versioning is built in. Tasks are parity-driven: the same commands run locally and in CI/CD, so local builds remain fully functional even if the pipeline is down.'
+Description = 'PowerShell helper functions for the Eigenverft Manifested Drydock, optimized for lightning-fast iteration and reliable local + CI/CD workflows. Expect frequent releases—auto-versioning is built in. The same commands run locally and in CI/CD, so local builds remain fully functional. See https://github.com/eigenverft/Eigenverft.Manifested.Drydock/blob/main/.github/workflows/cicd.ps1 for an example CI/CD pipeline this module in GitHub Actions.'
 
 # Minimum version of the PowerShell engine required by this module
 PowerShellVersion = '5.1'

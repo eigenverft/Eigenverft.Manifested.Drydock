@@ -82,6 +82,7 @@ FunctionsToExport = @(
     'New-DotnetVulnerabilitiesReport',
     'New-DotnetDeprecatedReport',
     'New-DotnetOutdatedReport',
+    'New-ThirdPartyNotice',
 
     # ...Execution.ps1
     'Invoke-Exec',

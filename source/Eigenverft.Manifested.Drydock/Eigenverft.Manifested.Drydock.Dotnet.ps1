@@ -2099,11 +2099,10 @@ Uses custom input and output paths.
 .EXAMPLE
 # Idempotent run. When there is no content change, nothing is rewritten.
 New-ThirdPartyNotice
-# Write-Host: No changes: 'THIRD-PARTY-NOTICES.txt' is already up to date.
+# Logs: [YYYY-MM-DD HH:MM:SS:fff INFO] [New-ThirdPartyNotice.ps1] [New-ThirdPartyNotice] No changes: 'THIRD-PARTY-NOTICES.txt' is already up to date.
 
 .NOTES
 - Compatible with Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
-- No external tools are required at execution time; this only consumes the JSON file.
 - Minimal Write-Host is used for key actions only (Created/Updated/No changes).
 #>
     [CmdletBinding()]
@@ -2117,9 +2116,34 @@ New-ThirdPartyNotice
         [string] $OutputPath = 'THIRD-PARTY-NOTICES.txt'
     )
 
-    # Inline helpers (local scope, non-exported, no pipeline output).
+    # Logging context (static strings; no reserved vars used).
+    $fileContext = 'New-ThirdPartyNotice.ps1'
+    $funcContext = 'New-ThirdPartyNotice'
+
+    # ----- Inline helpers (local scope, quiet, StrictMode-safe) -----
+
+    function _Format-LogLine {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [ValidateSet('INFO','WARN','ERROR')]
+            [string] $Level = 'INFO',
+            [ValidateNotNullOrEmpty()]
+            [string] $FileName,
+            [ValidateNotNullOrEmpty()]
+            [string] $FunctionName,
+            [ValidateNotNull()]
+            [string] $Message
+        )
+        # Build requested format: [yyyy-MM-dd HH:mm:ss:fff LVL] [FILE] [FUNCTION] message
+        $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss:fff'
+        $prefix = ('[{0} {1}]' -f $timestamp, $Level)
+        $src    = ('[{0}]' -f $FileName)
+        $fn     = ('[{0}]' -f $FunctionName)
+        return ('{0} {1} {2} {3}' -f $prefix, $src, $fn, $Message)
+    }
+
     function _Has-Prop {
-            [Diagnostics.CodeAnalysis.SuppressMessage('PSUseApprovedVerbs','')]
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param(
             [object] $Obj,
             [string] $Name
@@ -2130,9 +2154,8 @@ New-ThirdPartyNotice
         return ($props.Name -contains $Name)
     }
 
-    
     function _Get-Prop {
-        [Diagnostics.CodeAnalysis.SuppressMessage('PSUseApprovedVerbs','')]
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param(
             [object] $Obj,
             [string] $Name,
@@ -2148,9 +2171,8 @@ New-ThirdPartyNotice
         return $Default
     }
 
-    
     function _Normalize-NewLines {
-        [Diagnostics.CodeAnalysis.SuppressMessage('PSUseApprovedVerbs','')]
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param([string] $Text)
         if ($null -eq $Text) { return '' }
         $n = $Text -replace "`r`n", "`n"
@@ -2158,7 +2180,7 @@ New-ThirdPartyNotice
         return $n
     }
 
-    # Validate input file presence (fail fast, actionable).
+    # Validate input file (fail fast).
     if (-not (Test-Path -LiteralPath $LicenseJsonPath -PathType Leaf)) {
         throw "License JSON file not found at '$LicenseJsonPath'. Generate it first (e.g., with 'dotnet nuget-license') and try again."
     }
@@ -2171,7 +2193,7 @@ New-ThirdPartyNotice
         throw "Invalid JSON in '$LicenseJsonPath'. Ensure it contains valid license data."
     }
 
-    # Support either array root or an object with a 'Packages' property.
+    # Allow array root or object.Packages.
     $packages = @()
     if (_Has-Prop -Obj $licenses -Name 'Packages') {
         $packages = @($licenses.Packages)
@@ -2179,10 +2201,10 @@ New-ThirdPartyNotice
         $packages = @($licenses)
     }
 
-    # Stable ordering for deterministic, idempotent output.
+    # Deterministic order for idempotent output.
     $packages = $packages | Sort-Object -Property PackageId, PackageVersion
 
-    # Header (ASCII only).
+    # Header (ASCII).
     $lines = @()
     $lines += '============================================'
     $lines += '          THIRD-PARTY LICENSE NOTICES       '
@@ -2191,11 +2213,10 @@ New-ThirdPartyNotice
     $lines += 'This project includes third-party libraries under open-source licenses.'
     $lines += ''
 
-    # Collect validation errors while scanning, then fail once.
+    # Collect validation errors first, then fail once.
     $errorsFound = @()
 
     foreach ($pkg in $packages) {
-        # Gather possible validation errors if present.
         $validationList = @()
         if (_Has-Prop -Obj $pkg -Name 'ValidationErrors') {
             $ve = $pkg.ValidationErrors
@@ -2206,12 +2227,12 @@ New-ThirdPartyNotice
             $pkgId  = _Get-Prop -Obj $pkg -Name 'PackageId' -Default '<unknown>'
             $pkgVer = _Get-Prop -Obj $pkg -Name 'PackageVersion' -Default '<unknown>'
             foreach ($msg in $validationList) {
-                $errorsFound += ("[{0} {1}] {2}" -f $pkgId, $pkgVer, $msg)
+                $errorsFound += ('[{0} {1}] {2}' -f $pkgId, $pkgVer, $msg)
             }
             continue
         }
 
-        # Safely extract optional fields.
+        # Safe field extraction.
         $name    = _Get-Prop -Obj $pkg -Name 'PackageId' -Default ''
         $version = _Get-Prop -Obj $pkg -Name 'PackageVersion' -Default ''
         $license = _Get-Prop -Obj $pkg -Name 'License' -Default ''
@@ -2219,7 +2240,7 @@ New-ThirdPartyNotice
         $authors = _Get-Prop -Obj $pkg -Name 'Authors' -Default ''
         $projUrl = _Get-Prop -Obj $pkg -Name 'PackageProjectUrl' -Default ''
 
-        # ASCII-only, concise section per package.
+        # Section.
         $lines += '--------------------------------------------'
         if ($name -ne '') {
             if ($version -ne '') {
@@ -2241,10 +2262,9 @@ New-ThirdPartyNotice
         throw $msg
     }
 
-    # Compose final content (platform-neutral newline normalization used for comparison only).
+    # Compose final text and compare (idempotent).
     $newContent = ($lines -join [Environment]::NewLine)
 
-    # Idempotent write: write only when content differs.
     $existed = Test-Path -LiteralPath $OutputPath -PathType Leaf
     $needsWrite = $true
     if ($existed) {
@@ -2255,7 +2275,6 @@ New-ThirdPartyNotice
     }
 
     if ($needsWrite) {
-        # Ensure parent directory exists when a directory is specified.
         $parent = Split-Path -Path $OutputPath -Parent
         if ($parent -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
             New-Item -ItemType Directory -Path $parent | Out-Null
@@ -2263,11 +2282,11 @@ New-ThirdPartyNotice
 
         Set-Content -LiteralPath $OutputPath -Value $newContent -Encoding utf8
         if ($existed) {
-            Write-Host ("Updated: {0}" -f $OutputPath)
+            Write-Host (_Format-LogLine -Level 'INFO' -FileName $fileContext -FunctionName $funcContext -Message ("Updated: {0}" -f $OutputPath))
         } else {
-            Write-Host ("Created: {0}" -f $OutputPath)
+            Write-Host (_Format-LogLine -Level 'INFO' -FileName $fileContext -FunctionName $funcContext -Message ("Created: {0}" -f $OutputPath))
         }
     } else {
-        Write-Host ("No changes: '{0}' is already up to date." -f $OutputPath)
+        Write-Host (_Format-LogLine -Level 'INFO' -FileName $fileContext -FunctionName $funcContext -Message ("No changes: '{0}' is already up to date." -f $OutputPath))
     }
 }

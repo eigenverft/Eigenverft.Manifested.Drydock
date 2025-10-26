@@ -2133,9 +2133,7 @@ New-ThirdPartyNotice
             [string]$MinLevel
         )
         # Resolve MinLevel: explicit > global > default.
-        if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
-            $MinLevel = if ($Global:ConsoleLogMinLevel) { $Global:ConsoleLogMinLevel } else { 'INF' }
-        }
+        if (-not $PSBoundParameters.ContainsKey('MinLevel')) { $MinLevel = if ($Global:ConsoleLogMinLevel) { $Global:ConsoleLogMinLevel } else { 'INF' } }
         $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
         $lvl = $Level.ToUpperInvariant() ; $min = $MinLevel.ToUpperInvariant() ; $sev = $sevMap[$lvl] ; $gate= $sevMap[$min]
         # Auto-escalate requested errors to meet strict MinLevel (e.g., MinLevel=FTL)
@@ -2144,43 +2142,19 @@ New-ThirdPartyNotice
         if ($sev -lt $gate) { return }
         # Timestamp
         $ts = ([DateTime]::UtcNow).ToString('yyyy-MM-dd HH:mm:ss:fff')
-
         # Resolve caller: prefer "caller of org func" (grandparent of helper)
         $stack      = Get-PSCallStack
         $helperName = $MyInvocation.MyCommand.Name
         $orgFunc    = $null
         $caller     = $null
-
         if ($stack) {
-            # Find first frame that isn't the helper -> that's the org function
-            $orgIdx = -1
-            for ($i = 0; $i -lt $stack.Count; $i++) {
-                if ($stack[$i].FunctionName -ne $helperName) {
-                    $orgFunc = $stack[$i]
-                    $orgIdx  = $i
-                    break
-                }
-            }
-
-            if ($orgIdx -ge 0) {
-                $callerIdx = $orgIdx + 1  # grandparent: the function that called the org function
-                if ($stack.Count -gt $callerIdx) {
-                    $caller = $stack[$callerIdx]
-                } else {
-                    # Fallback to org function if no grandparent present
-                    $caller = $orgFunc
-                }
-            }
+            $orgIdx = -1;
+            for ($i = 0; $i -lt $stack.Count; $i++) { if ($stack[$i].FunctionName -ne $helperName) { $orgFunc = $stack[$i]; $orgIdx = $i; break; }}
+            if ($orgIdx -ge 0) { $callerIdx = $orgIdx + 1; if ($stack.Count -gt $callerIdx) { $caller = $stack[$callerIdx]; } else { $caller = $orgFunc; } }
         }
-
-        if (-not $caller) {
-            # Final fallback when stack is shallow
-            $caller = [pscustomobject]@{ ScriptName = $PSCommandPath; FunctionName = '<scriptblock>' }
-        }
-
+        if (-not $caller) { $caller = [pscustomobject]@{ ScriptName = $PSCommandPath; FunctionName = '<scriptblock>' }; }
         $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'console' }
         $func = if ($caller.FunctionName) { $caller.FunctionName } else { '<scriptblock>' }
-
         # Keep original casing (no .ToLower()) to match definition casing
         $line = "[{0} {1}] [{2}] [{3}] {4}" -f $ts, $lvl, $file, $func, $Message
         # Emit: Output for non-errors; Error for ERR/FTL. Termination via $ErrorActionPreference.

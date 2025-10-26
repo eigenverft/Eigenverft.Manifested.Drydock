@@ -2144,9 +2144,15 @@ New-ThirdPartyNotice
         if ($sev -lt $gate) { return }
         # Format line
         $now = [DateTime]::UtcNow ; $ts  = $now.ToString('yyyy-MM-dd HH:mm:ss:fff')
-        # Resolve caller (external reviewer perspective)
-        $caller = Get-PSCallStack | Where-Object { $_.FunctionName -ne $MyInvocation.MyCommand.Name } | Select-Object -First 1
-        if (-not $caller) { $caller = [pscustomobject]@{ ScriptName=$PSCommandPath; FunctionName='<scriptblock>' } }
+        # Resolve caller robustly:
+        # - Take the first frame that is NOT this helper (immediate caller),
+        #   which is typically index 1. Avoids pipeline/Where-Object pitfalls.
+        $stack  = Get-PSCallStack ;$caller = $null
+        if ($stack) {
+            foreach ($frame in $stack) { if ($frame.FunctionName -ne $MyInvocation.MyCommand.Name) { $caller = $frame ; break  } }
+            if (-not $caller) { <# Fallback when only this helper is on the stack #> if ($stack.Count -gt 0) { $caller = $stack[0] } }
+        }
+        if (-not $caller) { $caller = [pscustomobject]@{ ScriptName = $PSCommandPath; FunctionName = '<scriptblock>' } }
         $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'console' }
         $func = if ($caller.FunctionName) { $caller.FunctionName } else { '<scriptblock>' }
         $line = "[{0} {1}] [{2}] [{3}] {4}" -f $ts, $lvl, $file, $func.ToLower(), $Message

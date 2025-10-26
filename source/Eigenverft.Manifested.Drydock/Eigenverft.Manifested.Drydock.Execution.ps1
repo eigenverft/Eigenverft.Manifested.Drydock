@@ -109,7 +109,7 @@ $lines = Invoke-Exec2 -Executable "git" -Arguments @("status","--porcelain") -Re
     if ($Arguments -and $Arguments.Count -gt 0) { $finalArgs += $Arguments }
     if ($CommonArguments -and $CommonArguments.Count -gt 0) { $finalArgs += $CommonArguments }
 
-    Write-Host "===> Before Command (Executable: $Executable, Args Count: $($finalArgs.Count)) ==============================================" -ForegroundColor DarkCyan
+    Write-Host "===> Before Command (Executable: $Executable, Args Count: $($finalArgs.Count)) ==============================================" -ForegroundColor Yellow
     Write-Host "===> Full Command: $Executable $($finalArgs -join ' ')" -ForegroundColor Cyan
 
     if ($MeasureTime) { $stopwatch = [System.Diagnostics.Stopwatch]::StartNew() }

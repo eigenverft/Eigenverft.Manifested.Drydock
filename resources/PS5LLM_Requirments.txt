@@ -26,9 +26,62 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
    - USE try/catch only where it adds value; rethrow with concise, actionable messages.
 
 8) OUTPUT & LOGGING
-   - EMIT Write-Host ONLY for key actions (created X, added/removed Y, enabled/disabled Z, updated trust). Keep minimal and consistent.
-   - DO NOT use Write-Output, Write-Error, Write-Verbose, or Write-Information.
-   - Format the Write function implement a inline helper function for it suggested format is [2025-10-26 04:18:38:288 LVL] [THISFILE.ps1] [FUNCTIONNAME] 
+   - EMIT Write- or _Write-StandardMessage ONLY for key actions (created X, added/removed Y, enabled/disabled Z, updated trust). Keep minimal and consistent.
+   - Format the Write function implement a inline helper function for it suggested format.
+      function _Write-StandardMessage {
+         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+         # This function has exceptions from the rest of any ruleset.
+         [CmdletBinding()]
+         param(
+            [Parameter(Mandatory=$true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Message,
+            [Parameter(Mandatory=$false)]
+            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
+            [string]$Level = 'INF',
+            [Parameter(Mandatory=$false)]
+            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
+            [string]$MinLevel
+         )
+         # Resolve MinLevel: explicit > global > default.
+         if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
+            $MinLevel = if ($Global:ConsoleLogMinLevel) { $Global:ConsoleLogMinLevel } else { 'INF' }
+         }
+         $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
+         $lvl = $Level.ToUpperInvariant() ; $min = $MinLevel.ToUpperInvariant() ; $sev = $sevMap[$lvl] ; $gate= $sevMap[$min]
+         # Auto-escalate requested errors to meet strict MinLevel (e.g., MinLevel=FTL)
+         if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) { $lvl = $min ; $sev = $gate}
+         # Drop below gate
+         if ($sev -lt $gate) { return }
+         # Format line
+         $now = [DateTime]::UtcNow ; $ts  = $now.ToString('yyyy-MM-dd HH:mm:ss:fff')
+         # Resolve caller (external reviewer perspective)
+         $caller = Get-PSCallStack | Where-Object { $_.FunctionName -ne $MyInvocation.MyCommand.Name } | Select-Object -First 1
+         if (-not $caller) { $caller = [pscustomobject]@{ ScriptName=$PSCommandPath; FunctionName='<scriptblock>' } }
+         $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'console' }
+         $func = if ($caller.FunctionName) { $caller.FunctionName } else { '<scriptblock>' }
+         $line = "[{0} {1}] [{2}] [{3}] {4}" -f $ts, $lvl, $file, $func.ToLower(), $Message
+         # Emit: Output for non-errors; Error for ERR/FTL. Termination via $ErrorActionPreference.
+         if ($sev -ge 4) {
+            if ($ErrorActionPreference -eq 'Stop') {
+                  Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified -ErrorAction Stop
+            } else {
+                  Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified
+            }
+         } else {
+            Write-Information -MessageData $line -InformationAction Continue
+         }
+      }
+
+   Examples:
+   _Write-StandardMessage -Message "Loaded Replace-FilePlaceholders function."
+
+   try {
+      throw "Test error"
+   }
+   catch {
+      _Write-StandardMessage -Message "$($_.PSMessageDetails)" -Level ERR  # Format $_. output properly  
+   }
 
 9) IDEMPOTENCY
    - FUNCTIONS MUST be idempotent: repeated runs converge to the same state without errors or drift.
@@ -67,4 +120,3 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
 
 DEFINITE: A function is "DONE" only if it meets ALL requirements above.
 
-New-ThirdPartyNotice

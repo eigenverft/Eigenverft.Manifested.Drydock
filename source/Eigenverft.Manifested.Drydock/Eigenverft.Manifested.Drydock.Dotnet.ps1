@@ -2099,11 +2099,11 @@ Uses custom input and output paths.
 .EXAMPLE
 # Idempotent run. When there is no content change, nothing is rewritten.
 New-ThirdPartyNotice
-# Logs: [YYYY-MM-DD HH:MM:SS:fff INFO] [New-ThirdPartyNotice.ps1] [New-ThirdPartyNotice] No changes: 'THIRD-PARTY-NOTICES.txt' is already up to date.
+# Logs: [YYYY-MM-DD HH:MM:SS:fff INF] [New-ThirdPartyNotice.ps1] [New-ThirdPartyNotice] No changes: 'THIRD-PARTY-NOTICES.txt' is already up to date.
 
 .NOTES
 - Compatible with Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
-- Minimal Write-Host is used for key actions only (Created/Updated/No changes).
+- Logging uses the inline exception helper _Write-StandardMessage (TRC/DBG/INF/WRN/ERR/FTL).
 #>
     [CmdletBinding()]
     param(
@@ -2116,30 +2116,50 @@ New-ThirdPartyNotice
         [string] $OutputPath = 'THIRD-PARTY-NOTICES.txt'
     )
 
-    # Logging context (static strings; no reserved vars used).
-    $fileContext = 'New-ThirdPartyNotice.ps1'
-    $funcContext = 'New-ThirdPartyNotice'
-
-    # ----- Inline helpers (local scope, quiet, StrictMode-safe) -----
-
-    function _Format-LogLine {
+    # ---------------- Inline helpers (local scope) ----------------
+    function _Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        # This function has exceptions from the rest of any ruleset.
+        [CmdletBinding()]
         param(
-            [ValidateSet('INFO','WARN','ERROR')]
-            [string] $Level = 'INFO',
+            [Parameter(Mandatory=$true)]
             [ValidateNotNullOrEmpty()]
-            [string] $FileName,
-            [ValidateNotNullOrEmpty()]
-            [string] $FunctionName,
-            [ValidateNotNull()]
-            [string] $Message
+            [string]$Message,
+            [Parameter(Mandatory=$false)]
+            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
+            [string]$Level = 'INF',
+            [Parameter(Mandatory=$false)]
+            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
+            [string]$MinLevel
         )
-        # Build requested format: [yyyy-MM-dd HH:mm:ss:fff LVL] [FILE] [FUNCTION] message
-        $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss:fff'
-        $prefix = ('[{0} {1}]' -f $timestamp, $Level)
-        $src    = ('[{0}]' -f $FileName)
-        $fn     = ('[{0}]' -f $FunctionName)
-        return ('{0} {1} {2} {3}' -f $prefix, $src, $fn, $Message)
+        # Resolve MinLevel: explicit > global > default.
+        if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
+            $MinLevel = if ($Global:ConsoleLogMinLevel) { $Global:ConsoleLogMinLevel } else { 'INF' }
+        }
+        $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
+        $lvl = $Level.ToUpperInvariant() ; $min = $MinLevel.ToUpperInvariant() ; $sev = $sevMap[$lvl] ; $gate= $sevMap[$min]
+        # Auto-escalate requested errors to meet strict MinLevel (e.g., MinLevel=FTL)
+        if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) { $lvl = $min ; $sev = $gate}
+        # Drop below gate
+        if ($sev -lt $gate) { return }
+        # Format line
+        $now = [DateTime]::UtcNow ; $ts  = $now.ToString('yyyy-MM-dd HH:mm:ss:fff')
+        # Resolve caller (external reviewer perspective)
+        $caller = Get-PSCallStack | Where-Object { $_.FunctionName -ne $MyInvocation.MyCommand.Name } | Select-Object -First 1
+        if (-not $caller) { $caller = [pscustomobject]@{ ScriptName=$PSCommandPath; FunctionName='<scriptblock>' } }
+        $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'console' }
+        $func = if ($caller.FunctionName) { $caller.FunctionName } else { '<scriptblock>' }
+        $line = "[{0} {1}] [{2}] [{3}] {4}" -f $ts, $lvl, $file, $func.ToLower(), $Message
+        # Emit: Output for non-errors; Error for ERR/FTL. Termination via $ErrorActionPreference.
+        if ($sev -ge 4) {
+            if ($ErrorActionPreference -eq 'Stop') {
+                Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified -ErrorAction Stop
+            } else {
+                Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified
+            }
+        } else {
+            Write-Information -MessageData $line -InformationAction Continue
+        }
     }
 
     function _Has-Prop {
@@ -2180,12 +2200,12 @@ New-ThirdPartyNotice
         return $n
     }
 
-    # Validate input file (fail fast).
+    # ---------------- Main logic (StrictMode-safe) ----------------
+
     if (-not (Test-Path -LiteralPath $LicenseJsonPath -PathType Leaf)) {
         throw "License JSON file not found at '$LicenseJsonPath'. Generate it first (e.g., with 'dotnet nuget-license') and try again."
     }
 
-    # Parse JSON safely.
     $rawJson = Get-Content -LiteralPath $LicenseJsonPath -Raw
     try {
         $licenses = ConvertFrom-Json -InputObject $rawJson
@@ -2193,7 +2213,7 @@ New-ThirdPartyNotice
         throw "Invalid JSON in '$LicenseJsonPath'. Ensure it contains valid license data."
     }
 
-    # Allow array root or object.Packages.
+    # Accept either array root or object.Packages.
     $packages = @()
     if (_Has-Prop -Obj $licenses -Name 'Packages') {
         $packages = @($licenses.Packages)
@@ -2201,7 +2221,7 @@ New-ThirdPartyNotice
         $packages = @($licenses)
     }
 
-    # Deterministic order for idempotent output.
+    # Deterministic ordering ensures idempotent output.
     $packages = $packages | Sort-Object -Property PackageId, PackageVersion
 
     # Header (ASCII).
@@ -2213,7 +2233,7 @@ New-ThirdPartyNotice
     $lines += 'This project includes third-party libraries under open-source licenses.'
     $lines += ''
 
-    # Collect validation errors first, then fail once.
+    # Collect validation errors then fail once.
     $errorsFound = @()
 
     foreach ($pkg in $packages) {
@@ -2232,7 +2252,7 @@ New-ThirdPartyNotice
             continue
         }
 
-        # Safe field extraction.
+        # Extract fields safely.
         $name    = _Get-Prop -Obj $pkg -Name 'PackageId' -Default ''
         $version = _Get-Prop -Obj $pkg -Name 'PackageVersion' -Default ''
         $license = _Get-Prop -Obj $pkg -Name 'License' -Default ''
@@ -2240,7 +2260,7 @@ New-ThirdPartyNotice
         $authors = _Get-Prop -Obj $pkg -Name 'Authors' -Default ''
         $projUrl = _Get-Prop -Obj $pkg -Name 'PackageProjectUrl' -Default ''
 
-        # Section.
+        # Section (ASCII-only).
         $lines += '--------------------------------------------'
         if ($name -ne '') {
             if ($version -ne '') {
@@ -2262,7 +2282,7 @@ New-ThirdPartyNotice
         throw $msg
     }
 
-    # Compose final text and compare (idempotent).
+    # Idempotent write (compare normalized text only).
     $newContent = ($lines -join [Environment]::NewLine)
 
     $existed = Test-Path -LiteralPath $OutputPath -PathType Leaf
@@ -2282,11 +2302,11 @@ New-ThirdPartyNotice
 
         Set-Content -LiteralPath $OutputPath -Value $newContent -Encoding utf8
         if ($existed) {
-            Write-Host (_Format-LogLine -Level 'INFO' -FileName $fileContext -FunctionName $funcContext -Message ("Updated: {0}" -f $OutputPath))
+            _Write-StandardMessage -Message ("Updated: {0}" -f $OutputPath) -Level 'INF'
         } else {
-            Write-Host (_Format-LogLine -Level 'INFO' -FileName $fileContext -FunctionName $funcContext -Message ("Created: {0}" -f $OutputPath))
+            _Write-StandardMessage -Message ("Created: {0}" -f $OutputPath) -Level 'INF'
         }
     } else {
-        Write-Host (_Format-LogLine -Level 'INFO' -FileName $fileContext -FunctionName $funcContext -Message ("No changes: '{0}' is already up to date." -f $OutputPath))
+        _Write-StandardMessage -Message ("No changes: '{0}' is already up to date." -f $OutputPath) -Level 'INF'
     }
 }

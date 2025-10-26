@@ -2142,20 +2142,47 @@ New-ThirdPartyNotice
         if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) { $lvl = $min ; $sev = $gate}
         # Drop below gate
         if ($sev -lt $gate) { return }
-        # Format line
-        $now = [DateTime]::UtcNow ; $ts  = $now.ToString('yyyy-MM-dd HH:mm:ss:fff')
-        # Resolve caller robustly:
-        # - Take the first frame that is NOT this helper (immediate caller),
-        #   which is typically index 1. Avoids pipeline/Where-Object pitfalls.
-        $stack  = Get-PSCallStack ;$caller = $null
+        # Timestamp
+        $ts = ([DateTime]::UtcNow).ToString('yyyy-MM-dd HH:mm:ss:fff')
+
+        # Resolve caller: prefer "caller of org func" (grandparent of helper)
+        $stack      = Get-PSCallStack
+        $helperName = $MyInvocation.MyCommand.Name
+        $orgFunc    = $null
+        $caller     = $null
+
         if ($stack) {
-            foreach ($frame in $stack) { if ($frame.FunctionName -ne $MyInvocation.MyCommand.Name) { $caller = $frame ; break  } }
-            if (-not $caller) { <# Fallback when only this helper is on the stack #> if ($stack.Count -gt 0) { $caller = $stack[0] } }
+            # Find first frame that isn't the helper -> that's the org function
+            $orgIdx = -1
+            for ($i = 0; $i -lt $stack.Count; $i++) {
+                if ($stack[$i].FunctionName -ne $helperName) {
+                    $orgFunc = $stack[$i]
+                    $orgIdx  = $i
+                    break
+                }
+            }
+
+            if ($orgIdx -ge 0) {
+                $callerIdx = $orgIdx + 1  # grandparent: the function that called the org function
+                if ($stack.Count -gt $callerIdx) {
+                    $caller = $stack[$callerIdx]
+                } else {
+                    # Fallback to org function if no grandparent present
+                    $caller = $orgFunc
+                }
+            }
         }
-        if (-not $caller) { $caller = [pscustomobject]@{ ScriptName = $PSCommandPath; FunctionName = '<scriptblock>' } }
+
+        if (-not $caller) {
+            # Final fallback when stack is shallow
+            $caller = [pscustomobject]@{ ScriptName = $PSCommandPath; FunctionName = '<scriptblock>' }
+        }
+
         $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'console' }
         $func = if ($caller.FunctionName) { $caller.FunctionName } else { '<scriptblock>' }
-        $line = "[{0} {1}] [{2}] [{3}] {4}" -f $ts, $lvl, $file, $func.ToLower(), $Message
+
+        # Keep original casing (no .ToLower()) to match definition casing
+        $line = "[{0} {1}] [{2}] [{3}] {4}" -f $ts, $lvl, $file, $func, $Message
         # Emit: Output for non-errors; Error for ERR/FTL. Termination via $ErrorActionPreference.
         if ($sev -ge 4) {
             if ($ErrorActionPreference -eq 'Stop') {

@@ -117,7 +117,11 @@ $lines = Invoke-Exec2 -Executable "git" -Arguments @("status","--porcelain") -Re
     if ($CaptureOutput) {
         $result = & $Executable @finalArgs
     } else {
-        & $Executable @finalArgs
+        if ($CaptureOutputDump) {
+            & $Executable @finalArgs | Out-Null
+        } else {
+            & $Executable @finalArgs
+        }
         $result = $null
     }
 
@@ -156,27 +160,21 @@ $lines = Invoke-Exec2 -Executable "git" -Arguments @("status","--porcelain") -Re
 
     # Return shaping
     if (-not $CaptureOutput) { return $null }
-        if ($CaptureOutputDump)
-        {
-            return $null
+    switch ($ReturnType.ToLowerInvariant()) {
+        'objects' {
+            if ($null -eq $result) { return @() }
+            return @($result)
         }
-        else {
-                switch ($ReturnType.ToLowerInvariant()) {
-                'objects' {
-                    if ($null -eq $result) { return @() }
-                    return @($result)
-                }
-                'strings' {
-                    if ($null -eq $result) { return @() }
-                    return @($result | ForEach-Object { [string]$_ })
-                }
-                'text' {
-                    if ($null -eq $result) { return '' }
-                    $lines = $result | ForEach-Object { [string]$_ }
-                    return ($lines -join [Environment]::NewLine)
-                }
-            }
+        'strings' {
+            if ($null -eq $result) { return @() }
+            return @($result | ForEach-Object { [string]$_ })
         }
+        'text' {
+            if ($null -eq $result) { return '' }
+            $lines = $result | ForEach-Object { [string]$_ }
+            return ($lines -join [Environment]::NewLine)
+        }
+    }
 }
 
 function Invoke-OrgExec {

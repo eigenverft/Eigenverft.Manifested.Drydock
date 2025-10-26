@@ -2071,3 +2071,203 @@ New-DotnetBillOfMaterialsReport -jsonInput $json -OutputFile 'reports/bom.md' -O
     }
 }
 
+function New-ThirdPartyNotice {
+<#
+.SYNOPSIS
+Creates or updates a THIRD-PARTY-NOTICES.txt from a NuGet license JSON.
+
+.DESCRIPTION
+Reads a JSON file produced by a license tool (e.g., 'dotnet nuget-license') and writes a
+structured THIRD-PARTY-NOTICES.txt. The function is idempotent: if the target content would
+be identical, it does not rewrite the file. If any package contains ValidationErrors, the
+function throws with a concise, actionable message.
+
+.PARAMETER LicenseJsonPath
+Path to the input JSON file containing NuGet license information.
+
+.PARAMETER OutputPath
+Path to the THIRD-PARTY-NOTICES.txt to create or update.
+
+.EXAMPLE
+New-ThirdPartyNotice -LicenseJsonPath 'licenses.json' -OutputPath 'THIRD-PARTY-NOTICES.txt'
+Creates or updates the notice file based on licenses.json.
+
+.EXAMPLE
+New-ThirdPartyNotice -LicenseJsonPath '.\artifacts\licenses.json' -OutputPath '.\THIRD-PARTY-NOTICES.txt'
+Uses custom input and output paths.
+
+.EXAMPLE
+# Idempotent run. When there is no content change, nothing is rewritten.
+New-ThirdPartyNotice
+# Write-Host: No changes: 'THIRD-PARTY-NOTICES.txt' is already up to date.
+
+.NOTES
+- Compatible with Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
+- No external tools are required at execution time; this only consumes the JSON file.
+- Minimal Write-Host is used for key actions only (Created/Updated/No changes).
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string] $LicenseJsonPath = 'licenses.json',
+
+        [Parameter(Mandatory=$false)]
+        [ValidateNotNullOrEmpty()]
+        [string] $OutputPath = 'THIRD-PARTY-NOTICES.txt'
+    )
+
+    # Inline helpers (local scope, non-exported, no pipeline output).
+    function _Has-Prop {
+            [Diagnostics.CodeAnalysis.SuppressMessage('PSUseApprovedVerbs','')]
+        param(
+            [object] $Obj,
+            [string] $Name
+        )
+        if ($null -eq $Obj) { return $false }
+        $props = $Obj.PSObject.Properties
+        if ($null -eq $props) { return $false }
+        return ($props.Name -contains $Name)
+    }
+
+    
+    function _Get-Prop {
+        [Diagnostics.CodeAnalysis.SuppressMessage('PSUseApprovedVerbs','')]
+        param(
+            [object] $Obj,
+            [string] $Name,
+            [string] $Default = ''
+        )
+        if ($null -eq $Obj) { return $Default }
+        $props = $Obj.PSObject.Properties
+        if ($null -eq $props) { return $Default }
+        if ($props.Name -contains $Name) {
+            $value = $Obj.$Name
+            if ($null -ne $value) { return $value }
+        }
+        return $Default
+    }
+
+    
+    function _Normalize-NewLines {
+        [Diagnostics.CodeAnalysis.SuppressMessage('PSUseApprovedVerbs','')]
+        param([string] $Text)
+        if ($null -eq $Text) { return '' }
+        $n = $Text -replace "`r`n", "`n"
+        $n = $n -replace "`r", "`n"
+        return $n
+    }
+
+    # Validate input file presence (fail fast, actionable).
+    if (-not (Test-Path -LiteralPath $LicenseJsonPath -PathType Leaf)) {
+        throw "License JSON file not found at '$LicenseJsonPath'. Generate it first (e.g., with 'dotnet nuget-license') and try again."
+    }
+
+    # Parse JSON safely.
+    $rawJson = Get-Content -LiteralPath $LicenseJsonPath -Raw
+    try {
+        $licenses = ConvertFrom-Json -InputObject $rawJson
+    } catch {
+        throw "Invalid JSON in '$LicenseJsonPath'. Ensure it contains valid license data."
+    }
+
+    # Support either array root or an object with a 'Packages' property.
+    $packages = @()
+    if (_Has-Prop -Obj $licenses -Name 'Packages') {
+        $packages = @($licenses.Packages)
+    } else {
+        $packages = @($licenses)
+    }
+
+    # Stable ordering for deterministic, idempotent output.
+    $packages = $packages | Sort-Object -Property PackageId, PackageVersion
+
+    # Header (ASCII only).
+    $lines = @()
+    $lines += '============================================'
+    $lines += '          THIRD-PARTY LICENSE NOTICES       '
+    $lines += '============================================'
+    $lines += ''
+    $lines += 'This project includes third-party libraries under open-source licenses.'
+    $lines += ''
+
+    # Collect validation errors while scanning, then fail once.
+    $errorsFound = @()
+
+    foreach ($pkg in $packages) {
+        # Gather possible validation errors if present.
+        $validationList = @()
+        if (_Has-Prop -Obj $pkg -Name 'ValidationErrors') {
+            $ve = $pkg.ValidationErrors
+            if ($null -ne $ve) { $validationList = @($ve) }
+        }
+
+        if ($validationList.Count -gt 0) {
+            $pkgId  = _Get-Prop -Obj $pkg -Name 'PackageId' -Default '<unknown>'
+            $pkgVer = _Get-Prop -Obj $pkg -Name 'PackageVersion' -Default '<unknown>'
+            foreach ($msg in $validationList) {
+                $errorsFound += ("[{0} {1}] {2}" -f $pkgId, $pkgVer, $msg)
+            }
+            continue
+        }
+
+        # Safely extract optional fields.
+        $name    = _Get-Prop -Obj $pkg -Name 'PackageId' -Default ''
+        $version = _Get-Prop -Obj $pkg -Name 'PackageVersion' -Default ''
+        $license = _Get-Prop -Obj $pkg -Name 'License' -Default ''
+        $url     = _Get-Prop -Obj $pkg -Name 'LicenseUrl' -Default ''
+        $authors = _Get-Prop -Obj $pkg -Name 'Authors' -Default ''
+        $projUrl = _Get-Prop -Obj $pkg -Name 'PackageProjectUrl' -Default ''
+
+        # ASCII-only, concise section per package.
+        $lines += '--------------------------------------------'
+        if ($name -ne '') {
+            if ($version -ne '') {
+                $lines += ('Package: {0} (v{1})' -f $name, $version)
+            } else {
+                $lines += ('Package: {0}' -f $name)
+            }
+        }
+        if ($license -ne '') { $lines += ('License: {0}' -f $license) }
+        if ($url -ne '')     { $lines += ('License URL: {0}' -f $url) }
+        if ($authors -ne '') { $lines += ('Authors: {0}' -f $authors) }
+        if ($projUrl -ne '') { $lines += ('Project: {0}' -f $projUrl) }
+        $lines += '--------------------------------------------'
+        $lines += ''
+    }
+
+    if ($errorsFound.Count -gt 0) {
+        $msg = 'License validation errors were detected:' + [Environment]::NewLine + ($errorsFound -join [Environment]::NewLine)
+        throw $msg
+    }
+
+    # Compose final content (platform-neutral newline normalization used for comparison only).
+    $newContent = ($lines -join [Environment]::NewLine)
+
+    # Idempotent write: write only when content differs.
+    $existed = Test-Path -LiteralPath $OutputPath -PathType Leaf
+    $needsWrite = $true
+    if ($existed) {
+        $existing = Get-Content -LiteralPath $OutputPath -Raw
+        if (_Normalize-NewLines -Text $existing -eq (_Normalize-NewLines -Text $newContent)) {
+            $needsWrite = $false
+        }
+    }
+
+    if ($needsWrite) {
+        # Ensure parent directory exists when a directory is specified.
+        $parent = Split-Path -Path $OutputPath -Parent
+        if ($parent -and -not (Test-Path -LiteralPath $parent -PathType Container)) {
+            New-Item -ItemType Directory -Path $parent | Out-Null
+        }
+
+        Set-Content -LiteralPath $OutputPath -Value $newContent -Encoding utf8
+        if ($existed) {
+            Write-Host ("Updated: {0}" -f $OutputPath)
+        } else {
+            Write-Host ("Created: {0}" -f $OutputPath)
+        }
+    } else {
+        Write-Host ("No changes: '{0}' is already up to date." -f $OutputPath)
+    }
+}

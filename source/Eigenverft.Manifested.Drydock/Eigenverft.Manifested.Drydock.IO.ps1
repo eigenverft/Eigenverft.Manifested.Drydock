@@ -411,7 +411,6 @@ function Get-Path {
     return $current
 }
 
-
 function New-Directory {
 <#
 .SYNOPSIS

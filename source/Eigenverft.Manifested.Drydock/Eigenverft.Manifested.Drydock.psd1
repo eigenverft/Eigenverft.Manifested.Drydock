@@ -73,6 +73,7 @@ FunctionsToExport = @(
 
     # ...Convert.ps1
     'Convert-FilePlaceholders',
+    'Convert-TemplateFilePlaceholders',
 
     # ...Deployments.ps1
     'Convert-BranchToDeploymentInfo',

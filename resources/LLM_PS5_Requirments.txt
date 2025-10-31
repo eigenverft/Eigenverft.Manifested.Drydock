@@ -26,8 +26,69 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
    - USE try/catch only where it adds value; rethrow with concise, actionable messages.
 
 8) OUTPUT & LOGGING
-   - EMIT Write-Host ONLY for key actions (created X, added/removed Y, enabled/disabled Z, updated trust). Keep minimal and consistent.
-   - DO NOT use Write-Output, Write-Error, Write-Verbose, or Write-Information.
+   - EMIT Write- or _Write-StandardMessage ONLY for key actions (created X, added/removed Y, enabled/disabled Z, updated trust). Keep minimal and consistent.
+   - Format the Write function implement a inline helper function for it suggested format.
+    function _Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        # This function has exceptions from the rest of any ruleset.
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Message,
+            [Parameter(Mandatory=$false)]
+            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
+            [string]$Level = 'INF',
+            [Parameter(Mandatory=$false)]
+            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
+            [string]$MinLevel
+        )
+        # Resolve MinLevel: explicit > global > default.
+        if (-not $PSBoundParameters.ContainsKey('MinLevel')) { $MinLevel = if ($Global:ConsoleLogMinLevel) { $Global:ConsoleLogMinLevel } else { 'INF' } }
+        $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
+        $lvl = $Level.ToUpperInvariant() ; $min = $MinLevel.ToUpperInvariant() ; $sev = $sevMap[$lvl] ; $gate= $sevMap[$min]
+        # Auto-escalate requested errors to meet strict MinLevel (e.g., MinLevel=FTL)
+        if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) { $lvl = $min ; $sev = $gate}
+        # Drop below gate
+        if ($sev -lt $gate) { return }
+        # Timestamp
+        $ts = ([DateTime]::UtcNow).ToString('yyyy-MM-dd HH:mm:ss:fff')
+        # Resolve caller: prefer "caller of org func" (grandparent of helper)
+        $stack      = Get-PSCallStack
+        $helperName = $MyInvocation.MyCommand.Name
+        $orgFunc    = $null
+        $caller     = $null
+        if ($stack) {
+            $orgIdx = -1;
+            for ($i = 0; $i -lt $stack.Count; $i++) { if ($stack[$i].FunctionName -ne $helperName) { $orgFunc = $stack[$i]; $orgIdx = $i; break; }}
+            if ($orgIdx -ge 0) { $callerIdx = $orgIdx + 1; if ($stack.Count -gt $callerIdx) { $caller = $stack[$callerIdx]; } else { $caller = $orgFunc; } }
+        }
+        if (-not $caller) { $caller = [pscustomobject]@{ ScriptName = $PSCommandPath; FunctionName = '<scriptblock>' }; }
+        $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'console' }
+        $func = if ($caller.FunctionName) { $caller.FunctionName } else { '<scriptblock>' }
+        # Keep original casing (no .ToLower()) to match definition casing
+        $line = "[{0} {1}] [{2}] [{3}] {4}" -f $ts, $lvl, $file, $func, $Message
+        # Emit: Output for non-errors; Error for ERR/FTL. Termination via $ErrorActionPreference.
+        if ($sev -ge 4) {
+            if ($ErrorActionPreference -eq 'Stop') {
+                Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified -ErrorAction Stop
+            } else {
+                Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified
+            }
+        } else {
+            Write-Information -MessageData $line -InformationAction Continue
+        }
+    }
+
+   Examples:
+   _Write-StandardMessage -Message "Loaded Replace-FilePlaceholders function."
+
+   try {
+      throw "Test error"
+   }
+   catch {
+      _Write-StandardMessage -Message "$($_.PSMessageDetails)" -Level ERR  # Format $_. output properly  
+   }
 
 9) IDEMPOTENCY
    - FUNCTIONS MUST be idempotent: repeated runs converge to the same state without errors or drift.
@@ -50,7 +111,7 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
 
 14) INLINE HELPERS (SAFE MODE)
     - SCOPE: Inline (nested) helpers defined with function MUST be created in the local scope: function _Name { ... }.
-    - NAMING: Use a distinct prefix to avoid collisions, e.g. _ (example: function _Norm-List { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param(...params...) ...code... }).
+    - NAMING: Use a distinct prefix to avoid collisions, e.g. _ (example: function _Norm-List { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param(...params...) ...code... }). PSUseApprovedVerbs needs to be between funcname and param.
     - COMMON PROBLEMS: Don't forget [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] in inline helper functions.
     - NO OUTPUT: Helpers MUST NOT write to the pipeline. If needed, return values explicitly and keep them inside the outer function.
     - QUIET LOGGING: Helpers MUST NOT use Write-Output, Write-Error, Write-Verbose, or Write-Information. Use Write-Host only in the outer function for key actions.
@@ -65,4 +126,4 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
    - Definitive: The function must fully comply with StrictMode-safe 3.
 
 DEFINITE: A function is "DONE" only if it meets ALL requirements above.
-    
+

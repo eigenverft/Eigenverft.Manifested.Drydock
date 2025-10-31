@@ -35,11 +35,17 @@ Per-invocation arguments (subcommands, positional paths, and flags unique to thi
 .PARAMETER CommonArguments
 Reusable, environment- or pipeline-wide arguments appended after Arguments. Intended for consistency and DRY usage across calls.
 
+.PARAMETER HideValues
+String values to mask in diagnostic command displays. These do not affect actual execution. Any substring match in arguments is replaced with "[HIDDEN]" for display.
+
 .PARAMETER MeasureTime
 When true (default), measures and prints elapsed execution time.
 
 .PARAMETER CaptureOutput
 When true (default), captures and returns process output; when false, streams to the host and returns $null.
+
+.PARAMETER CaptureOutputDump
+When true and -CaptureOutput:$false, suppresses streaming and discards process output.
 
 .PARAMETER AllowedExitCodes
 Exit codes considered successful; defaults to @(0). If 0 is excluded and occurs, it is treated as an error and mapped to 99.
@@ -57,16 +63,33 @@ System.Object            ($null when -CaptureOutput:$false)
 .EXAMPLE
 # Reuse shared flags; keep default shaping as a single text blob
 $common = @("--verbosity","minimal","-c","Release")
-$txt = Invoke-Exec2 -Executable "dotnet" -Arguments @("build","MyApp.csproj") -CommonArguments $common -ReturnType Text
+$txt = Invoke-Exec -Executable "dotnet" -Arguments @("build","MyApp.csproj") -CommonArguments $common -ReturnType Text
 
 .EXAMPLE
 # Capture a single boolean-like value robustly
-$raw = Invoke-Exec2 -Executable "cmd" -Arguments @("/c","echo","True") -ReturnType Objects
+$raw = Invoke-Exec -Executable "cmd" -Arguments @("/c","echo","True") -ReturnType Objects
 $ok  = [bool]::Parse([string]$raw)   # $ok = $true
 
 .EXAMPLE
-# Force string[] lines
-$lines = Invoke-Exec2 -Executable "git" -Arguments @("status","--porcelain") -ReturnType Strings
+# Mask a password sourced from a CI pipeline environment variable (e.g., Azure DevOps, GitHub Actions)
+# The real value is used for execution, but the displayed command is scrubbed.
+
+$pwd = $env:TOOL_PASSWORD  # Provided by the pipeline as a secret env var
+Invoke-Exec -Executable "tool" -Arguments @("--password=$pwd") -HideValues @($pwd)
+# Displays: ==> Full Command: tool --password=[HIDDEN]
+
+.EXAMPLE
+# Variant: CLI expects the value as a separate argument (no inline '=' form)
+$pwd = $env:TOOL_PASSWORD
+Invoke-Exec -Executable "tool" -Arguments @("--password", $pwd) -HideValues @($pwd)
+# Displays: ==> Full Command: tool --password [HIDDEN]
+
+.EXAMPLE
+# Variant: multiple sensitive tokens (e.g., token + url with embedded token)
+$token = $env:API_TOKEN
+$url   = "https://api.example.com?access_token=$token"
+Invoke-Exec -Executable "curl" -Arguments @("-H", "Authorization: Bearer $token", $url) -HideValues @($token)
+# Displays: ==> Full Command: curl -H Authorization: Bearer [HIDDEN] https://api.example.com?access_token=[HIDDEN]
 #>
     [CmdletBinding()]
     [Alias('iexec')]
@@ -83,11 +106,18 @@ $lines = Invoke-Exec2 -Executable "git" -Arguments @("status","--porcelain") -Re
         [Parameter(Mandatory = $false)]
         [string[]]$CommonArguments,
 
+        [Alias('hide','mask','hidevalue','maskval')]
+        [Parameter(Mandatory = $false)]
+        [string[]]$HideValues = @(),
+
         [Alias('mt')]
         [bool]$MeasureTime = $true,
 
         [Alias('co')]
         [bool]$CaptureOutput = $true,
+
+        [Alias('cod')]
+        [bool]$CaptureOutputDump = $false,
 
         [Alias('ok')]
         [int[]]$AllowedExitCodes = @(0),
@@ -106,15 +136,29 @@ $lines = Invoke-Exec2 -Executable "git" -Arguments @("status","--porcelain") -Re
     if ($Arguments -and $Arguments.Count -gt 0) { $finalArgs += $Arguments }
     if ($CommonArguments -and $CommonArguments.Count -gt 0) { $finalArgs += $CommonArguments }
 
-    Write-Host "===> Before Command (Executable: $Executable, Args Count: $($finalArgs.Count)) ==============================================" -ForegroundColor DarkCyan
-    Write-Host "===> Full Command: $Executable $($finalArgs -join ' ')" -ForegroundColor Cyan
+    # Build display-only args with masking (execution still uses $finalArgs)
+    $displayArgs = @($finalArgs)
+    if ($HideValues -and $HideValues.Count -gt 0) {
+        foreach ($h in $HideValues) {
+            if ([string]::IsNullOrWhiteSpace($h)) { continue }
+            $pattern = [regex]::Escape($h)
+            $displayArgs = $displayArgs | ForEach-Object { $_ -replace $pattern, '[HIDDEN]' }
+        }
+    }
+
+    Write-Host "===> Before Command (Executable: $Executable, Args Count: $($finalArgs.Count)) ==============================================" -ForegroundColor Yellow
+    Write-Host "===> Full Command: $Executable $($displayArgs -join ' ')" -ForegroundColor Cyan
 
     if ($MeasureTime) { $stopwatch = [System.Diagnostics.Stopwatch]::StartNew() }
 
     if ($CaptureOutput) {
         $result = & $Executable @finalArgs
     } else {
-        & $Executable @finalArgs
+        if ($CaptureOutputDump) {
+            & $Executable @finalArgs | Out-Null
+        } else {
+            & $Executable @finalArgs
+        }
         $result = $null
     }
 
@@ -127,7 +171,7 @@ $lines = Invoke-Exec2 -Executable "git" -Arguments @("status","--porcelain") -Re
             $result | ForEach-Object { Write-Host $_ -ForegroundColor Gray }
         }
         if ($LASTEXITCODE -eq 0) {
-            Write-Error "Command '$Executable $($finalArgs -join ' ')' returned exit code 0, which is disallowed. $ExtraErrorMessage Translated to custom error code $CustomErrorCode."
+            Write-Error "Command '$Executable $($displayArgs -join ' ')' returned exit code 0, which is disallowed. $ExtraErrorMessage Translated to custom error code $CustomErrorCode."
             if ($MeasureTime) {
                 Write-Host "===> After Command (Execution time: $($stopwatch.Elapsed)) ==============================================" -ForegroundColor DarkGreen
             } else {
@@ -135,7 +179,7 @@ $lines = Invoke-Exec2 -Executable "git" -Arguments @("status","--porcelain") -Re
             }
             exit $CustomErrorCode
         } else {
-            Write-Error "Command '$Executable $($finalArgs -join ' ')' returned disallowed exit code $LASTEXITCODE. Exiting script with exit code $LASTEXITCODE."
+            Write-Error "Command '$Executable $($displayArgs -join ' ')' returned disallowed exit code $LASTEXITCODE. Exiting script with exit code $LASTEXITCODE."
             if ($MeasureTime) {
                 Write-Host "===> After Command (Execution time: $($stopwatch.Elapsed)) ==============================================" -ForegroundColor DarkGreen
             } else {
@@ -169,4 +213,5 @@ $lines = Invoke-Exec2 -Executable "git" -Arguments @("status","--porcelain") -Re
         }
     }
 }
+
 

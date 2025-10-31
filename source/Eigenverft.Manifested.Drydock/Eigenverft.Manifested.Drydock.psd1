@@ -12,7 +12,7 @@
 RootModule = 'Eigenverft.Manifested.Drydock.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.20256.8208'
+ModuleVersion = '0.20256.16159'
 
 # Supported PSEditions
 CompatiblePSEditions = @('Desktop','Core')
@@ -30,7 +30,7 @@ CompanyName = ''
 Copyright = 'Copyright (c) 2025 Eigenverft'
 
 # Description of the functionality provided by this module
-Description = 'PowerShell helper functions for the Eigenverft Manifested Drydock, optimized for lightning-fast iteration and reliable local + CI/CD workflows. Expect frequent releases—auto-versioning is built in. Tasks are parity-driven: the same commands run locally and in CI/CD, so local builds remain fully functional even if the pipeline is down.'
+Description = 'A comprehensive PowerShell module providing automation and deployment tools for the Eigenverft Manifested Drydock environment. Features include Git operations, .NET project handling, process management, scheduled tasks, logging, and IO operations. Optimized for lightning-fast iteration with built-in auto-versioning and seamless local/CI/CD workflow integration. Supports both PowerShell Desktop and Core editions, ensuring consistent behavior across development and deployment environments. For CI/CD examples, see https://github.com/eigenverft/Eigenverft.Manifested.Drydock/blob/main/.github/workflows/cicd.ps1.'
 
 # Minimum version of the PowerShell engine required by this module
 PowerShellVersion = '5.1'
@@ -51,7 +51,7 @@ PowerShellVersion = '5.1'
 # ProcessorArchitecture = ''
 
 # Modules that must be imported into the global environment prior to importing this module
-# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20256.8208'; })
+# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20256.16159'; })
 
 # Assemblies that must be loaded prior to importing this module
 # RequiredAssemblies = @()
@@ -70,6 +70,11 @@ PowerShellVersion = '5.1'
 
 # Functions to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no functions to export.
 FunctionsToExport = @(
+
+    # ...Convert.ps1
+    'Convert-FilePlaceholders',
+    'Convert-TemplateFilePlaceholders',
+
     # ...Deployments.ps1
     'Convert-BranchToDeploymentInfo',
     
@@ -82,6 +87,7 @@ FunctionsToExport = @(
     'New-DotnetVulnerabilitiesReport',
     'New-DotnetDeprecatedReport',
     'New-DotnetOutdatedReport',
+    'New-ThirdPartyNotice',
 
     # ...Execution.ps1
     'Invoke-Exec',
@@ -102,6 +108,7 @@ FunctionsToExport = @(
     'Find-TreeContent',
     'Find-TreeContentByFile',
     'Resolve-ModulePath',
+    'Copy-FilesRecursively',
 
     # ...Logging.ps1
     'Write-ConsoleLog',
@@ -213,7 +220,7 @@ PrivateData = @{
         ReleaseNotes = ''
 
         # Prerelease string of this module
-        Prerelease = ''
+        Prerelease = 'dev'
 
         # Flag to indicate whether the module requires explicit user acceptance for install/update/save
         # RequireLicenseAcceptance = $false

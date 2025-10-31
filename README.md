@@ -180,9 +180,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📫 Contact & Support
 
 For questions and support:
-- 🐛 Open an [issue](../../../issues) in this repository
-- 📝 Review the [documentation](../../wiki)
-- 🤝 Submit a [pull request](../../pulls) with improvements
+- 🐛 Open an [issue](https://github.com/eigenverft/Eigenverft.Manifested.Drydock/issues) in this repository
+- 🤝 Submit a [pull request](https://github.com/eigenverft/Eigenverft.Manifested.Drydock/pulls) with improvements
 
 ---
 

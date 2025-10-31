@@ -100,6 +100,9 @@ FunctionsToExport = @(
     'Get-GitRemoteUrl',
     'Invoke-GitAddCommitPush',
 
+    # ...GitHub.ps1
+    'Get-GitHubLatestRelease'
+
     # ...IO.ps1
     'Find-FilesByPattern',
     'Remove-FilesByPattern',

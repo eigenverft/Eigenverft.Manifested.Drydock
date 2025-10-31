@@ -12,6 +12,7 @@
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Version.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.ScheduledTask.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Git.ps1"
+. "$PSScriptRoot\Eigenverft.Manifested.Drydock.GitHub.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Dotnet.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Process.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.ps1"

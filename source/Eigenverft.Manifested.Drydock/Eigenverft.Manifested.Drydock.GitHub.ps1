@@ -358,7 +358,7 @@ Requires internet access. Uses GitHub's public API and a default User-Agent. Han
 
         $pathOut = $null
         $ext = [IO.Path]::GetExtension($name)
-        if ($Extract.IsPresent -and $zipTypeReady -and ($ext -ne $null) -and ($ext.Equals('.zip', [System.StringComparison]::OrdinalIgnoreCase))) {
+        if ($Extract.IsPresent -and $zipTypeReady -and ($null -ne $ext) -and ($ext.Equals('.zip', [System.StringComparison]::OrdinalIgnoreCase))) {
             # Download ZIP to temp file, then extract overwrite.
             $tempZip = Join-Path -Path $tempRoot -ChildPath $name
             _Download-File -Uri $url -Destination $tempZip

@@ -125,5 +125,8 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
    - Forbid out-of-bounds or unresolved array indices.
    - Definitive: The function must fully comply with StrictMode-safe 3.
 
+16) COMPARISONS
+   - ($null -ne $ext) $null should always be on the left side of the comparisons.
+
 DEFINITE: A function is "DONE" only if it meets ALL requirements above.
 

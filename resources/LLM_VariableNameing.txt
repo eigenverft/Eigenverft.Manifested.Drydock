@@ -1,0 +1,53 @@
+# Filesystem variable naming - compact standard
+
+Pattern: `Subject[Qualifier]TypeSuffix`  
+Keep tokens stable across languages; only casing changes per language.
+
+## Type suffixes (choose once, use everywhere)
+- Path - computed or conceptual location (may not exist yet).
+- Directory - materialized directory (created/ensured).
+- File / Files - string path(s) to file(s).
+- FileInfo / FileInfos - file object(s) from APIs (have properties like `.FullName`).
+- Name - logical name or identifier (not a path).
+- Uri / Url - network location (never mix with filesystem suffixes).
+- Pattern - glob or regex for matching (for example, `SourcePattern`).
+- Extension / Stem - file extension (`.md`) or name without extension.
+
+## Core qualifiers (short, reusable)
+Root, Base, Relative, Full (absolute), Source, Destination, Input, Output, Version, Temp, Cache, Logs, Config.
+
+## Decision rules
+1. You join or compute a location -> `...Path`.
+2. You create or ensure a folder -> `...Directory`.
+3. A single file path string -> `...File`; many -> `...Files`.
+4. A file object (from stat or API) -> `...FileInfo` or `...FileInfos`.
+5. Use `Relative` or `Full` to disambiguate (for example, `ChannelLatestRelativePath`, `RepoFullPath`).
+6. Do not change a variable suffix when its type changes (Path -> Directory). Create a new variable.
+
+## Collections and maps
+- Pluralize the suffix for collections: `ProjectFiles`, `ReportFileInfos`.
+- For keyed or grouped sets, add `By...`: `FilesByProject`, `DocsByLanguage`.
+
+## Remote vs local
+- Filesystem = `...Path` / `...Directory` / `...File`.
+- Network = `...Uri` / `...Url`. Keep these strictly separate.
+
+## Constants and separators
+- Keep separators out of names; always use a join function to build paths.
+- Name constants as what they are: `DocsExtension = ".md"`, `NuGetIndexUri`.
+
+## Casing and cross-language style (be consistent)
+
+- Pick one casing style and use it everywhere. If code is already present, match its casing. Consistency is the only hard rule.
+- Typical defaults but can be differently implemented thats ok:
+  - PowerShell and C#: PascalCase (e.g., DocsOutputDirectory).
+  - JS/TS/Go/Java: camelCase (e.g., docsOutputDirectory)
+  - Python/Ruby: snake_case (e.g., docs_output_directory)
+  - Bash/Make: UPPER_SNAKE (e.g., DOCS_OUTPUT_DIRECTORY)
+
+## Tiny examples
+- `RepoRootPath` -> `DocsOutputPath` -> `DocsOutputDirectory` -> `ReadmeFile` -> `ReadmeFileInfo`
+- `ChannelVersionRelativePath`, `ChannelLatestRelativePath`, `DistOutputDirectory`, `NuGetIndexUri`
+- `SourcePattern = "*.sln"`, `MarkdownExtension = ".md"`
+
+Definitive statement: Use the `Subject[Qualifier]TypeSuffix` pattern with the fixed suffix set above; never mutate a variable suffix as its type changes. Create a new variable. This keeps names precise, portable, and self-documenting across projects and languages.

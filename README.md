@@ -1,47 +1,55 @@
 # Eigenverft.Manifested.Drydock
 
+[![PowerShell Gallery Version](https://img.shields.io/powershellgallery/v/Eigenverft.Manifested.Drydock?label=PSGallery&logo=powershell)](https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock)
+[![PowerShell Gallery Platform Support](https://img.shields.io/powershellgallery/p/Eigenverft.Manifested.Drydock?logo=windows)](https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock)
+[![License](https://img.shields.io/github/license/eigenverft/Eigenverft.Manifested.Drydock?logo=mit)](LICENSE)
+
 PowerShell helper functions for the Eigenverft Manifested Drydock, optimized for lightning-fast iteration and reliable local + CI/CD workflows.
-Expect frequent releases—auto-versioning is built in. Tasks are parity-driven: the same commands run locally and in CI/CD, so local builds remain fully functional even if the pipeline is down.
 
-The Export-OfflineModuleBundle cmdlet makes modules available for isolated, offline systems; see below. (Only stable builds will be used.)
+🚀 **Key Features:**
+- Lightning-fast iteration with built-in auto-versioning
+- Parity-driven tasks: same commands run locally and in CI/CD
+- Offline-capable with `Export-OfflineModuleBundle` support
+- Comprehensive .NET project tooling and reporting
+- Robust Git operations and deployment management
 
-The module itself is publish with this function so see for example usage .github/workflows/cicd.ps1 
+---
 
-[Eigenverft.Manifested.Drydock – PowerShell Gallery](https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock)
-
-
-## Installation
-
-Install `Eigenverft.Manifested.Drydock` from a Windows PowerShell or PowerShell 7+ prompt.
-
-PowerShell 5-7+ (recommended):
+## 📥 Installation
 
 ```powershell
+# PowerShell 5.1+ or PowerShell Core
 Install-Module -Name Eigenverft.Manifested.Drydock -Repository PSGallery -Scope CurrentUser -Force
-# Export-OfflineModuleBundle -Folder C:\temp\export -Name @('PowerShellGet','PackageManagement','Pester','PSScriptAnalyzer','Eigenverft.Manifested.Drydock')
+
+# For offline systems, export bundle first:
+Export-OfflineModuleBundle -Folder C:\temp\export -Name @(
+    'PowerShellGet',
+    'PackageManagement',
+    'Pester',
+    'PSScriptAnalyzer',
+    'Eigenverft.Manifested.Drydock'
+)
 ```
 
-### First-time bootstrap (Windows)
+### 🔧 First-time Bootstrap (Windows)
 
-Upgrades PowerShellGet, PackageManagement, and installs Eigenverft.Manifested.Drydock for the CurrentUser.
-No admin rights needed. A policy change is include, `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Unrestricted` revert to defaults if required.
+No admin rights needed, sets up PowerShellGet and PackageManagement for CurrentUser:
 
-
-Windows Command prompt:
 ```batch
+# From Command Prompt:
 powershell -NoProfile -ExecutionPolicy Unrestricted -Command "& { irm -Uri https://tinyurl.com/DrydockInit | iex }"
-```
 
-Windows PowerShell 5.1 prompt: 
-```powershell
+# From PowerShell 5.1:
 Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope Process ; irm -Uri https://tinyurl.com/DrydockInit | iex
 ```
 
-## Module function reference
+---
 
-Below is a concise reference grouped by area. See built-in help for parameters and examples, e.g. `Get-Help Update-ManifestModuleVersion -Full`.
+## 📚 Function Reference
 
-### Git helpers 
+> 💡 Use `Get-Help <FunctionName> -Full` for detailed documentation and examples.
+
+### 🔄 Git Operations 
 
 - **Get-GitTopLevelDirectory (ggtd)** Return repository root using `git rev-parse --show-toplevel`.
   Example: `Get-GitTopLevelDirectory`
@@ -56,7 +64,7 @@ Below is a concise reference grouped by area. See built-in help for parameters a
 - **Invoke-GitAddCommitPush (igacp)** Stage folders, commit with transient identity, push branch, optionally tag.
   Example: `Invoke-GitAddCommitPush -TopLevelDirectory (Get-GitTopLevelDirectory) -Folders @('source/Eigenverft.Manifested.Drydock') -CurrentBranch (Get-GitCurrentBranch)`
 
-### Versioning
+### 📊 Versioning & Deployments
 - **Convert-DateTimeTo64SecVersionComponents (cdv64)** Encode DateTime to `Build.Major.Minor.Revision` with 64s granularity.
   Example: `Convert-DateTimeTo64SecVersionComponents -VersionBuild 1 -VersionMajor 0`
 - **Convert-64SecVersionComponentsToDateTime (cdv64r)** Decode four-part 64s-packed version back to approximate UTC DateTime.
@@ -66,12 +74,7 @@ Below is a concise reference grouped by area. See built-in help for parameters a
 - **Convert-64SecPowershellVersionToDateTime (cdv64psr)** Reverse the simplified mapping to reconstruct approximate DateTime.
   Example: `Convert-64SecPowershellVersionToDateTime -VersionBuild 1 -VersionMajor 20250 -VersionMinor 1234`
 
-### Deployment/channel mapping
-
-- **Convert-BranchToDeploymentInfo** Validate/split branch, map first segment to channel, and generate label/prefix/suffix tokens.
-  Example: `Convert-BranchToDeploymentInfo -BranchName 'feature/awesome' | ConvertTo-Json`
-
-### CI/runtime utilities
+### ⚙️ CI/Runtime Utilities
 
 - **Invoke-Exec (iexec)** Run external command with per-call and common arguments; enforce allowed exit codes; optional timing/capture.
   Example: `Invoke-Exec -Executable 'dotnet' -Arguments @('build','MyApp.csproj') -CommonArguments @('--configuration','Release')`
@@ -86,7 +89,7 @@ Below is a concise reference grouped by area. See built-in help for parameters a
 - **Get-RunEnvironment (gre)** Detect CI provider/hosting vs local.
   Example: `Get-RunEnvironment`
 
-### PowerShell environment bootstrap
+### 🛠️ PowerShell Environment
 
 - **Test-InstallationScopeCapability** Return `AllUsers` if elevated, otherwise `CurrentUser`.
   Example: `Test-InstallationScopeCapability`
@@ -121,7 +124,7 @@ Below is a concise reference grouped by area. See built-in help for parameters a
 - **Update-ManifestPrerelease (umpr)** Update `PSData.Prerelease` in a `.psd1` manifest.
   Example: `Update-ManifestPrerelease -ManifestPath .\ -NewPrerelease 'rc.1'`
 
-### Scheduled Tasks
+### 📅 Scheduled Tasks
 
 - **New-CompatScheduledTask** Create/update a Windows Scheduled Task via COM with clear run context, triggers, and guidance.
   Example:
@@ -135,16 +138,54 @@ Below is a concise reference grouped by area. See built-in help for parameters a
      -ActionArguments '-NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\job.ps1"'
   ```
 
+### 📦 .NET Tools and Package Management
+
+- **Enable-TempDotnetTools** Install local-tools from a manifest into an ephemeral cache for the current session.
+  Example: `Enable-TempDotnetTools -ManifestFile '.config\dotnet-tools.json'`
+- **Disable-TempDotnetTools** Remove ephemeral tool cache from PATH and optionally delete it.
+  Example: `Disable-TempDotnetTools -ManifestFile '.config\dotnet-tools.json' -Delete`
+- **Register-LocalNuGetDotNetPackageSource** Register a NuGet source using dotnet CLI.
+  Example: `Register-LocalNuGetDotNetPackageSource -SourceLocation 'C:\nuget-local'`
+- **Unregister-LocalNuGetDotNetPackageSource** Unregister a NuGet source by name.
+  Example: `Unregister-LocalNuGetDotNetPackageSource -SourceName 'local-feed'`
+- **New-DotnetBillOfMaterialsReport** Generate a Bill of Materials report from package listings.
+  Example: `New-DotnetBillOfMaterialsReport -jsonInput $json -OutputFormat markdown -OutputFile 'reports/bom.md'`
+- **New-DotnetVulnerabilitiesReport** Generate a vulnerabilities report from package scans.
+  Example: `New-DotnetVulnerabilitiesReport -jsonInput $json -OutputFormat markdown -OutputFile 'reports/vuln.md'`
+- **New-DotnetDeprecatedReport** Generate a deprecation report for packages.
+  Example: `New-DotnetDeprecatedReport -jsonInput $json -OutputFormat markdown -OutputFile 'reports/deprecated.md'`
+- **New-DotnetOutdatedReport** Generate an outdated packages report.
+  Example: `New-DotnetOutdatedReport -jsonInput $json -OutputFormat markdown -OutputFile 'reports/outdated.md'`
+- **New-ThirdPartyNotice** Create/update THIRD-PARTY-NOTICES.txt from license data.
+  Example: `New-ThirdPartyNotice -LicenseJsonPath 'licenses.json' -OutputPath 'THIRD-PARTY-NOTICES.txt'`
+
 Notes:
 - Use `Get-Help <FunctionName> -Detailed` for parameters, examples, and notes.
 - Aliases are shown in parentheses where available.
 
-## Usage tips
+---
 
-- Ensure git is on PATH for Git helper functions.
-- All datetime-based conversions use UTC by default.
-- The 64-second encoding is lossy: reconstruction yields an approximate DateTime.
+## 📝 Usage Tips
 
-## License / Contact
+- 🔍 Ensure `git` is on PATH for Git helper functions
+- 🕒 All datetime-based conversions use UTC by default
+- ⚠️ The 64-second encoding is lossy: reconstruction yields an approximate DateTime
+- 📊 Report outputs support both text and markdown formats
+- 🔄 All functions are idempotent and safe to run repeatedly
 
-See `LICENSE` for license details. For questions, open an issue in this repository.
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 📫 Contact & Support
+
+For questions and support:
+- 🐛 Open an [issue](../../issues) in this repository
+- 📝 Review the [documentation](../../wiki)
+- 🤝 Submit a [pull request](../../pulls) with improvements
+
+---
+
+<div align="center">
+Made with ❤️ by Eigenverft
+</div>

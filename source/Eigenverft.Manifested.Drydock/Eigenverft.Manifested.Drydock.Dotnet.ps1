@@ -958,12 +958,19 @@ New-DotnetVulnerabilitiesReport -jsonInput $json -OutputFile 'reports/vuln.md' -
     if ($anyProj) { $projectsStr = ($projectsForTitle -join ", ") }
     $defaultTitle = ("Vulnerabilities Report for Projects: {0}" -f $projectsStr)
 
+    # Append UTC date-only stamp (yyyy-MM-dd) to the header
+    $dateUtc = ([DateTime]::UtcNow).ToString('yyyy-MM-dd')
+
     $prefix = ""
     if ($GenerateTitle) {
         if ($OutputFormat -eq "markdown") {
-            if ([string]::IsNullOrEmpty($SetMarkDownTitle)) { $prefix = "## $defaultTitle`n`n" } else { $prefix = "## $SetMarkDownTitle`n`n" }
+            if ([string]::IsNullOrEmpty($SetMarkDownTitle)) {
+                $prefix = "## $defaultTitle - $dateUtc UTC`n`n"
+            } else {
+                $prefix = "## $SetMarkDownTitle - $dateUtc UTC`n`n"
+            }
         } else {
-            $prefix = "$defaultTitle`n`n"
+            $prefix = "$defaultTitle - $dateUtc UTC`n`n"
         }
     }
 
@@ -1313,12 +1320,19 @@ ASCII-only. Idempotent. No ternary. No automatic/reserved vars used.
     if ($anyProj) { $projectsStr = ($projectsForTitle -join ", ") }
     $defaultTitle = ("Deprecated Packages Report for Projects: {0}" -f $projectsStr)
 
+    # Append UTC date-only stamp (yyyy-MM-dd) to the header
+    $dateUtc = ([DateTime]::UtcNow).ToString('yyyy-MM-dd')
+
     $prefix = ""
     if ($GenerateTitle) {
         if ($OutputFormat -eq "markdown") {
-            if ([string]::IsNullOrEmpty($SetMarkDownTitle)) { $prefix = "## $defaultTitle`n`n" } else { $prefix = "## $SetMarkDownTitle`n`n" }
+            if ([string]::IsNullOrEmpty($SetMarkDownTitle)) {
+                $prefix = "## $defaultTitle - $dateUtc UTC`n`n"
+            } else {
+                $prefix = "## $SetMarkDownTitle - $dateUtc UTC`n`n"
+            }
         } else {
-            $prefix = "$defaultTitle`n`n"  # avoid underline (length ops)
+            $prefix = "$defaultTitle - $dateUtc UTC`n`n"
         }
     }
 
@@ -1693,12 +1707,19 @@ New-DotnetOutdatedReport -jsonInput $json -OutputFile 'reports/outdated.md' -Out
     if ($anyProj) { $projectsStr = ($projectsForTitle -join ", ") }
     $defaultTitle = ("Outdated Packages Report for Projects: {0}" -f $projectsStr)
 
+    # Append UTC date-only stamp (yyyy-MM-dd) to the header
+    $dateUtc = ([DateTime]::UtcNow).ToString('yyyy-MM-dd')
+
     $prefix = ""
     if ($GenerateTitle) {
         if ($OutputFormat -eq "markdown") {
-            if ([string]::IsNullOrEmpty($SetMarkDownTitle)) { $prefix = "## $defaultTitle`n`n" } else { $prefix = "## $SetMarkDownTitle`n`n" }
+            if ([string]::IsNullOrEmpty($SetMarkDownTitle)) {
+                $prefix = "## $defaultTitle - $dateUtc UTC`n`n"
+            } else {
+                $prefix = "## $SetMarkDownTitle - $dateUtc UTC`n`n"
+            }
         } else {
-            $prefix = "$defaultTitle`n`n"
+            $prefix = "$defaultTitle - $dateUtc UTC`n`n"
         }
     }
 
@@ -2055,12 +2076,19 @@ New-DotnetBillOfMaterialsReport -jsonInput $json -OutputFile 'reports/bom.md' -O
     if ($anyProj) { $projectsStr = ($projectsForTitle -join ", ") }
     $defaultTitle = ("Bill of Materials Report for Projects: {0}" -f $projectsStr)
 
+    # Append UTC date-only stamp (yyyy-MM-dd) to the header
+    $dateUtc = ([DateTime]::UtcNow).ToString('yyyy-MM-dd')
+
     $prefix = ""
     if ($GenerateTitle) {
         if ($OutputFormat -eq "markdown") {
-            if ([string]::IsNullOrEmpty($SetMarkDownTitle)) { $prefix = "## $defaultTitle`n`n" } else { $prefix = "## $SetMarkDownTitle`n`n" }
+            if ([string]::IsNullOrEmpty($SetMarkDownTitle)) {
+                $prefix = "## $defaultTitle - $dateUtc UTC`n`n"
+            } else {
+                $prefix = "## $SetMarkDownTitle - $dateUtc UTC`n`n"
+            }
         } else {
-            $prefix = "$defaultTitle`n`n"
+            $prefix = "$defaultTitle - $dateUtc UTC`n`n"
         }
     }
 

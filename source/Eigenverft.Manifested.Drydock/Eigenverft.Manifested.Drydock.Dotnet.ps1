@@ -931,6 +931,7 @@ New-DotnetVulnerabilitiesReport -jsonInput $json -OutputFile 'reports/vuln.md' -
         } else {
             $body = "No vulnerabilities found."
         }
+        $body = "$body`n"
     }
 
     # ---------------- title ----------------
@@ -1284,6 +1285,7 @@ ASCII-only. Idempotent. No ternary. No automatic/reserved vars used.
         } else {
             $body = "No deprecated packages found."
         }
+        $body = "$body`n"
     }
 
     # ----------------- title -----------------
@@ -1663,6 +1665,7 @@ New-DotnetOutdatedReport -jsonInput $json -OutputFile 'reports/outdated.md' -Out
         } else {
             $body = "No outdated packages found."
         }
+        $body = "$body`n"
     }
 
     # ---------------- title ----------------
@@ -2024,6 +2027,7 @@ New-DotnetBillOfMaterialsReport -jsonInput $json -OutputFile 'reports/bom.md' -O
         } else {
             $body = "No BOM entries found."
         }
+        $body = "$body`n"
     }
 
     # ---------------- title ----------------

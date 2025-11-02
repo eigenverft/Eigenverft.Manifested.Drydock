@@ -907,6 +907,7 @@ New-DotnetVulnerabilitiesReport -jsonInput $json -OutputFile 'reports/vuln.md' -
         } else {
             $body = "No vulnerabilities found."
         }
+        $body = "$body`n`n"
     } else {
         if ($hasRows) {
             $md = New-Object 'System.Collections.Generic.List[string]'
@@ -965,7 +966,6 @@ New-DotnetVulnerabilitiesReport -jsonInput $json -OutputFile 'reports/vuln.md' -
     }
 
     $final = $prefix + $body
-    $final = "$final`n`n"
 
     # ---------------- write or return ----------------
     if (-not [string]::IsNullOrEmpty($OutputFile)) {
@@ -1259,6 +1259,7 @@ ASCII-only. Idempotent. No ternary. No automatic/reserved vars used.
         } else {
             $body = "No deprecated packages found."
         }
+        $body = "$body`n`n"
     } else {
         if ($hasRows) {
             $md = New-Object 'System.Collections.Generic.List[string]'
@@ -1318,7 +1319,6 @@ ASCII-only. Idempotent. No ternary. No automatic/reserved vars used.
     }
 
     $final = $prefix + $body
-    $final = "$final`n`n"
 
     # ----------------- write or return -----------------
     if (-not [string]::IsNullOrEmpty($OutputFile)) {
@@ -1637,6 +1637,7 @@ New-DotnetOutdatedReport -jsonInput $json -OutputFile 'reports/outdated.md' -Out
         } else {
             $body = "No outdated packages found."
         }
+        $body = "$body`n`n"
     } else {
         if ($hasRows) {
             $md = New-Object 'System.Collections.Generic.List[string]'
@@ -1696,7 +1697,6 @@ New-DotnetOutdatedReport -jsonInput $json -OutputFile 'reports/outdated.md' -Out
     }
 
     $final = $prefix + $body
-    $final = "$final`n`n"
 
     # ---------------- write or return ----------------
     if (-not [string]::IsNullOrEmpty($OutputFile)) {
@@ -1997,6 +1997,7 @@ New-DotnetBillOfMaterialsReport -jsonInput $json -OutputFile 'reports/bom.md' -O
         } else {
             $body = "No BOM entries found."
         }
+        $body = "$body`n`n"
     } else {
         if ($hasRows) {
             $md = New-Object 'System.Collections.Generic.List[string]'
@@ -2051,12 +2052,11 @@ New-DotnetBillOfMaterialsReport -jsonInput $json -OutputFile 'reports/bom.md' -O
         if ($OutputFormat -eq "markdown") {
             if ([string]::IsNullOrEmpty($SetMarkDownTitle)) { $prefix = "## $defaultTitle`n`n" } else { $prefix = "## $SetMarkDownTitle`n`n" }
         } else {
-            $prefix = "$defaultTitle`n`n"
+            $prefix = "$defaultTitle`n"
         }
     }
 
     $final = $prefix + $body
-    $final = "$final`n`n"
 
     # ---------------- write or return ----------------
     if (-not [string]::IsNullOrEmpty($OutputFile)) {

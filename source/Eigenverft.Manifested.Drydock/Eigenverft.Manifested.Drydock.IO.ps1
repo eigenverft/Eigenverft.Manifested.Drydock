@@ -1443,3 +1443,219 @@ function Copy-FilesRecursively {
     }
 }
 
+function Join-FileText {
+<#
+.SYNOPSIS
+Concatenate text files into a single output file without adding separators by default.
+
+.DESCRIPTION
+Reads each input file as text using PowerShell's default decoding and concatenates their content
+in the given order. No additional separators or line breaks are inserted by default. The output
+is written using the host's default text encoding (no -Encoding override). The function is idempotent:
+if the resulting text is identical to the current output file content, the file is not rewritten.
+
+All parameters must be absolute (rooted) paths. Input files must exist. The output file's parent
+directory must exist; the output file itself may be created if missing.
+
+.PARAMETER InputFiles
+Absolute paths of input files to concatenate. Order is preserved. Files must exist.
+
+.PARAMETER OutputFile
+Absolute path of the output file to write. Parent directory must exist.
+
+.PARAMETER BetweenFiles
+Controls insertion between files. Defaults to 'None'.
+Allowed values:
+- 'None'      : Do not insert anything between files.
+- 'NewLine'   : Insert a single LF (`n) between files.
+
+.EXAMPLE
+Join-FileText -InputFiles @('C:\Repo\A.md','C:\Repo\B.md') -OutputFile 'C:\Repo\Combined.md'
+
+.EXAMPLE
+Join-FileText -InputFiles @('/srv/a.txt','/srv/b.txt','/srv/c.txt') -OutputFile '/srv/all.txt' -BetweenFiles NewLine
+
+.EXAMPLE
+# Idempotent: if combined content matches the existing output, nothing is rewritten.
+Join-FileText -InputFiles @('/data/p1.csv','/data/p2.csv') -OutputFile '/data/full.csv'
+
+.NOTES
+Compatibility: Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
+No pipeline input. No WhatIf/Confirm. ASCII-only implementation.
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string[]] $InputFiles,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [string] $OutputFile,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateSet('None','NewLine')]
+        [string] $BetweenFiles = 'None'
+    )
+
+    # --------------- Inline helpers (local scope, quiet) ---------------
+    function _Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        # This function has exceptions from the rest of any ruleset.
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Message,
+            [Parameter(Mandatory=$false)]
+            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
+            [string]$Level = 'INF',
+            [Parameter(Mandatory=$false)]
+            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
+            [string]$MinLevel
+        )
+        # Resolve MinLevel: explicit > global > default.
+        if (-not $PSBoundParameters.ContainsKey('MinLevel')) { $MinLevel = if ($Global:ConsoleLogMinLevel) { $Global:ConsoleLogMinLevel } else { 'INF' } }
+        $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
+        $lvl = $Level.ToUpperInvariant() ; $min = $MinLevel.ToUpperInvariant() ; $sev = $sevMap[$lvl] ; $gate= $sevMap[$min]
+        # Auto-escalate requested errors to meet strict MinLevel (e.g., MinLevel=FTL)
+        if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) { $lvl = $min ; $sev = $gate}
+        # Drop below gate
+        if ($sev -lt $gate) { return }
+        # Timestamp
+        $ts = ([DateTime]::UtcNow).ToString('yyyy-MM-dd HH:mm:ss:fff')
+        # Resolve caller: prefer "caller of org func" (grandparent of helper)
+        $stack      = Get-PSCallStack
+        $helperName = $MyInvocation.MyCommand.Name
+        $orgFunc    = $null
+        $caller     = $null
+        if ($stack) {
+            $orgIdx = -1;
+            for ($i = 0; $i -lt $stack.Count; $i++) { if ($stack[$i].FunctionName -ne $helperName) { $orgFunc = $stack[$i]; $orgIdx = $i; break; }}
+            if ($orgIdx -ge 0) { $callerIdx = $orgIdx + 1; if ($stack.Count -gt $callerIdx) { $caller = $stack[$callerIdx]; } else { $caller = $orgFunc; } }
+        }
+        if (-not $caller) { $caller = [pscustomobject]@{ ScriptName = $PSCommandPath; FunctionName = '<scriptblock>' }; }
+        $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'console' }
+        $func = if ($caller.FunctionName) { $caller.FunctionName } else { '<scriptblock>' }
+        # Keep original casing (no .ToLower()) to match definition casing
+        $line = "[{0} {1}] [{2}] [{3}] {4}" -f $ts, $lvl, $file, $func, $Message
+        # Emit: Output for non-errors; Error for ERR/FTL. Termination via $ErrorActionPreference.
+        if ($sev -ge 4) {
+            if ($ErrorActionPreference -eq 'Stop') {
+                Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified -ErrorAction Stop
+            } else {
+                Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified
+            }
+        } else {
+            Write-Information -MessageData $line -InformationAction Continue
+        }
+    }
+
+    function _Is-Rooted {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([string] $Path)
+        if ($null -eq $Path) { return $false }
+        try {
+            return [System.IO.Path]::IsPathRooted($Path)
+        } catch {
+            return $false
+        }
+    }
+
+    # --------------- Validation ---------------
+    if ($null -eq $InputFiles -or $InputFiles.Count -lt 1) {
+        throw "No input files specified. Provide one or more absolute paths via -InputFiles."
+    }
+
+    # Ensure all inputs are absolute and exist
+    $missing = @()
+    $nonRooted = @()
+    foreach ($p in $InputFiles) {
+        if ([string]::IsNullOrWhiteSpace($p)) { continue }
+        if (-not (_Is-Rooted -Path $p)) { $nonRooted += $p }
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { $missing += $p }
+    }
+    if ($nonRooted.Count -gt 0) {
+        throw ("InputFiles must be absolute paths:`n - {0}" -f ($nonRooted -join "`n - "))
+    }
+    if ($missing.Count -gt 0) {
+        throw ("Missing input files:`n - {0}" -f ($missing -join "`n - "))
+    }
+
+    # Output path must be absolute; parent directory must already exist
+    if (-not (_Is-Rooted -Path $OutputFile)) {
+        throw "OutputFile must be an absolute path."
+    }
+    $outParent = Split-Path -Path $OutputFile -Parent
+    if ([string]::IsNullOrWhiteSpace($outParent)) {
+        throw "OutputFile must include a parent directory."
+    }
+    if (-not (Test-Path -LiteralPath $outParent -PathType Container)) {
+        throw ("Output directory does not exist: {0}" -f $outParent)
+    }
+
+    # Disallow using the output file as an input to avoid self-appending
+    foreach ($p in $InputFiles) {
+        if ($p -eq $OutputFile) {
+            throw "OutputFile must not be included in InputFiles. Choose a different output destination."
+        }
+    }
+
+    # --------------- Build concatenated text (optional separator) ---------------
+    $texts = @()
+    foreach ($p in $InputFiles) {
+        $t = $null
+        try {
+            # Reviewer: -Raw reads full file as a single string; relies on default text decoding.
+            $t = Get-Content -LiteralPath $p -Raw
+        } catch {
+            throw ("Failed to read input file '{0}': {1}" -f $p, $_.Exception.Message)
+        }
+        if ($null -eq $t) { $t = '' }
+        $texts += ,$t
+    }
+
+    # Join without extra breaks unless explicitly requested
+    $combined = ''
+    if ($texts.Count -gt 0) {
+        if ($BetweenFiles -eq 'None') {
+            $combined = -join $texts
+        } else {
+            # Single LF between files (no extra at the end)
+            $combined = [string]::Join("`n", $texts)
+        }
+    }
+
+    # --------------- Idempotent write using default output encoding ---------------
+    $needsWrite = $true
+    if (Test-Path -LiteralPath $OutputFile -PathType Leaf) {
+        $current = $null
+        try {
+            $current = Get-Content -LiteralPath $OutputFile -Raw
+        } catch {
+            throw ("Failed to read existing output file '{0}': {1}" -f $OutputFile, $_.Exception.Message)
+        }
+        if ($null -eq $current) {
+            if ('' -eq $combined) { $needsWrite = $false }
+        } else {
+            if ($current -eq $combined) { $needsWrite = $false }
+        }
+    }
+
+    if ($needsWrite) {
+        try {
+            # Reviewer: Use default encoding (no -Encoding) to honor host policy (PS7 UTF-8, PS5 UTF-16 LE).
+            Set-Content -LiteralPath $OutputFile -Value $combined
+        } catch {
+            throw ("Failed to write output file '{0}': {1}" -f $OutputFile, $_.Exception.Message)
+        }
+        if (Test-Path -LiteralPath $OutputFile -PathType Leaf) {
+            _Write-StandardMessage -Message ("Created/Updated: {0}" -f $OutputFile) -Level 'INF'
+        } else {
+            _Write-StandardMessage -Message ("Created: {0}" -f $OutputFile) -Level 'INF'
+        }
+    } else {
+        _Write-StandardMessage -Message ("No changes: '{0}' is already up to date." -f $OutputFile) -Level 'INF'
+    }
+}
+

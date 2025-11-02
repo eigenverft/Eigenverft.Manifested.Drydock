@@ -153,6 +153,9 @@ FunctionsToExport = @(
     # ...ScheduledTask.ps1
     'New-CompatScheduledTask',
 
+    # ...String.ps1
+    'Join-Text',
+
     # ...Tests.ps1
     'Test-VariableValue',
     'Test-CommandAvailable',

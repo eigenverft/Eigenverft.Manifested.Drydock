@@ -1997,6 +1997,7 @@ New-DotnetBillOfMaterialsReport -jsonInput $json -OutputFile 'reports/bom.md' -O
         } else {
             $body = "No BOM entries found."
         }
+        $body = $body.Trim()
         $body = "$body`n`n"
     } else {
         if ($hasRows) {
@@ -2052,7 +2053,7 @@ New-DotnetBillOfMaterialsReport -jsonInput $json -OutputFile 'reports/bom.md' -O
         if ($OutputFormat -eq "markdown") {
             if ([string]::IsNullOrEmpty($SetMarkDownTitle)) { $prefix = "## $defaultTitle`n`n" } else { $prefix = "## $SetMarkDownTitle`n`n" }
         } else {
-            $prefix = "$defaultTitle`n"
+            $prefix = "$defaultTitle`n`n"
         }
     }
 

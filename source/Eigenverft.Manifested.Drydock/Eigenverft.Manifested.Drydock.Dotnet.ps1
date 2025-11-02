@@ -965,6 +965,7 @@ New-DotnetVulnerabilitiesReport -jsonInput $json -OutputFile 'reports/vuln.md' -
     }
 
     $final = $prefix + $body
+    $final = "$final`n`n"
 
     # ---------------- write or return ----------------
     if (-not [string]::IsNullOrEmpty($OutputFile)) {
@@ -2071,7 +2072,6 @@ New-DotnetBillOfMaterialsReport -jsonInput $json -OutputFile 'reports/bom.md' -O
     }
 }
 
-
 function New-ThirdPartyNotice {
 <#
 .SYNOPSIS
@@ -2329,3 +2329,4 @@ New-ThirdPartyNotice
         _Write-StandardMessage -Message ("No changes: '{0}' is already up to date." -f $OutputPath) -Level 'INF'
     }
 }
+

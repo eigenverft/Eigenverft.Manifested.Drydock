@@ -1318,6 +1318,7 @@ ASCII-only. Idempotent. No ternary. No automatic/reserved vars used.
     }
 
     $final = $prefix + $body
+    $final = "$final`n`n"
 
     # ----------------- write or return -----------------
     if (-not [string]::IsNullOrEmpty($OutputFile)) {
@@ -1695,6 +1696,7 @@ New-DotnetOutdatedReport -jsonInput $json -OutputFile 'reports/outdated.md' -Out
     }
 
     $final = $prefix + $body
+    $final = "$final`n`n"
 
     # ---------------- write or return ----------------
     if (-not [string]::IsNullOrEmpty($OutputFile)) {
@@ -2054,6 +2056,7 @@ New-DotnetBillOfMaterialsReport -jsonInput $json -OutputFile 'reports/bom.md' -O
     }
 
     $final = $prefix + $body
+    $final = "$final`n`n"
 
     # ---------------- write or return ----------------
     if (-not [string]::IsNullOrEmpty($OutputFile)) {

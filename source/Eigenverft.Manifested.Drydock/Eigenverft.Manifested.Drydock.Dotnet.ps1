@@ -961,7 +961,7 @@ New-DotnetVulnerabilitiesReport -jsonInput $json -OutputFile 'reports/vuln.md' -
         if ($OutputFormat -eq "markdown") {
             if ([string]::IsNullOrEmpty($SetMarkDownTitle)) { $prefix = "## $defaultTitle`n`n" } else { $prefix = "## $SetMarkDownTitle`n`n" }
         } else {
-            $prefix = "$defaultTitle`n`n"
+            $prefix = "$defaultTitle`n"
         }
     }
 
@@ -1314,7 +1314,7 @@ ASCII-only. Idempotent. No ternary. No automatic/reserved vars used.
         if ($OutputFormat -eq "markdown") {
             if ([string]::IsNullOrEmpty($SetMarkDownTitle)) { $prefix = "## $defaultTitle`n`n" } else { $prefix = "## $SetMarkDownTitle`n`n" }
         } else {
-            $prefix = "$defaultTitle`n`n"  # avoid underline (length ops)
+            $prefix = "$defaultTitle`n"  # avoid underline (length ops)
         }
     }
 
@@ -1692,7 +1692,7 @@ New-DotnetOutdatedReport -jsonInput $json -OutputFile 'reports/outdated.md' -Out
         if ($OutputFormat -eq "markdown") {
             if ([string]::IsNullOrEmpty($SetMarkDownTitle)) { $prefix = "## $defaultTitle`n`n" } else { $prefix = "## $SetMarkDownTitle`n`n" }
         } else {
-            $prefix = "$defaultTitle`n`n"
+            $prefix = "$defaultTitle`n"
         }
     }
 

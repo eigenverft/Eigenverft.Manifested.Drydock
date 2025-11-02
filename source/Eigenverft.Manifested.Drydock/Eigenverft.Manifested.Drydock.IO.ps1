@@ -1449,35 +1449,42 @@ function Join-FileText {
 Concatenate text files into a single output file without adding separators by default.
 
 .DESCRIPTION
-Reads each input file as text using PowerShell's default decoding and concatenates their content
-in the given order. No additional separators or line breaks are inserted by default. The output
-is written using the host's default text encoding (no -Encoding override). The function is idempotent:
-if the resulting text is identical to the current output file content, the file is not rewritten.
+Reads each input via [System.IO.File]::ReadAllText (auto BOM detection), appends the next file’s
+text directly, and finally writes via [System.IO.File]::WriteAllText (framework default encoding).
+No line-ending checks are performed; inputs are assumed correct. Optionally add exactly one or two
+platform newlines between files via -BetweenFiles, defaulting to none. Idempotent: if the resulting
+text equals the current output file’s content, the file is not rewritten.
 
-All parameters must be absolute (rooted) paths. Input files must exist. The output file's parent
-directory must exist; the output file itself may be created if missing.
+All parameters require absolute paths. Input files must exist. Output directory must exist.
+The output file must not appear among input files.
 
 .PARAMETER InputFiles
-Absolute paths of input files to concatenate. Order is preserved. Files must exist.
+Absolute paths of existing input files, concatenated in the given order.
 
 .PARAMETER OutputFile
-Absolute path of the output file to write. Parent directory must exist.
+Absolute path of the output file. Parent directory must already exist.
 
 .PARAMETER BetweenFiles
-Controls insertion between files. Defaults to 'None'.
-Allowed values:
-- 'None'      : Do not insert anything between files.
-- 'NewLine'   : Insert a single LF (`n) between files.
+How many platform newlines to insert between files. Default 'None'.
+- 'None' : Insert nothing between files.
+- 'One'  : Insert exactly one platform newline between files.
+- 'Two'  : Insert exactly two platform newlines between files.
 
 .EXAMPLE
 Join-FileText -InputFiles @('C:\Repo\A.md','C:\Repo\B.md') -OutputFile 'C:\Repo\Combined.md'
+# Reads A then B and writes A+B as-is (no extra separators).
 
 .EXAMPLE
-Join-FileText -InputFiles @('/srv/a.txt','/srv/b.txt','/srv/c.txt') -OutputFile '/srv/all.txt' -BetweenFiles NewLine
+Join-FileText -InputFiles @('/srv/a.txt','/srv/b.txt','/srv/c.txt') -OutputFile '/srv/all.txt' -BetweenFiles One
+# Adds exactly one platform newline between each file’s content, regardless of source endings.
 
 .EXAMPLE
-# Idempotent: if combined content matches the existing output, nothing is rewritten.
-Join-FileText -InputFiles @('/data/p1.csv','/data/p2.csv') -OutputFile '/data/full.csv'
+Join-FileText -InputFiles @('/data/p1.csv','/data/p2.csv') -OutputFile '/data/full.csv' -BetweenFiles Two
+# Adds exactly two platform newlines between files.
+
+.EXAMPLE
+# Idempotent: if Combined.md already matches the concatenation result, no rewrite occurs.
+Join-FileText -InputFiles @('C:\Repo\A.md','C:\Repo\B.md') -OutputFile 'C:\Repo\Combined.md'
 
 .NOTES
 Compatibility: Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
@@ -1494,11 +1501,11 @@ No pipeline input. No WhatIf/Confirm. ASCII-only implementation.
         [string] $OutputFile,
 
         [Parameter(Mandatory=$false)]
-        [ValidateSet('None','NewLine')]
+        [ValidateSet('None','One','Two')]
         [string] $BetweenFiles = 'None'
     )
 
-    # --------------- Inline helpers (local scope, quiet) ---------------
+    # ---------------- Inline helpers (local scope) ----------------
     function _Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         # This function has exceptions from the rest of any ruleset.
@@ -1515,9 +1522,12 @@ No pipeline input. No WhatIf/Confirm. ASCII-only implementation.
             [string]$MinLevel
         )
         # Resolve MinLevel: explicit > global > default.
-        if (-not $PSBoundParameters.ContainsKey('MinLevel')) { $MinLevel = if ($Global:ConsoleLogMinLevel) { $Global:ConsoleLogMinLevel } else { 'INF' } }
+        if (-not $PSBoundParameters.ContainsKey('MinLevel')) { 
+            if ($Global:ConsoleLogMinLevel) { $MinLevel = $Global:ConsoleLogMinLevel } else { $MinLevel = 'INF' }
+        }
         $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
-        $lvl = $Level.ToUpperInvariant() ; $min = $MinLevel.ToUpperInvariant() ; $sev = $sevMap[$lvl] ; $gate= $sevMap[$min]
+        $lvl = $Level.ToUpperInvariant() ; $min = $MinLevel.ToUpperInvariant()
+        $sev = $sevMap[$lvl] ; $gate = $sevMap[$min]
         # Auto-escalate requested errors to meet strict MinLevel (e.g., MinLevel=FTL)
         if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) { $lvl = $min ; $sev = $gate}
         # Drop below gate
@@ -1530,11 +1540,11 @@ No pipeline input. No WhatIf/Confirm. ASCII-only implementation.
         $orgFunc    = $null
         $caller     = $null
         if ($stack) {
-            $orgIdx = -1;
-            for ($i = 0; $i -lt $stack.Count; $i++) { if ($stack[$i].FunctionName -ne $helperName) { $orgFunc = $stack[$i]; $orgIdx = $i; break; }}
-            if ($orgIdx -ge 0) { $callerIdx = $orgIdx + 1; if ($stack.Count -gt $callerIdx) { $caller = $stack[$callerIdx]; } else { $caller = $orgFunc; } }
+            $orgIdx = -1
+            for ($i = 0; $i -lt $stack.Count; $i++) { if ($stack[$i].FunctionName -ne $helperName) { $orgFunc = $stack[$i]; $orgIdx = $i; break } }
+            if ($orgIdx -ge 0) { $callerIdx = $orgIdx + 1; if ($stack.Count -gt $callerIdx) { $caller = $stack[$callerIdx] } else { $caller = $orgFunc } }
         }
-        if (-not $caller) { $caller = [pscustomobject]@{ ScriptName = $PSCommandPath; FunctionName = '<scriptblock>' }; }
+        if ($null -eq $caller) { $caller = [pscustomobject]@{ ScriptName = $PSCommandPath; FunctionName = '<scriptblock>' } }
         $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'console' }
         $func = if ($caller.FunctionName) { $caller.FunctionName } else { '<scriptblock>' }
         # Keep original casing (no .ToLower()) to match definition casing
@@ -1555,86 +1565,58 @@ No pipeline input. No WhatIf/Confirm. ASCII-only implementation.
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param([string] $Path)
         if ($null -eq $Path) { return $false }
-        try {
-            return [System.IO.Path]::IsPathRooted($Path)
-        } catch {
-            return $false
-        }
+        try { return [System.IO.Path]::IsPathRooted($Path) } catch { return $false }
     }
 
-    # --------------- Validation ---------------
+    # ---------------- Validation ----------------
     if ($null -eq $InputFiles -or $InputFiles.Count -lt 1) {
         throw "No input files specified. Provide one or more absolute paths via -InputFiles."
     }
 
-    # Ensure all inputs are absolute and exist
-    $missing = @()
     $nonRooted = @()
+    $missing   = @()
     foreach ($p in $InputFiles) {
         if ([string]::IsNullOrWhiteSpace($p)) { continue }
         if (-not (_Is-Rooted -Path $p)) { $nonRooted += $p }
         if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { $missing += $p }
     }
-    if ($nonRooted.Count -gt 0) {
-        throw ("InputFiles must be absolute paths:`n - {0}" -f ($nonRooted -join "`n - "))
-    }
-    if ($missing.Count -gt 0) {
-        throw ("Missing input files:`n - {0}" -f ($missing -join "`n - "))
-    }
+    if ($nonRooted.Count -gt 0) { throw ("InputFiles must be absolute paths:`n - {0}" -f ($nonRooted -join "`n - ")) }
+    if ($missing.Count -gt 0)   { throw ("Missing input files:`n - {0}" -f ($missing -join "`n - ")) }
 
-    # Output path must be absolute; parent directory must already exist
-    if (-not (_Is-Rooted -Path $OutputFile)) {
-        throw "OutputFile must be an absolute path."
-    }
+    if (-not (_Is-Rooted -Path $OutputFile)) { throw "OutputFile must be an absolute path." }
     $outParent = Split-Path -Path $OutputFile -Parent
-    if ([string]::IsNullOrWhiteSpace($outParent)) {
-        throw "OutputFile must include a parent directory."
-    }
-    if (-not (Test-Path -LiteralPath $outParent -PathType Container)) {
-        throw ("Output directory does not exist: {0}" -f $outParent)
-    }
+    if ([string]::IsNullOrWhiteSpace($outParent)) { throw "OutputFile must include a parent directory." }
+    if (-not (Test-Path -LiteralPath $outParent -PathType Container)) { throw ("Output directory does not exist: {0}" -f $outParent) }
 
-    # Disallow using the output file as an input to avoid self-appending
     foreach ($p in $InputFiles) {
-        if ($p -eq $OutputFile) {
-            throw "OutputFile must not be included in InputFiles. Choose a different output destination."
-        }
+        if ($p -eq $OutputFile) { throw "OutputFile must not be included in InputFiles. Choose a different output destination." }
     }
 
-    # --------------- Build concatenated text (optional separator) ---------------
-    $texts = @()
-    foreach ($p in $InputFiles) {
-        $t = $null
-        try {
-            # Reviewer: -Raw reads full file as a single string; relies on default text decoding.
-            $t = Get-Content -LiteralPath $p -Raw
-        } catch {
-            throw ("Failed to read input file '{0}': {1}" -f $p, $_.Exception.Message)
-        }
-        if ($null -eq $t) { $t = '' }
-        $texts += ,$t
-    }
-
-    # Join without extra breaks unless explicitly requested
+    # ---------------- Concatenate (no line-ending checks) ----------------
+    # Reviewer: Keep it simple — read, append, optional fixed separators, write if changed.
     $combined = ''
-    if ($texts.Count -gt 0) {
-        if ($BetweenFiles -eq 'None') {
-            $combined = -join $texts
-        } else {
-            # Single LF between files (no extra at the end)
-            $combined = [string]::Join("`n", $texts)
-        }
+    $sep = ''
+    if ($BetweenFiles -eq 'One') {
+        $sep = [Environment]::NewLine
+    } elseif ($BetweenFiles -eq 'Two') {
+        $sep = [Environment]::NewLine + [Environment]::NewLine
     }
 
-    # --------------- Idempotent write using default output encoding ---------------
+    for ($i = 0; $i -lt $InputFiles.Count; $i++) {
+        $text = $null
+        try { $text = [System.IO.File]::ReadAllText($InputFiles[$i]) } catch { throw ("Failed to read input file '{0}': {1}" -f $InputFiles[$i], $_.Exception.Message) }
+        if ($null -eq $text) { $text = '' }
+        if ($i -gt 0 -and $sep -ne '') {
+            $combined = $combined + $sep
+        }
+        $combined = $combined + $text
+    }
+
+    # ---------------- Idempotent write ----------------
     $needsWrite = $true
     if (Test-Path -LiteralPath $OutputFile -PathType Leaf) {
         $current = $null
-        try {
-            $current = Get-Content -LiteralPath $OutputFile -Raw
-        } catch {
-            throw ("Failed to read existing output file '{0}': {1}" -f $OutputFile, $_.Exception.Message)
-        }
+        try { $current = [System.IO.File]::ReadAllText($OutputFile) } catch { throw ("Failed to read existing output file '{0}': {1}" -f $OutputFile, $_.Exception.Message) }
         if ($null -eq $current) {
             if ('' -eq $combined) { $needsWrite = $false }
         } else {
@@ -1643,19 +1625,11 @@ No pipeline input. No WhatIf/Confirm. ASCII-only implementation.
     }
 
     if ($needsWrite) {
-        try {
-            # Reviewer: Use default encoding (no -Encoding) to honor host policy (PS7 UTF-8, PS5 UTF-16 LE).
-            Set-Content -LiteralPath $OutputFile -Value $combined
-        } catch {
-            throw ("Failed to write output file '{0}': {1}" -f $OutputFile, $_.Exception.Message)
-        }
-        if (Test-Path -LiteralPath $OutputFile -PathType Leaf) {
-            _Write-StandardMessage -Message ("Created/Updated: {0}" -f $OutputFile) -Level 'INF'
-        } else {
-            _Write-StandardMessage -Message ("Created: {0}" -f $OutputFile) -Level 'INF'
-        }
+        try { [System.IO.File]::WriteAllText($OutputFile, $combined) } catch { throw ("Failed to write output file '{0}': {1}" -f $OutputFile, $_.Exception.Message) }
+        _Write-StandardMessage -Message ("Created/Updated: {0}" -f $OutputFile) -Level 'INF'
     } else {
         _Write-StandardMessage -Message ("No changes: '{0}' is already up to date." -f $OutputFile) -Level 'INF'
     }
 }
+
 

@@ -73,8 +73,9 @@ Convert-FilePlaceholders -InputFile './in.tpl' -OutputFile './out.txt' -Replacem
             [string]$MinLevel
         )
         if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
-            if ($Global:ConsoleLogMinLevel) {
-                $MinLevel = $Global:ConsoleLogMinLevel
+            $gv = Get-Variable -Name 'ConsoleLogMinLevel' -Scope Global -ErrorAction SilentlyContinue
+            if ($null -ne $gv -and $null -ne $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)) {
+                $MinLevel = [string]$gv.Value
             } else {
                 $MinLevel = 'INF'
             }
@@ -377,8 +378,9 @@ Convert-TemplateFilePlaceholders -TemplateFile './appsettings.tlp.json' -Replace
             [string]$MinLevel
         )
         if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
-            if ($Global:ConsoleLogMinLevel) {
-                $MinLevel = $Global:ConsoleLogMinLevel
+            $gv = Get-Variable -Name 'ConsoleLogMinLevel' -Scope Global -ErrorAction SilentlyContinue
+            if ($null -ne $gv -and $null -ne $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)) {
+                $MinLevel = [string]$gv.Value
             } else {
                 $MinLevel = 'INF'
             }

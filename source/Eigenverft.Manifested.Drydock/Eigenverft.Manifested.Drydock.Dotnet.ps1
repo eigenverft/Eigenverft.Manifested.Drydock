@@ -2183,7 +2183,14 @@ New-ThirdPartyNotice
             [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
             [string]$MinLevel
         )
-        if (-not $PSBoundParameters.ContainsKey('MinLevel')) { $MinLevel = if ($Global:ConsoleLogMinLevel) { $Global:ConsoleLogMinLevel } else { 'INF' } }
+        if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
+            $gv = Get-Variable -Name 'ConsoleLogMinLevel' -Scope Global -ErrorAction SilentlyContinue
+            if ($null -ne $gv -and $null -ne $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)) {
+                $MinLevel = [string]$gv.Value
+            } else {
+                $MinLevel = 'INF'
+            }
+        }
         $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
         $lvl = $Level.ToUpperInvariant() ; $min = $MinLevel.ToUpperInvariant() ; $sev = $sevMap[$lvl] ; $gate= $sevMap[$min]
         if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) { $lvl = $min ; $sev = $gate}
@@ -2369,3 +2376,386 @@ New-ThirdPartyNotice
     }
 }
 
+function Export-PackageLicenseTexts {
+<#
+.SYNOPSIS
+Materialize one license file per package as "LICENSE-<LICENSEID>-<PACKAGENAME>.txt" (upper-case).
+
+.DESCRIPTION
+Reads a nuget-license JSON array (from nuget-license tool). For each item:
+  - If the License is an SPDX id (or inferable via licenses.nuget.org/<ID>), fetch canonical SPDX text
+    from the spdx/license-list-data repo (raw) and fill placeholders using JSON data (holder/year).
+    If year cannot be extracted, placeholders are removed; with -FillMissingYearWithCurrentUtc, current UTC year is used.
+  - Otherwise (or if SPDX fetch fails), DO NOT download the original license; instead write a stub file
+    that states the license is not SPDX and points to LicenseUrl.
+
+Caching:
+  - SPDX texts are cached under "<OutputDirectory>\_cache\spdx\<tag>\<ID>.txt" (UTF-8).
+
+Idempotent:
+  - Files are only written when content changes.
+
+.PARAMETER JsonPath
+Path to the JSON file produced by nuget-license (array of items).
+
+.PARAMETER OutputDirectory
+Target folder for generated license files. Defaults to "<JsonPath dir>\LICENSES".
+
+.PARAMETER CacheDirectory
+Folder for SPDX cache. Defaults to "<OutputDirectory>\_cache".
+
+.PARAMETER SpdxListTag
+Tag/branch of spdx/license-list-data to read from. Default 'main'.
+
+.PARAMETER WebTimeoutSeconds
+HTTP timeout in seconds for SPDX fetches. Default 30.
+
+.PARAMETER FillMissingYearWithCurrentUtc
+If set, when SPDX year is not present in JSON, fill with current UTC year (otherwise remove placeholders).
+
+.EXAMPLE
+Export-PackageLicenseTexts3 -JsonPath .\ThirdPartyLicencesNotices.json
+
+.EXAMPLE
+Export-PackageLicenseTexts3 -JsonPath .\ThirdPartyLicencesNotices.json -FillMissingYearWithCurrentUtc
+
+.NOTES
+- Compatible with Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
+- No ShouldProcess; no pipeline-bound parameters; ASCII-only; StrictMode 3.
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$JsonPath,
+
+        [Parameter()]
+        [string]$OutputDirectory,
+
+        [Parameter()]
+        [string]$CacheDirectory,
+
+        [Parameter()]
+        [ValidateNotNullOrEmpty()]
+        [string]$SpdxListTag = 'main',
+
+        [Parameter()]
+        [int]$WebTimeoutSeconds = 30,
+
+        [Parameter()]
+        [switch]$FillMissingYearWithCurrentUtc
+    )
+
+    # -------- minimal console logger (idempotent; PS5-safe) --------
+    function _Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$Message,
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level = 'INF',
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
+        )
+        # Resolve MinLevel from global 'ConsoleLogMinLevel' if not passed; default to 'INF' when missing/empty (StrictMode-safe).
+        if (-not $PSBoundParameters.ContainsKey('MinLevel')) { $gv = Get-Variable -Name 'ConsoleLogMinLevel' -Scope Global -ErrorAction SilentlyContinue; if ($null -ne $gv -and $null -ne $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)) { $MinLevel = [string]$gv.Value } else { $MinLevel = 'INF' } }
+        $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
+        $lvl = $Level.ToUpperInvariant(); $min = $MinLevel.ToUpperInvariant()
+        $sev = $sevMap[$lvl]; $gate = $sevMap[$min]
+        if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) { $lvl = $min; $sev = $gate }
+        if ($sev -lt $gate) { return }
+        $ts = ([DateTime]::UtcNow).ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $stack = Get-PSCallStack; $helperName = $MyInvocation.MyCommand.Name
+        $orgFunc = $null; $caller = $null
+        if ($stack) {
+            $orgIdx = -1
+            for ($i = 0; $i -lt $stack.Count; $i++) { if ($stack[$i].FunctionName -ne $helperName) { $orgFunc = $stack[$i]; $orgIdx = $i; break } }
+            if ($orgIdx -ge 0) {
+                $callerIdx = $orgIdx + 1
+                if ($stack.Count -gt $callerIdx) { $caller = $stack[$callerIdx] } else { $caller = $orgFunc }
+            }
+        }
+        if (-not $caller) { $caller = [pscustomobject]@{ ScriptName = $PSCommandPath; FunctionName = '<scriptblock>' } }
+        $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'console' }
+        $func = if ($caller.FunctionName) { $caller.FunctionName } else { '<scriptblock>' }
+        $line = "[{0} {1}] [{2}] [{3}] {4}" -f $ts, $lvl, $file, $func, $Message
+        if ($sev -ge 4) {
+            if ($ErrorActionPreference -eq 'Stop') {
+                Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified -ErrorAction Stop
+            } else {
+                Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified
+            }
+        } else {
+            Write-Information -MessageData $line -InformationAction Continue
+        }
+    }
+
+    # ---------------- helpers (no pipeline writes) ----------------
+    function _Get-PropString { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([object]$Obj,[string]$Name)
+        if ($null -eq $Obj -or [string]::IsNullOrEmpty($Name)) { return "" }
+        $p = $Obj.PSObject.Properties.Match($Name)
+        if ($p -and $p.Count -gt 0 -and $null -ne $p[0].Value) { return [string]$p[0].Value }
+        return ""
+    }
+    function _Read-JsonFile { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string]$Path)
+        if ([string]::IsNullOrEmpty($Path)) { throw "JsonPath is required." }
+        if (-not (Test-Path -Path $Path -PathType Leaf)) { throw ("JSON file not found: {0}" -f $Path) }
+        $raw = Get-Content -Path $Path -Raw -ErrorAction Stop
+        try { return ,@((ConvertFrom-Json -InputObject $raw)) } catch { throw ("Failed to parse JSON: {0}" -f $Path) }
+    }
+    function _Sanitize-FileName { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string]$Name)
+        if ([string]::IsNullOrEmpty($Name)) { return "UNKNOWN" }
+        return ($Name -replace '[^A-Za-z0-9._-]+','_')
+    }
+    function _TryWebGetText { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string]$Url,[int]$TimeoutSec)
+        if ([string]::IsNullOrEmpty($Url)) { return $null }
+        $orig = [Net.ServicePointManager]::SecurityProtocol
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = $orig -bor [Net.SecurityProtocolType]::Tls12
+            $resp = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec $TimeoutSec -Method Get -ErrorAction Stop
+            if ($null -ne $resp -and $null -ne $resp.Content -and [string]::IsNullOrEmpty([string]$resp.Content) -eq $false) { return [string]$resp.Content }
+        } catch { return $null } finally { [Net.ServicePointManager]::SecurityProtocol = $orig }
+        return $null
+    }
+
+    # ---- SPDX helpers ----
+    function _GetSpdxText {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$Id,
+            [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$Tag,
+            [Parameter()][string]$DiskCache,
+            [Parameter()][hashtable]$MemCache,
+            [Parameter()][int]$TimeoutSec = 30
+        )
+        if ([string]::IsNullOrEmpty($Id)) { return $null }
+        if ($null -ne $MemCache -and $MemCache.ContainsKey($Id)) { return [string]$MemCache[$Id] }
+
+        $diskFile = $null
+        if (-not [string]::IsNullOrEmpty($DiskCache)) {
+            $spdxDir = Join-Path -Path (Join-Path -Path $DiskCache -ChildPath 'spdx') -ChildPath $Tag
+            if (-not (Test-Path -Path $spdxDir -PathType Container)) { [void][System.IO.Directory]::CreateDirectory($spdxDir) }
+            $diskFile = Join-Path -Path $spdxDir -ChildPath ("{0}.txt" -f (_Sanitize-FileName -Name $Id))
+            if (Test-Path -Path $diskFile -PathType Leaf) {
+                $cached = Get-Content -Path $diskFile -Raw -ErrorAction SilentlyContinue
+                if ($null -ne $cached) {
+                    if ($null -ne $MemCache) { $MemCache[$Id] = $cached }
+                    return $cached
+                }
+            }
+        }
+
+        $urls = @(
+            ("https://raw.githubusercontent.com/spdx/license-list-data/{0}/text/{1}.txt" -f $Tag, $Id),
+            ("https://raw.githubusercontent.com/spdx/license-list-data/main/text/{0}.txt" -f $Id)
+        )
+        $text = $null
+        foreach ($u in $urls) {
+            $tmp = _TryWebGetText -Url $u -TimeoutSec $TimeoutSec
+            if (-not [string]::IsNullOrEmpty($tmp)) { $text = $tmp; break }
+        }
+        if ($null -eq $text) { return $null }
+
+        if ($null -ne $MemCache) { $MemCache[$Id] = $text }
+        if (-not [string]::IsNullOrEmpty($diskFile)) {
+            [System.IO.File]::WriteAllText($diskFile, $text, [System.Text.Encoding]::UTF8)
+        }
+        return $text
+    }
+    function _Get-SpdxText {  # shim
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([string]$Id,[string]$Tag,[string]$DiskCache,[hashtable]$MemCache,[int]$TimeoutSec = 30)
+        return (_GetSpdxText -Id $Id -Tag $Tag -DiskCache $DiskCache -MemCache $MemCache -TimeoutSec $TimeoutSec)
+    }
+    function _TryParseSpdxWith {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([string]$Expr)
+        if ([string]::IsNullOrEmpty($Expr)) { return $null }
+        $m = [regex]::Match($Expr, '^\s*([A-Za-z0-9.\-+]+)\s+WITH\s+([A-Za-z0-9.\-+]+)\s*$')
+        if ($m.Success) { return [pscustomobject]@{ LicenseId = $m.Groups[1].Value; ExceptionId = $m.Groups[2].Value } }
+        return $null
+    }
+    function _RegexEscapeReplacement { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param([string]$Text)
+        if ($null -eq $Text) { return "" }
+        $s = $Text -replace '\\','\\'
+        $s = $s -replace '\$','$$'
+        return $s
+    }
+    function _Extract-YearFromCopyright {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([string]$Copyright)
+        if ([string]::IsNullOrEmpty($Copyright)) { return $null }
+        $m = [regex]::Match($Copyright, '\b([12][0-9]{3}\s*[-\x2013]\s*[12][0-9]{3})\b')
+        if ($m.Success) { return ($m.Groups[1].Value -replace '\s+','') }
+        $m2 = [regex]::Match($Copyright, '\b([12][0-9]{3})\b')
+        if ($m2.Success) { return $m2.Groups[1].Value }
+        return $null
+    }
+    function _Extract-Holder {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([string]$Copyright,[string]$Authors)
+        if (-not [string]::IsNullOrEmpty($Copyright)) {
+            $s = $Copyright
+            $s = [regex]::Replace($s,'(?i)\bcopyright\b','')
+            $s = [regex]::Replace($s,'(?i)\(c\)|\xA9','')
+            $s = [regex]::Replace($s,'\b[12][0-9]{3}(\s*[-\x2013]\s*[12][0-9]{3})?\b','')
+            $s = [regex]::Replace($s,'(?i)\ball rights reserved\b\.?','')
+            $s = $s.Trim(' ','.',';','-',':',',','/','\','"','''')
+            if (-not [string]::IsNullOrEmpty($s)) { return $s }
+        }
+        if (-not [string]::IsNullOrEmpty($Authors)) { return $Authors }
+        return $null
+    }
+    function _Fill-SpdxPlaceholders {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([string]$SpdxText,[string]$YearValue,[string]$HolderValue)
+        if ([string]::IsNullOrEmpty($SpdxText)) { return $SpdxText }
+        $out = $SpdxText
+        if (-not [string]::IsNullOrEmpty($YearValue)) {
+            $yr = _RegexEscapeReplacement -Text $YearValue
+            $out = [regex]::Replace($out, '(?i)[<{\[]\s*year\s*[>}\]]', $yr)
+            $out = [regex]::Replace($out, '(?i)[<{\[]\s*yyyy\s*[>}\]]', $yr)
+        } else {
+            $out = [regex]::Replace($out, '(?i)[<{\[]\s*year\s*[>}\]]', '')
+            $out = [regex]::Replace($out, '(?i)[<{\[]\s*yyyy\s*[>}\]]', '')
+            $out = $out -replace ' {2,}',' '
+        }
+        if (-not [string]::IsNullOrEmpty($HolderValue)) {
+            $hd = _RegexEscapeReplacement -Text $HolderValue
+            $out = [regex]::Replace($out, '(?i)[<{\[]\s*copyright\s*holders?\s*[>}\]]', $hd)
+            $out = [regex]::Replace($out, '(?i)\[\s*fullname\s*\]', $hd)
+            $out = [regex]::Replace($out, '(?i)[<{\[]\s*owner\s*[>}\]]', $hd)
+            $out = [regex]::Replace($out, '(?i)\[\s*owner\s*\]', $hd)
+            $out = [regex]::Replace($out, '(?i)[<{\[]\s*name\s*of\s*author\s*[>}\]]', $hd)
+            $out = [regex]::Replace($out, '(?i)\[\s*name\s+of\s+copyright\s+owner\s*\]', $hd)
+        }
+        return $out
+    }
+
+    # ---------------- main ----------------
+    Set-StrictMode -Version 3
+
+    $jsonFull = [System.IO.Path]::GetFullPath($JsonPath)
+    $baseDir  = Split-Path -Path $jsonFull -Parent
+    if ([string]::IsNullOrEmpty($OutputDirectory)) {
+        $OutputDirectory = Join-Path -Path $baseDir -ChildPath "LICENSES"
+    }
+    if (-not (Test-Path -Path $OutputDirectory -PathType Container)) {
+        [void][System.IO.Directory]::CreateDirectory($OutputDirectory)
+        _Write-StandardMessage -Message ("Created directory: {0}" -f $OutputDirectory) -Level INF
+    }
+    if ([string]::IsNullOrEmpty($CacheDirectory)) {
+        $CacheDirectory = Join-Path -Path $OutputDirectory -ChildPath "_cache"
+    }
+    if (-not (Test-Path -Path $CacheDirectory -PathType Container)) {
+        [void][System.IO.Directory]::CreateDirectory($CacheDirectory)
+    }
+
+    $items = _Read-JsonFile -Path $jsonFull
+    $items = $items | Sort-Object -Property @{Expression='PackageId';Ascending=$true}, @{Expression='PackageVersion';Ascending=$true}
+
+    $memSpdx = @{}
+
+    foreach ($it in $items) {
+        # Extract fields safely under StrictMode
+        $pkgId      = _Get-PropString -Obj $it -Name 'PackageId'
+        $pkgVer     = _Get-PropString -Obj $it -Name 'PackageVersion'
+        $licenseId  = _Get-PropString -Obj $it -Name 'License'
+        $licenseUrl = _Get-PropString -Obj $it -Name 'LicenseUrl'
+        $authors    = _Get-PropString -Obj $it -Name 'Authors'
+        $copyright  = _Get-PropString -Obj $it -Name 'Copyright'
+
+        if ([string]::IsNullOrEmpty($licenseId) -and -not [string]::IsNullOrEmpty($licenseUrl)) {
+            $m = [regex]::Match($licenseUrl, 'licenses\.nuget\.org/([^/?#]+)')
+            if ($m.Success) { $licenseId = $m.Groups[1].Value }
+        }
+
+        # Prepare file name parts
+        $pkgBase = if ([string]::IsNullOrEmpty($pkgId)) { "UNKNOWN" } else { $pkgId }
+        $licBase = if ([string]::IsNullOrEmpty($licenseId)) { "UNSPECIFIED" } else { $licenseId }
+        $pkgUpper = (_Sanitize-FileName -Name $pkgBase).ToUpperInvariant()
+        $licUpper = (_Sanitize-FileName -Name $licBase).ToUpperInvariant()
+        $fileName = "LICENSE-{0}-{1}.txt" -f $licUpper, $pkgUpper
+        $outFile  = Join-Path -Path $OutputDirectory -ChildPath $fileName
+
+        # SPDX main/exception split
+        $mainId = $licenseId
+        $excId  = $null
+        $pair   = _TryParseSpdxWith -Expr $licenseId
+        if ($null -ne $pair) { $mainId = $pair.LicenseId; $excId = $pair.ExceptionId }
+
+        # Try SPDX fetch
+        $spdxText = $null
+        if (-not [string]::IsNullOrEmpty($mainId)) {
+            $spdxText = _Get-SpdxText -Id $mainId -Tag $SpdxListTag -DiskCache $CacheDirectory -MemCache $memSpdx -TimeoutSec $WebTimeoutSeconds
+        }
+
+        if ($null -ne $spdxText) {
+            # Fill placeholders from JSON; year removal vs. optional fill with current UTC year
+            $yearFromJson = _Extract-YearFromCopyright -Copyright $copyright
+            if ([string]::IsNullOrEmpty($yearFromJson) -and $FillMissingYearWithCurrentUtc) {
+                $yearFromJson = ([DateTime]::UtcNow).Year.ToString()
+            }
+            $holderFromJson = _Extract-Holder -Copyright $copyright -Authors $authors
+
+            $finalText = _Fill-SpdxPlaceholders -SpdxText $spdxText -YearValue $yearFromJson -HolderValue $holderFromJson
+
+            # Append exception text if present and resolvable
+            if (-not [string]::IsNullOrEmpty($excId)) {
+                $excText = _GetSpdxText -Id $excId -Tag $SpdxListTag -DiskCache $CacheDirectory -MemCache $memSpdx -TimeoutSec $WebTimeoutSeconds
+                if (-not [string]::IsNullOrEmpty($excText)) {
+                    $finalText = $finalText + "`r`n`r`n----- SPDX Exception: " + $excId + " -----`r`n`r`n" + $excText
+                }
+            }
+
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($finalText)
+            $existing = if (Test-Path -Path $outFile -PathType Leaf) { [System.IO.File]::ReadAllBytes($outFile) } else { $null }
+            $same = $false
+            if ($null -ne $existing -and $existing.Length -eq $bytes.Length) {
+                $same = ($existing -join ',') -ceq ($bytes -join ',')
+            }
+            if (-not $same) {
+                [System.IO.File]::WriteAllBytes($outFile, $bytes)
+                _Write-StandardMessage -Message ("Wrote: {0}" -f $outFile) -Level INF
+            }
+            continue
+        }
+
+        # Non-SPDX OR failed SPDX fetch -> write stub (no download)
+        $lines = New-Object 'System.Collections.Generic.List[string]'
+        [void]$lines.Add("This package's license is not provided as an SPDX canonical text by this tool.")
+        [void]$lines.Add("")
+        # Build parts explicitly (StrictMode-safe; PS5-compatible).
+        $pkgSuffix = ""
+        if (-not [string]::IsNullOrEmpty($pkgVer)) { $pkgSuffix = " ($pkgVer)" }
+
+        $reportedLicense = "UNSPECIFIED"
+        if (-not [string]::IsNullOrEmpty($licenseId)) { $reportedLicense = $licenseId }
+
+        [void]$lines.Add(("Package: {0}{1}" -f $pkgBase, $pkgSuffix))
+        [void]$lines.Add(("Reported license: {0}" -f $reportedLicense))
+        [void]$lines.Add("")
+        if (-not [string]::IsNullOrEmpty($licenseUrl)) {
+            [void]$lines.Add("Please review the license at the original source:")
+            [void]$lines.Add($licenseUrl)
+        } else {
+            [void]$lines.Add("No LicenseUrl was provided in JSON for this package.")
+        }
+        [void]$lines.Add("")
+        [void]$lines.Add("Note: This stub intentionally avoids embedding third-party license content to prevent unintended alterations.")
+        $stub = [string]::Join("`r`n", $lines.ToArray())
+        $bytesStub = [System.Text.Encoding]::UTF8.GetBytes($stub)
+        $existingStub = if (Test-Path -Path $outFile -PathType Leaf) { [System.IO.File]::ReadAllBytes($outFile) } else { $null }
+        $sameStub = $false
+        if ($null -ne $existingStub -and $existingStub.Length -eq $bytesStub.Length) {
+            $sameStub = ($existingStub -join ',') -ceq ($bytesStub -join ',')
+        }
+        if (-not $sameStub) {
+            [System.IO.File]::WriteAllBytes($outFile, $bytesStub)
+            _Write-StandardMessage -Message ("Wrote (stub): {0}" -f $outFile) -Level INF
+        }
+    }
+
+    _Write-StandardMessage -Message ("Completed. Output: {0}" -f $OutputDirectory) -Level INF
+}
+
+#$Global:ConsoleLogMinLevel = 'INF'
+#Export-PackageLicenseTexts -JsonPath "C:\dev\github.com\eigenverft\Eigenverft.Distributed.Drydock\output\reports\Eigenverft.Distributed.Drydock\Eigenverft.Distributed.Drydock\development\0.1.20256.19062\ThirdPartyLicencesNotices.json"

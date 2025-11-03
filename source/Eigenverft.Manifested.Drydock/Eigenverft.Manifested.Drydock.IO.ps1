@@ -1522,8 +1522,13 @@ No pipeline input. No WhatIf/Confirm. ASCII-only implementation.
             [string]$MinLevel
         )
         # Resolve MinLevel: explicit > global > default.
-        if (-not $PSBoundParameters.ContainsKey('MinLevel')) { 
-            if ($Global:ConsoleLogMinLevel) { $MinLevel = $Global:ConsoleLogMinLevel } else { $MinLevel = 'INF' }
+        if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
+            $gv = Get-Variable -Name 'ConsoleLogMinLevel' -Scope Global -ErrorAction SilentlyContinue
+            if ($null -ne $gv -and $null -ne $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)) {
+                $MinLevel = [string]$gv.Value
+            } else {
+                $MinLevel = 'INF'
+            }
         }
         $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
         $lvl = $Level.ToUpperInvariant() ; $min = $MinLevel.ToUpperInvariant()

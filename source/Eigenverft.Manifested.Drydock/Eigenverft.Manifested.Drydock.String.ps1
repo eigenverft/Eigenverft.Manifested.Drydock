@@ -82,7 +82,12 @@ Join-Text -InputObject @('x', '', 'y') -LogLevel INF
             [string]$MinLevel
         )
         if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
-            $MinLevel = if ($Global:ConsoleLogMinLevel) { $Global:ConsoleLogMinLevel } else { 'INF' }
+            $gv = Get-Variable -Name 'ConsoleLogMinLevel' -Scope Global -ErrorAction SilentlyContinue
+            if ($null -ne $gv -and $null -ne $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)) {
+                $MinLevel = [string]$gv.Value
+            } else {
+                $MinLevel = 'INF'
+            }
         }
         $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
         $lvl  = $Level.ToUpperInvariant()

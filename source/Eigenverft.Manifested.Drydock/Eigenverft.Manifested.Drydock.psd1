@@ -91,6 +91,7 @@ FunctionsToExport = @(
     'New-DotnetDeprecatedReport',
     'New-DotnetOutdatedReport',
     'New-ThirdPartyNotice',
+    'Export-PackageLicenseTexts',
 
     # ...Execution.ps1
     'Invoke-Exec',

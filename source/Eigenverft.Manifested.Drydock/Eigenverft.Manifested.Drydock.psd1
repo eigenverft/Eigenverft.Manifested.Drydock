@@ -95,6 +95,11 @@ FunctionsToExport = @(
 
     # ...Execution.ps1
     'Invoke-Exec',
+    
+    # ...Framework.ps1
+    'Get-DotNetFrameworkInfo',
+    'Get-DotNetFrameworkLatestByFamily',
+    'Get-DotNetFrameworkFamilyCapabilities',
 
     # ...Git.ps1
     'Get-GitTopLevelDirectory',

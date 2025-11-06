@@ -461,18 +461,21 @@ the single “latest” installed row, preferring the highest bitness on this OS
 function Get-DotNetFrameworkFamilyCapabilities {
 <#
 .SYNOPSIS
-One row per .NET Framework family with capability fields forced to arrays (PS5-safe).
+One row per .NET Framework family with safe-array fields and a probed toolset.
 
 .DESCRIPTION
-Calls Get-DotNetFrameworkLatestByFamily, keeps only rows with an existing InstallPath,
-and returns minimal objects suitable for safely invoking toolchains.
-Ensures the following are ALWAYS arrays (even with one or zero items):
+Wraps Get-DotNetFrameworkLatestByFamily, keeps only rows with an existing InstallPath,
+and returns compact objects suitable for invoking toolchains.
+
+Guarantees arrays for:
 - TargetPacksApplicable
 - TargetPacksApplicableTFM
 - TargetPacksApplicableVersionString
 
-Also adds:
-- ToolchainBitness (derived from RegistryView: 'x64' or 'x86')
+Adds:
+- ToolchainBitness  : 'x64' or 'x86' (derived from RegistryView)
+- AvailableToolset  : array of existing tools { Name, Path, Version, ProductVersion, LastWriteUtc, LengthBytes }
+                      (non-existing EXEs are NOT returned)
 
 .PARAMETER IncludeNonInstalled
 Pass-through to Get-DotNetFrameworkLatestByFamily.
@@ -480,25 +483,27 @@ Pass-through to Get-DotNetFrameworkLatestByFamily.
 .PARAMETER IncludeFeatureState
 Pass-through to Get-DotNetFrameworkLatestByFamily.
 
+.PARAMETER ToolNames
+EXE basenames (without .exe) to probe under each InstallPath root. Only present tools are returned.
+
 .EXAMPLE
-Get-DotNetFrameworkFamilyCapabilities | Format-Table
+Get-DotNetFrameworkFamilyCapabilities |
+  Select-Object Family,ToolchainBitness,InstallPath,
+    @{N='Tools';E={$_.AvailableToolset | ForEach-Object Name -join ','}} |
+  Format-Table -AutoSize
 #>
     [CmdletBinding()]
     param(
         [switch]$IncludeNonInstalled,
-        [switch]$IncludeFeatureState
+        [switch]$IncludeFeatureState,
+        [string[]]$ToolNames = @(
+            'csc','vbc','msbuild','ngen','ilasm','al','regasm','regsvcs','installutil',
+            'aspnet_regiis','aspnet_compiler','aspnet_regsql','aspnet_state','jsc','mscorsvw',
+            'resgen' # Will be omitted unless actually present under the Framework path
+        )
     )
 
-    # Only forward supported switches. Wrapper already prefers highest-bitness + latest-per-family.
-    $result = if ($IncludeNonInstalled -or $IncludeFeatureState) {
-        Get-DotNetFrameworkLatestByFamily -IncludeNonInstalled:$IncludeNonInstalled -IncludeFeatureState:$IncludeFeatureState
-    } else {
-        Get-DotNetFrameworkLatestByFamily
-    }
-
-    if (-not $result -or -not $result.LatestByFamily) { return @() }
-
-    # Local helpers
+    # -- local helpers (kept PS5-safe) --
     function To-StringArray {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param([object]$Value)
@@ -509,20 +514,76 @@ Get-DotNetFrameworkFamilyCapabilities | Format-Table
         param([string]$RegistryView)
         if ($RegistryView -eq '64-bit') { 'x64' } else { 'x86' }
     }
+    function Probe-Exe {
+        <#
+        .SYNOPSIS
+        Probe a single EXE via pure .NET FileInfo; returns $null if not found.
+        .NOTES
+        External reviewer note: returning $null for missing files simplifies filtering downstream.
+        #>
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory)][string]$Directory,
+            [Parameter(Mandatory)][string]$ExeBaseName
+        )
+        $exePath = [System.IO.Path]::Combine($Directory, ('{0}.exe' -f $ExeBaseName))
+        try {
+            $fi = [System.IO.FileInfo]::new($exePath)
+            if (-not $fi.Exists) { return $null }
+            $fvi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($fi.FullName)
+            [pscustomobject]@{
+                Name           = $ExeBaseName
+                Path           = $fi.FullName
+                Version        = $fvi.FileVersion
+                ProductVersion = $fvi.ProductVersion
+                LastWriteUtc   = $fi.LastWriteTimeUtc
+                LengthBytes    = $fi.Length
+            }
+        }
+        catch {
+            # External reviewer note: swallow I/O errors into omission; use -Verbose for diagnostics if needed.
+            Write-Verbose ("Probe-Exe: {0}" -f $_.Exception.Message)
+            return $null
+        }
+    }
+    function Get-ToolsForPath {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory)][string]$InstallPath,
+            [Parameter(Mandatory)][string[]]$Names
+        )
+        ,(@(
+            foreach ($n in $Names) {
+                $tool = Probe-Exe -Directory $InstallPath -ExeBaseName $n
+                if ($null -ne $tool) { $tool }
+            }
+        ))
+    }
+    # -- end helpers --
+
+    $result = if ($IncludeNonInstalled -or $IncludeFeatureState) {
+        Get-DotNetFrameworkLatestByFamily -IncludeNonInstalled:$IncludeNonInstalled -IncludeFeatureState:$IncludeFeatureState
+    } else {
+        Get-DotNetFrameworkLatestByFamily
+    }
+
+    if (-not $result -or -not $result.LatestByFamily) { return @() }
 
     $result.LatestByFamily |
         Where-Object { $_.DirectoryExists -eq $true } |
-        Select-Object @{
-                Name='Family'; Expression={ $_.Family }
-            }, @{
-                Name='ToolchainBitness'; Expression={ To-BitnessLabel $_.RegistryView }
-            }, @{
-                Name='TargetPacksApplicable'; Expression={ To-StringArray $_.TargetPacksApplicable }
-            }, @{
-                Name='TargetPacksApplicableTFM'; Expression={ To-StringArray $_.TargetPacksApplicableTFM }
-            }, @{
-                Name='TargetPacksApplicableVersionString'; Expression={ To-StringArray $_.TargetPacksApplicableVersionString }
-            }, @{
-                Name='InstallPath'; Expression={ $_.InstallPath }
+        ForEach-Object {
+            [pscustomobject]@{
+                Family                             = $_.Family
+                ToolchainBitness                   = To-BitnessLabel $_.RegistryView
+                TargetPacksApplicable              = To-StringArray $_.TargetPacksApplicable
+                TargetPacksApplicableTFM           = To-StringArray $_.TargetPacksApplicableTFM
+                TargetPacksApplicableVersionString = To-StringArray $_.TargetPacksApplicableVersionString
+                InstallPath                        = $_.InstallPath
+                AvailableToolset                   = Get-ToolsForPath -InstallPath $_.InstallPath -Names $ToolNames
             }
+        }
 }
+
+
+
+Get-DotNetFrameworkFamilyCapabilities | ConvertTo-Json

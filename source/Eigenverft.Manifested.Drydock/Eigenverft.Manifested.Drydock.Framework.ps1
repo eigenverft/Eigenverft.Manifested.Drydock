@@ -586,4 +586,4 @@ Get-DotNetFrameworkFamilyCapabilities |
 
 
 
-Get-DotNetFrameworkFamilyCapabilities | ConvertTo-Json
+#Get-DotNetFrameworkFamilyCapabilities | ConvertTo-Json

@@ -4,7 +4,7 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
    - MUST run on Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
 
 2) AUTOMATIC / RESERVED VARIABLES (PS5–PS7)
-   - Do not read/write/compare or shadow PowerShell automatic/reserved vars (any casing). Examples (not exhaustive): $_, $PSItem, $args/$Args, $IsWindows/$IsMacOS/$IsLinux, $Error, $pid, $PID, $LASTEXITCODE, $Matches, $home, $PSBoundParameters, $PSScriptRoot, $MyInvocation. Do not name parameters/locals like these (no "Args", "IsWindows", "Error", etc.).
+   - Do not assign values to automatic/reserved vars or shadow PowerShell automatic/reserved vars (any casing). Examples (not exhaustive): $PSItem, $args/$Args, $IsWindows/$IsMacOS/$IsLinux, $Error, $pid, $PID, $LASTEXITCODE, $Matches, $home, $PSBoundParameters, $PSScriptRoot, $MyInvocation. Do not name parameters/locals like these (no "Args", "IsWindows", "Error", etc.).
 
 3) EXTERNAL TOOLS
    - IF an external tool is required (e.g., dotnet, robocopy), THEN fail fast with a clear, actionable error when it is missing.
@@ -30,7 +30,7 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
    - Format the Write function implement a inline helper function for it suggested format.
     function _Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
-        # This function has exceptions from the rest of any ruleset.
+        # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
         [CmdletBinding()]
         param(
             [Parameter(Mandatory=$true)]
@@ -121,12 +121,15 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
 15) Assume StrictMode-safe 3 is active before the function call; the function must be StrictMode-safe 3.
    - Forbid references to uninitialized variables, including inside strings.
    - Forbid references to non-existent object properties.
-   - Forbid function calls that use method-call syntax.
+   - Forbid dynamic invocation tricks for core logic (e.g. & ($x) with uncontrolled values). Normal method calls ($obj.Method(), [Type]::Method()) are allowed.
    - Forbid out-of-bounds or unresolved array indices.
    - Definitive: The function must fully comply with StrictMode-safe 3.
 
 16) COMPARISONS
    - ($null -ne $ext) $null should always be on the left side of the comparisons.
+
+17) RETURN VALUES OF FUNCTIONS
+   - Whenever a function is meant to return multiple elements as one definitive value (a single array, not a stream), end it with ,@(...) - or, if you want a typed array, with ,([type[]]@(...))
 
 DEFINITE: A function is "DONE" only if it meets ALL requirements above.
 

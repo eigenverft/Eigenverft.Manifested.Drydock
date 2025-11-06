@@ -214,4 +214,522 @@ Invoke-Exec -Executable "curl" -Arguments @("-H", "Authorization: Bearer $token"
     }
 }
 
+function Invoke-Exec2 {
+<#
+.SYNOPSIS
+Executes an external command with merged specific and shared arguments, optional output capture, timing, exit-code validation, and controlled return shaping.
+
+.DESCRIPTION
+Invoke-Exec standardizes external command execution across platforms.
+
+Behavior:
+- Arguments are combined as: Arguments first, then CommonArguments.
+- Validates that the specified executable exists; fails fast with a clear error when missing.
+- Supports masking sensitive values in the displayed command line (does not affect real execution).
+- Supports optional execution time measurement.
+- Exit code must be in AllowedExitCodes; otherwise:
+  - If the exit code is 0 but 0 is not allowed, it is translated to CustomErrorCode (default 99).
+  - For any other disallowed code, the function terminates with that exit code.
+- When CaptureOutput is:
+  - $true  : Captures output and shapes according to ReturnType.
+  - $false : Streams directly or is discarded when CaptureOutputDump is $true.
+
+ReturnType (only when CaptureOutput is $true):
+- Objects : Returns all output objects as a single array.
+- Strings : Returns all output as a single string[].
+- Text    : Returns a single string with joined lines (default).
+
+.PARAMETER Executable
+Name or path of the executable to invoke. Must resolve via PATH or be a valid path.
+
+.PARAMETER Arguments
+Command-specific arguments for this invocation (subcommands, positionals, flags).
+
+.PARAMETER CommonArguments
+Shared, reusable arguments appended after Arguments.
+
+.PARAMETER HideValues
+One or more sensitive substrings to mask in the displayed command line.
+
+.PARAMETER MeasureTime
+When $true, measures and logs elapsed execution time. Default: $true.
+
+.PARAMETER CaptureOutput
+When $true, captures and returns process output. When $false, streams to host or is discarded. Default: $true.
+
+.PARAMETER CaptureOutputDump
+When $true and CaptureOutput is $false, discards all process output. Default: $false.
+
+.PARAMETER AllowedExitCodes
+List of exit codes treated as success. Default: 0. If 0 occurs but is not in the list, it is mapped to CustomErrorCode.
+
+.PARAMETER ReturnType
+Controls shape of captured output. Allowed: Objects, Strings, Text. Default: Text.
+
+.EXAMPLE
+# Capture output as a single text blob with shared flags appended last
+$common = @("--verbosity","minimal","-c","Release")
+$text = Invoke-Exec -Executable "dotnet" -Arguments @("build","MyApp.csproj") -CommonArguments $common -ReturnType Text
+
+.EXAMPLE
+# Capture a single boolean-style output while preserving native objects
+$result = Invoke-Exec -Executable "cmd" -Arguments @("/c","echo","True") -ReturnType Objects
+$ok = [bool]::Parse([string]$result)
+
+.EXAMPLE
+# Stream output directly and validate exit code against an allowed set
+Invoke-Exec -Executable "dotnet" -Arguments @("--info") -CaptureOutput:$false -AllowedExitCodes @(0)
+
+.EXAMPLE
+# Mask secrets in logged command while using real values for execution
+$pwd = $env:TOOL_PASSWORD
+Invoke-Exec -Executable "tool" -Arguments @("--password=$pwd") -HideValues @($pwd)
+
+.NOTES
+- Compatible with Windows PowerShell 5/5.1 and PowerShell 7+ on Windows, macOS, and Linux.
+- Designed to be StrictMode 3 safe.
+- Uses process exit codes intentionally on failure; align usage accordingly in CI/scripts.
+#>
+    [CmdletBinding()]
+    [Alias('iexec2')]
+    param(
+        [Alias('exe')]
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Executable,
+
+        [Alias('cmd')]
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
+        [string[]]$Arguments,
+
+        [Alias('shared')]
+        [Parameter(Mandatory = $false)]
+        [string[]]$CommonArguments,
+
+        [Alias('hide','mask','hidevalue','maskval')]
+        [Parameter(Mandatory = $false)]
+        [string[]]$HideValues,
+
+        [Alias('mt')]
+        [Parameter(Mandatory = $false)]
+        [bool]$MeasureTime = $true,
+
+        [Alias('co')]
+        [Parameter(Mandatory = $false)]
+        [bool]$CaptureOutput = $true,
+
+        [Alias('cod')]
+        [Parameter(Mandatory = $false)]
+        [bool]$CaptureOutputDump = $false,
+
+        [Alias('ok')]
+        [Parameter(Mandatory = $false)]
+        [int[]]$AllowedExitCodes = @(0),
+
+        [Alias('rt')]
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('Objects','Strings','Text')]
+        [string]$ReturnType = 'Text'
+    )
+
+    function _Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateNotNullOrEmpty()]
+            [string]$Message,
+
+            [Parameter(Mandatory = $false)]
+            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
+            [string]$Level = 'INF',
+
+            [Parameter(Mandatory = $false)]
+            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
+            [string]$MinLevel
+        )
+
+        # Resolve MinLevel from global ConsoleLogMinLevel or default to INF.
+        if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
+            $gv = Get-Variable -Name 'ConsoleLogMinLevel' -Scope Global -ErrorAction SilentlyContinue
+            if ($null -ne $gv -and $null -ne $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)) {
+                $MinLevel = [string]$gv.Value
+            }
+            else {
+                $MinLevel = 'INF'
+            }
+        }
+
+        $sevMap = @{
+            TRC = 0
+            DBG = 1
+            INF = 2
+            WRN = 3
+            ERR = 4
+            FTL = 5
+        }
+
+        $lvl = $Level.ToUpperInvariant()
+        $min = $MinLevel.ToUpperInvariant()
+
+        $sev = $sevMap[$lvl]
+        $gate = $sevMap[$min]
+
+        if ($null -eq $sev) {
+            $sev = $sevMap['INF']
+            $lvl = 'INF'
+        }
+        if ($null -eq $gate) {
+            $gate = $sevMap['INF']
+            $min = 'INF'
+        }
+
+        # Auto-escalate requested errors to meet strict MinLevel (e.g., MinLevel=FTL).
+        if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) {
+            $lvl = $min
+            $sev = $gate
+        }
+
+        # Drop below gate.
+        if ($sev -lt $gate) {
+            return
+        }
+
+        $ts = ([DateTime]::UtcNow).ToString('yyyy-MM-dd HH:mm:ss:fff')
+
+        $stack = Get-PSCallStack
+        $helperName = $MyInvocation.MyCommand.Name
+        $orgFunc = $null
+        $caller = $null
+
+        if ($null -ne $stack -and $stack.Count -gt 0) {
+            $orgIdx = -1
+            for ($i = 0; $i -lt $stack.Count; $i++) {
+                if ($stack[$i].FunctionName -ne $helperName) {
+                    $orgFunc = $stack[$i]
+                    $orgIdx = $i
+                    break
+                }
+            }
+
+            if ($orgIdx -ge 0) {
+                $callerIdx = $orgIdx + 1
+                if ($stack.Count -gt $callerIdx) {
+                    $caller = $stack[$callerIdx]
+                }
+                else {
+                    $caller = $orgFunc
+                }
+            }
+        }
+
+        if ($null -eq $caller) {
+            $caller = [pscustomobject]@{
+                ScriptName   = $PSCommandPath
+                FunctionName = '<ScriptBlock>'
+            }
+        }
+
+        # Resolve file name.
+        $file = 'console'
+        if ($caller.PSObject.Properties.Match('ScriptName').Count -gt 0) {
+            $scriptNameValue = $caller.ScriptName
+            if ($null -ne $scriptNameValue -and $scriptNameValue -ne '') {
+                $file = Split-Path -Leaf $scriptNameValue
+            }
+        }
+
+        # Resolve function name.
+        $func = '<ScriptBlock>'
+        if ($caller.PSObject.Properties.Match('FunctionName').Count -gt 0) {
+            $fn = $caller.FunctionName
+            if ($null -ne $fn -and $fn -ne '') {
+                $func = $fn
+            }
+        }
+
+        # Resolve line number in a cross-version-safe way.
+        $lineNumber = ''
+
+        # 1) ScriptLineNumber (if present on the frame).
+        $lineProp = $caller.PSObject.Properties.Match('ScriptLineNumber')
+        if ($lineProp.Count -gt 0 -and $null -ne $lineProp[0].Value) {
+            $lineNumber = [string]$lineProp[0].Value
+        }
+
+        # 2) Position.StartLineNumber (PowerShell 7+ / richer metadata).
+        if ([string]::IsNullOrEmpty($lineNumber)) {
+            $posProp = $caller.PSObject.Properties.Match('Position')
+            if ($posProp.Count -gt 0 -and $null -ne $posProp[0].Value) {
+                $position = $posProp[0].Value
+                if ($null -ne $position) {
+                    $startLineProp = $position.PSObject.Properties.Match('StartLineNumber')
+                    if ($startLineProp.Count -gt 0 -and $null -ne $startLineProp[0].Value) {
+                        $lineNumber = [string]$startLineProp[0].Value
+                    }
+                }
+            }
+        }
+
+        # 3) Fallback: parse Location "path:line char:x".
+        if ([string]::IsNullOrEmpty($lineNumber)) {
+            $locProp = $caller.PSObject.Properties.Match('Location')
+            if ($locProp.Count -gt 0 -and $null -ne $locProp[0].Value) {
+                $locText = [string]$locProp[0].Value
+                if ($locText -ne '') {
+                    $match = [regex]::Match($locText, '[:](\d+)\s+char[:]', 'IgnoreCase')
+                    if ($match.Success -and $match.Groups.Count -gt 1) {
+                        $lineNumber = $match.Groups[1].Value
+                    }
+                }
+            }
+        }
+
+        # Build [file:line] segment when a line is known.
+        $fileSegment = $file
+        if (-not [string]::IsNullOrEmpty($lineNumber)) {
+            $fileSegment = "{0}:{1}" -f $file, $lineNumber
+        }
+
+        $line = "[{0} {1}] [{2}] [{3}] {4}" -f $ts, $lvl, $fileSegment, $func, $Message
+
+        if ($sev -ge 4) {
+            if ($ErrorActionPreference -eq 'Stop') {
+                Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified -ErrorAction Stop
+            }
+            else {
+                Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified
+            }
+        }
+        else {
+            Write-Information -MessageData $line -InformationAction Continue
+        }
+    }
+
+
+    function _InvokeExecBuildArgs {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory = $false)]
+            [string[]]$Primary,
+
+            [Parameter(Mandatory = $false)]
+            [string[]]$Shared
+        )
+
+        $combined = @()
+
+        if ($null -ne $Primary -and $Primary.Count -gt 0) {
+            $combined += $Primary
+        }
+
+        if ($null -ne $Shared -and $Shared.Count -gt 0) {
+            $combined += $Shared
+        }
+
+        return ,@($combined)
+    }
+
+    function _InvokeExecMaskArgs {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory = $false)]
+            [string[]]$ArgsToMask,
+
+            [Parameter(Mandatory = $false)]
+            [string[]]$SensitiveValues
+        )
+
+        if ($null -eq $ArgsToMask -or $ArgsToMask.Count -eq 0) {
+            return ,@()
+        }
+
+        $current = @($ArgsToMask)
+
+        if ($null -ne $SensitiveValues -and $SensitiveValues.Count -gt 0) {
+            foreach ($sensitive in $SensitiveValues) {
+                if ($null -eq $sensitive) {
+                    continue
+                }
+
+                $sensitiveText = [string]$sensitive
+                if ([string]::IsNullOrWhiteSpace($sensitiveText)) {
+                    continue
+                }
+
+                $pattern = [regex]::Escape($sensitiveText)
+                $next = @()
+
+                foreach ($argValue in $current) {
+                    if ($null -eq $argValue) {
+                        $next += $argValue
+                    }
+                    else {
+                        $next += ($argValue -replace $pattern, '[HIDDEN]')
+                    }
+                }
+
+                $current = $next
+            }
+        }
+
+        return ,@($current)
+    }
+
+    # Internal fixed values for custom error handling
+    $extraErrorMessage = 'Disallowed exit code 0 exitcode encountered.'
+    $customErrorCode = 99
+
+    if ($null -eq $HideValues) {
+        $HideValues = @()
+    }
+
+    # Resolve executable and fail fast when missing
+    $resolvedExecutable = Get-Command -Name $Executable -ErrorAction SilentlyContinue
+    if ($null -eq $resolvedExecutable) {
+        $missingMessage = "Executable '$Executable' was not found. Install it, add it to PATH, or specify a valid full path."
+        _Write-StandardMessage -Message $missingMessage -Level ERR
+        return $null
+    }
+
+    $resolvedName = $resolvedExecutable.Name
+    $resolvedPath = $Executable
+
+    $hasPath = $resolvedExecutable.PSObject.Properties.Match('Path').Count -gt 0
+    if ($hasPath -and -not [string]::IsNullOrEmpty([string]$resolvedExecutable.Path)) {
+        $resolvedPath = [string]$resolvedExecutable.Path
+    }
+    else {
+        $hasDef = $resolvedExecutable.PSObject.Properties.Match('Definition').Count -gt 0
+        if ($hasDef -and -not [string]::IsNullOrEmpty([string]$resolvedExecutable.Definition)) {
+            $resolvedPath = [string]$resolvedExecutable.Definition
+        }
+    }
+
+    $finalArgs = _InvokeExecBuildArgs -Primary $Arguments -Shared $CommonArguments
+    $displayArgs = _InvokeExecMaskArgs -ArgsToMask $finalArgs -SensitiveValues $HideValues
+
+    _Write-StandardMessage -Message ("Before Command : (Executable: {0}, Args Count: {1})" -f $resolvedName, $finalArgs.Count) -Level INF
+    _Write-StandardMessage -Message ("Full Command   : {0} {1}" -f $resolvedName, ($displayArgs -join ' ')) -Level INF
+
+    $stopwatch = $null
+    if ($MeasureTime) {
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    }
+
+    $result = $null
+
+    if ($CaptureOutput) {
+        $result = & $resolvedPath @finalArgs
+    }
+    else {
+        if ($CaptureOutputDump) {
+            & $resolvedPath @finalArgs | Out-Null
+        }
+        else {
+            & $resolvedPath @finalArgs
+        }
+    }
+
+    if ($MeasureTime -and $null -ne $stopwatch) {
+        $stopwatch.Stop()
+    }
+
+    $exitCode = $LASTEXITCODE
+    if ($null -eq $exitCode) {
+        $exitCode = 0
+    }
+
+    $isAllowed = $false
+    if ($null -ne $AllowedExitCodes -and $AllowedExitCodes.Count -gt 0) {
+        if ($AllowedExitCodes -contains $exitCode) {
+            $isAllowed = $true
+        }
+    }
+
+    if (-not $isAllowed) {
+        if ($CaptureOutput -and $null -ne $result) {
+            _Write-StandardMessage -Message 'Captured Output (non-success exit code):' -Level WRN
+
+            foreach ($line in $result) {
+                $lineText = ''
+                if ($null -ne $line) {
+                    $lineText = [string]$line
+                }
+                _Write-StandardMessage -Message $lineText -Level DBG
+            }
+        }
+
+        $elapsedSuffix = ''
+        if ($MeasureTime -and $null -ne $stopwatch) {
+            $elapsedSuffix = " (Execution time: $($stopwatch.Elapsed))"
+        }
+
+        if ($exitCode -eq 0) {
+            $errorMessage = ("Command '{0} {1}' returned exit code 0, which is disallowed. {2} Translated to custom error code {3}." -f $resolvedName, ($displayArgs -join ' '), $extraErrorMessage, $customErrorCode)
+            _Write-StandardMessage -Message ($errorMessage + $elapsedSuffix) -Level ERR
+            exit $customErrorCode
+        }
+        else {
+            $errorMessage = ("Command '{0} {1}' returned disallowed exit code {2}. Exiting script with exit code {2}." -f $resolvedName, ($displayArgs -join ' '), $exitCode)
+            _Write-StandardMessage -Message ($errorMessage + $elapsedSuffix) -Level ERR
+            exit $exitCode
+        }
+    }
+
+    $afterMessage = 'After Command'
+    if ($MeasureTime -and $null -ne $stopwatch) {
+        $afterMessage = "After Command  : (Execution time: $($stopwatch.Elapsed))"
+    }
+
+    _Write-StandardMessage -Message $afterMessage -Level INF
+
+    if (-not $CaptureOutput) {
+        return $null
+    }
+
+    $normalizedReturnType = $ReturnType.ToLowerInvariant()
+
+    switch ($normalizedReturnType) {
+        'objects' {
+            if ($null -eq $result) { return @() }
+            return @($result)
+        }
+        'strings' {
+            if ($null -eq $result) {
+                return ,@()
+            }
+
+            $stringItems = @()
+            foreach ($item in $result) {
+                if ($null -eq $item) {
+                    $stringItems += ''
+                }
+                else {
+                    $stringItems += [string]$item
+                }
+            }
+
+            return ,@($stringItems)
+        }
+        default {
+            if ($null -eq $result) {
+                return ''
+            }
+
+            $lines = @()
+            foreach ($rawLine in $result) {
+                if ($null -eq $rawLine) {
+                    $lines += ''
+                }
+                else {
+                    $lines += [string]$rawLine
+                }
+            }
+
+            return ($lines -join [Environment]::NewLine)
+        }
+    }
+}
 

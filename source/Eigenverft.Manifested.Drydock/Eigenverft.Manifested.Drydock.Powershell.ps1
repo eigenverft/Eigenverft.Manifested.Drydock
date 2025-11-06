@@ -1075,7 +1075,6 @@ PS> Install-ModulesFromRepoFolder -Folder C:\repo -Name Pester,PSScriptAnalyzer
         try { Unregister-PSRepository -Name $repoName -ErrorAction SilentlyContinue } catch { }
     }
 
-    [void](Read-Host "Press Enter to continue")
 }
 '@
 

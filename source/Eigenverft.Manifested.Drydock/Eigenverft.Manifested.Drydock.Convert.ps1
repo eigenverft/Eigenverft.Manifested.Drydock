@@ -623,7 +623,7 @@ function Convert-StringToBaseObject {
 Converts string input into the most appropriate strongly-typed object using en-US culture.
 
 .DESCRIPTION
-Safely post-processes textual outputs (e.g. from external tools) into useful base types.
+Robust helper for normalizing textual output from tools into useful base types.
 First successful match wins; if nothing matches, the original string is returned.
 
 Conversion order:
@@ -635,24 +635,26 @@ Conversion order:
 - Int32, Int64, BigInteger
 - Special floating       : NaN, +/-Infinity
 - Decimal                : simple fixed-point (no exponent)
-- Double                 : general floating
-- DateTime (en-US)
-- DateTime (ISO/Roundtrip, invariant)
-- TimeSpan (en-US)
-- Version                : n.n / n.n.n / n.n.n.n (only if nothing else matched)
+- Double                 : general floating (incl. exponents)
+- Version                : n.n / n.n.n / n.n.n.n   (checked before Date/Time to avoid 1.2.3 -> DateTime)
+- TimeSpan               : (en-US)
+- DateTime               : en-US, then ISO/Roundtrip
+
+If none match, returns the original string.
 
 .PARAMETER InputObject
 Value to convert. Strings are analyzed; non-strings are returned as-is.
 
 .PARAMETER TreatEmptyAsNull
-When set, empty/whitespace-only strings are converted to $null instead of preserved.
+When set, empty/whitespace-only strings are converted to $null.
 
 .EXAMPLE
-"true","42","3.14","2024-01-02","{`"a`":1}" | ForEach-Object { Convert-StringToBaseObject -InputObject $_ }
+"true","42","3.14","2024-01-02","{`"a`":1}" |
+    ForEach-Object { Convert-StringToBaseObject -InputObject $_ }
 
 .EXAMPLE
 $typed = Convert-StringToBaseObject -InputObject "1.2.3"
-# returns [version]1.2.3
+# returns [version] 1.2.3
 #>
     [CmdletBinding()]
     param(
@@ -664,7 +666,7 @@ $typed = Convert-StringToBaseObject -InputObject "1.2.3"
         [switch]$TreatEmptyAsNull
     )
 
-    # Non-string passthrough (idempotent for already-typed input)
+    # Non-string passthrough
     if ($null -eq $InputObject) {
         return $null
     }
@@ -713,7 +715,7 @@ $typed = Convert-StringToBaseObject -InputObject "1.2.3"
             }
         }
         catch {
-            # ignore malformed; fall through
+            # ignore malformed; continue
         }
     }
 
@@ -746,7 +748,7 @@ $typed = Convert-StringToBaseObject -InputObject "1.2.3"
         }
     }
 
-    # 8) Floating specials
+    # 8) Special floating tokens
     switch ($lower) {
         'nan'       { return [double]::NaN }
         'infinity'  { return [double]::PositiveInfinity }
@@ -756,42 +758,19 @@ $typed = Convert-StringToBaseObject -InputObject "1.2.3"
 
     # 9) Decimal (simple fixed-point, no exponent)
     if ($text -match '^[\+\-]?\d+(\.\d+)?$') {
-        $decimalResult = 0m
+        $decimalResult = [decimal]0
         if ([decimal]::TryParse($text, $floatStyles, $cultureEnUs, [ref]$decimalResult)) {
             return $decimalResult
         }
     }
 
     # 10) Double (general float)
-    $doubleResult = 0.0
+    $doubleResult = [double]0
     if ([double]::TryParse($text, $floatStyles, $cultureEnUs, [ref]$doubleResult)) {
         return $doubleResult
     }
 
-    # 11) DateTime (en-US)
-    $dateResult = [datetime]::MinValue
-    if ([datetime]::TryParse($text, $cultureEnUs, $dateStyles, [ref]$dateResult)) {
-        return $dateResult
-    }
-
-    # 12) DateTime (ISO / roundtrip, invariant)
-    $dateIsoResult = [datetime]::MinValue
-    if ([datetime]::TryParse(
-            $text,
-            [System.Globalization.CultureInfo]::InvariantCulture,
-            [System.Globalization.DateTimeStyles]::RoundtripKind,
-            [ref]$dateIsoResult
-        )) {
-        return $dateIsoResult
-    }
-
-    # 13) TimeSpan (en-US)
-    $timeSpanResult = [TimeSpan]::Zero
-    if ([TimeSpan]::TryParse($text, $cultureEnUs, [ref]$timeSpanResult)) {
-        return $timeSpanResult
-    }
-
-    # 14) Version (only if nothing else matched; avoids misclassifying 1.0/3.14)
+    # 11) Version (dotted numeric, 2-4 segments) BEFORE Date/Time to avoid 1.2.3 -> DateTime
     if ($text -match '^\d+(\.\d+){1,3}$') {
         try {
             $ver = New-Object System.Version($text)
@@ -802,7 +781,30 @@ $typed = Convert-StringToBaseObject -InputObject "1.2.3"
         }
     }
 
-    # Fallback
+    # 12) TimeSpan (en-US)
+    $timeSpanResult = [TimeSpan]::Zero
+    if ([TimeSpan]::TryParse($text, $cultureEnUs, [ref]$timeSpanResult)) {
+        return $timeSpanResult
+    }
+
+    # 13) DateTime (en-US)
+    $dateResult = [datetime]::MinValue
+    if ([datetime]::TryParse($text, $cultureEnUs, $dateStyles, [ref]$dateResult)) {
+        return $dateResult
+    }
+
+    # 14) DateTime (ISO / roundtrip, invariant)
+    $dateIsoResult = [datetime]::MinValue
+    if ([datetime]::TryParse(
+            $text,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::RoundtripKind,
+            [ref]$dateIsoResult
+        )) {
+        return $dateIsoResult
+    }
+
+    # Fallback: original string
     return $raw
 }
 

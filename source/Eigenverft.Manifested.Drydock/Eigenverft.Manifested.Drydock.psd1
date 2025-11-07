@@ -77,6 +77,7 @@ FunctionsToExport = @(
     # ...Convert.ps1
     'Convert-FilePlaceholders',
     'Convert-TemplateFilePlaceholders',
+    'Convert-StringToBaseObject'
 
     # ...Deployments.ps1
     'Convert-BranchToDeploymentInfo',
@@ -95,6 +96,7 @@ FunctionsToExport = @(
 
     # ...Execution.ps1
     'Invoke-Exec',
+    'Invoke-ProcessTyped',
     
     # ...Framework.ps1
     'Get-DotNetFrameworkInfo',

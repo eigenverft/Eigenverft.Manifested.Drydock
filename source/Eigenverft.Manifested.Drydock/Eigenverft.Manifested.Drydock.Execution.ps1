@@ -847,6 +847,7 @@ Controls shape of captured output. Allowed: Objects, Strings, Text. Default: Tex
     }
 
     $exitCode = $process.ExitCode
+    $LASTEXITCODE = $exitCode
     if ($null -eq $exitCode) {
         $exitCode = 0
     }

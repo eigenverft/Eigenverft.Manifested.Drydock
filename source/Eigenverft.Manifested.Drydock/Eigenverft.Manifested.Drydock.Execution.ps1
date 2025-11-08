@@ -268,19 +268,16 @@ List of exit codes treated as success. Default: 0. If 0 occurs but is not in the
 Controls shape of captured output. Allowed: Objects, Strings, Text. Default: Text.
 #>
     [CmdletBinding()]
-    [Alias('iexec2')]
+    [Alias('ipt')]
     param(
-        [Alias('exe')]
         [Parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
         [string]$Executable,
 
-        [Alias('cmd')]
         [Parameter(Mandatory = $true)]
         [ValidateNotNull()]
         [string[]]$Arguments,
 
-        [Alias('shared')]
         [Parameter(Mandatory = $false)]
         [string[]]$CommonArguments,
 
@@ -288,23 +285,18 @@ Controls shape of captured output. Allowed: Objects, Strings, Text. Default: Tex
         [Parameter(Mandatory = $false)]
         [string[]]$HideValues,
 
-        [Alias('mt')]
         [Parameter(Mandatory = $false)]
         [bool]$MeasureTime = $true,
 
-        [Alias('co')]
         [Parameter(Mandatory = $false)]
         [bool]$CaptureOutput = $true,
 
-        [Alias('cod')]
         [Parameter(Mandatory = $false)]
         [bool]$CaptureOutputDump = $false,
 
-        [Alias('ok')]
         [Parameter(Mandatory = $false)]
         [int[]]$AllowedExitCodes = @(0),
 
-        [Alias('rt')]
         [Parameter(Mandatory = $false)]
         [ValidateSet('Objects','Strings','Text')]
         [string]$ReturnType = 'Text'
@@ -847,7 +839,7 @@ Controls shape of captured output. Allowed: Objects, Strings, Text. Default: Tex
     }
 
     $exitCode = $process.ExitCode
-    $LASTEXITCODE = $exitCode
+    $Global:LASTEXITCODE = $exitCode
     if ($null -eq $exitCode) {
         $exitCode = 0
     }

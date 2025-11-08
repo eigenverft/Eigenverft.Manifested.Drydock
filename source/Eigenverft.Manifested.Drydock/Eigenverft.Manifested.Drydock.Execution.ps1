@@ -867,7 +867,7 @@ Controls shape of captured output. Allowed: Objects, Strings, Text. Default: Tex
         if ($CaptureOutput -and $null -ne $result) {
             _Write-StandardMessage -Message 'Captured Output (non-success exit code):' -Level WRN
             foreach ($line in $result) {
-                _Write-StandardMessage -Message ([string]$line) -Level DBG
+                _Write-StandardMessage -Message ([string]$line) -Level INF
             }
         }
 
@@ -1679,4 +1679,3 @@ Requires UseShellExecute = $false (already enforced) and is ignored on non-Windo
         }
     }
 }
-

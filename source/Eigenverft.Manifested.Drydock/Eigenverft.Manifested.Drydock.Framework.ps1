@@ -584,6 +584,70 @@ Get-DotNetFrameworkFamilyCapabilities |
         }
 }
 
+function Get-DotNetFrameworkCapabilityByTarget {
+<#
+.SYNOPSIS
+Returns the first capability entry matching a given identifier.
 
+.DESCRIPTION
+Searches the output of Get-DotNetFrameworkFamilyCapabilities (or a provided set
+of capability objects) and returns the first object where the specified value
+matches any entry in TargetPacksApplicable or TargetPacksApplicableTFM.
+Matching is case-insensitive.
 
-#Get-DotNetFrameworkFamilyCapabilities | ConvertTo-Json
+.PARAMETER Identifier
+Single value to match against TargetPacksApplicable and TargetPacksApplicableTFM.
+
+.PARAMETER Capabilities
+Optional pre-fetched capabilities (e.g. from Get-DotNetFrameworkFamilyCapabilities).
+If omitted, the function invokes Get-DotNetFrameworkFamilyCapabilities internally.
+
+.EXAMPLE
+Get-DotNetFrameworkCapabilityByTarget -Identifier 'net48'
+
+.EXAMPLE
+$all = Get-DotNetFrameworkFamilyCapabilities
+Get-DotNetFrameworkCapabilityByTarget -Identifier 'Microsoft.NETCore.App.Ref' -Capabilities $all
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$Identifier,
+
+        [Parameter()]
+        [psobject[]]$Capabilities
+    )
+
+    # External reviewer note: allow reuse of a pre-fetched set to avoid repeated probing.
+    if (-not $Capabilities) {
+        $Capabilities = Get-DotNetFrameworkFamilyCapabilities
+    }
+
+    if (-not $Capabilities) {
+        return $null
+    }
+
+    $normalized = $Identifier.ToLowerInvariant()
+
+    foreach ($item in $Capabilities) {
+        if (-not $item) { continue }
+
+        $packs = @($item.TargetPacksApplicable)
+        $tfms  = @($item.TargetPacksApplicableTFM)
+
+        foreach ($p in $packs) {
+            if ($null -ne $p -and $p.ToString().ToLowerInvariant() -eq $normalized) {
+                return $item
+            }
+        }
+
+        foreach ($t in $tfms) {
+            if ($null -ne $t -and $t.ToString().ToLowerInvariant() -eq $normalized) {
+                return $item
+            }
+        }
+    }
+
+    return $null
+}
+

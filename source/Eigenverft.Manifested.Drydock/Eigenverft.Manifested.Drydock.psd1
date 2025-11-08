@@ -102,6 +102,7 @@ FunctionsToExport = @(
     'Get-DotNetFrameworkInfo',
     'Get-DotNetFrameworkLatestByFamily',
     'Get-DotNetFrameworkFamilyCapabilities',
+    'Get-DotNetFrameworkCapabilityByTarget'
 
     # ...Git.ps1
     'Get-GitTopLevelDirectory',

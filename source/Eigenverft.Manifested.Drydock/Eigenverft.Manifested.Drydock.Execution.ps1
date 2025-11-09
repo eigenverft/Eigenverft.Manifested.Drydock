@@ -468,7 +468,6 @@ function Invoke-ProcessTyped {
 
     function _Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
-        # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
         [CmdletBinding()]
         param(
             [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$Message,
@@ -506,11 +505,9 @@ function Invoke-ProcessTyped {
         }
         $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
         if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
-        $funcName=$caller.FunctionName
-        $hasFunc=-not [string]::IsNullOrEmpty($funcName) -and $funcName -notin '<scriptblock>','<ScriptBlock>'
         $prefix="[$ts "
-        $suffix=if($hasFunc){"] [$file] [$funcName] $Message"}else{"] [$file] $Message"}
-        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='White';Back='DarkRed'}}[$lvl]
+        $suffix="] [$file] $Message"
+        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back='DarkRed'}}[$lvl]
         $fore=$cfg.Fore
         $back=$cfg.Back
         if($fore -or $back){

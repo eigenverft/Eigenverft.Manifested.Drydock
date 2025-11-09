@@ -68,11 +68,9 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
         }
         $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
         if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
-        $funcName=$caller.FunctionName
-        $hasFunc=-not [string]::IsNullOrEmpty($funcName) -and $funcName -notin '<scriptblock>','<ScriptBlock>'
         $prefix="[$ts "
-        $suffix=if($hasFunc){"] [$file] [$funcName] $Message"}else{"] [$file] $Message"}
-        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='White';Back='DarkRed'}}[$lvl]
+        $suffix="] [$file] $Message"
+        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back='DarkRed'}}[$lvl]
         $fore=$cfg.Fore
         $back=$cfg.Back
         if($fore -or $back){
@@ -121,7 +119,7 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
     - NAMING: Use a distinct prefix to avoid collisions, e.g. _ (example: function _Norm-List { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param(...params...) ...code... }). PSUseApprovedVerbs needs to be between funcname and param.
     - COMMON PROBLEMS: Don't forget [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] in inline helper functions.
     - NO OUTPUT: Helpers MUST NOT write to the pipeline. If needed, return values explicitly and keep them inside the outer function.
-    - QUIET LOGGING: Helpers MUST NOT use Write-Output, Write-Error, Write-Verbose, or Write-Information. Use Write-Host only in the outer function for key actions.
+    - QUIET LOGGING: Helpers MUST NOT use Write-Output, Write-Error, Write-Verbose, or Write-Information. Use Write-Host only or implement _Write-StandardMessage in function for key actions.
     - NO EXPORT: Inline helpers MUST NOT be exported; they exist only for the duration of the outer function call.
     - IDEMPOTENT: Helpers MUST NOT rely on session-global state; they must be deterministic given their inputs.
 

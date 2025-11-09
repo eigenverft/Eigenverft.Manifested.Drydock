@@ -214,8 +214,163 @@ Invoke-Exec -Executable "curl" -Arguments @("-H", "Authorization: Bearer $token"
     }
 }
 
+$processHelperSource = @"
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Text;
+
+namespace Eigenverft.Tools
+{
+    public sealed class SafeProcessResult
+    {
+        public int ExitCode { get; set; }
+        public string[] Output { get; set; }
+        public string[] Error { get; set; }
+        public TimeSpan Duration { get; set; }
+
+        public SafeProcessResult()
+        {
+            Output = new string[0];
+            Error  = new string[0];
+        }
+    }
+
+    public static class SafeProcessRunner
+    {
+        public static SafeProcessResult Run(
+            string fileName,
+            string[] arguments,
+            bool captureOutput,
+            bool captureError,
+            int timeoutMilliseconds)
+        {
+            if (fileName == null) throw new ArgumentNullException("fileName");
+            if (arguments == null) arguments = new string[0];
+
+            var psi = new ProcessStartInfo();
+            psi.FileName = fileName;
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+            psi.RedirectStandardOutput = captureOutput;
+            psi.RedirectStandardError  = captureError;
+            psi.Arguments = BuildArgumentString(arguments);
+
+            var stdout = captureOutput ? new List<string>() : null;
+            var stderr = captureError ? new List<string>() : null;
+
+            var result = new SafeProcessResult();
+            var sw = new Stopwatch();
+
+            using (var process = new Process())
+            {
+                process.StartInfo = psi;
+
+                if (captureOutput)
+                {
+                    process.OutputDataReceived += (sender, e) =>
+                    {
+                        if (e.Data != null)
+                            stdout.Add(e.Data);
+                    };
+                }
+
+                if (captureError)
+                {
+                    process.ErrorDataReceived += (sender, e) =>
+                    {
+                        if (e.Data != null)
+                            stderr.Add(e.Data);
+                    };
+                }
+
+                if (!process.Start())
+                {
+                    throw new InvalidOperationException(
+                        "Failed to start process '" + fileName + "'.");
+                }
+
+                sw.Start();
+
+                if (captureOutput)
+                    process.BeginOutputReadLine();
+                if (captureError)
+                    process.BeginErrorReadLine();
+
+                // Wait for completion or timeout
+                int wait = (timeoutMilliseconds > 0)
+                    ? timeoutMilliseconds
+                    : System.Threading.Timeout.Infinite;
+
+                if (!process.WaitForExit(wait))
+                {
+                    try { process.Kill(); }
+                    catch { }
+                    throw new TimeoutException(
+                        "Process '" + fileName + "' exceeded timeout of " + timeoutMilliseconds + " ms.");
+                }
+
+                sw.Stop();
+
+                result.ExitCode = process.ExitCode;
+                result.Duration = sw.Elapsed;
+            }
+
+            if (stdout != null)
+                result.Output = stdout.ToArray();
+            if (stderr != null)
+                result.Error = stderr.ToArray();
+
+            return result;
+        }
+
+        private static string BuildArgumentString(string[] args)
+        {
+            if (args == null || args.Length == 0)
+                return string.Empty;
+
+            var sb = new StringBuilder();
+
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (i > 0) sb.Append(' ');
+
+                var s = args[i] ?? string.Empty;
+
+                if (s.Length == 0)
+                {
+                    sb.Append("\"\"");
+                }
+                else if (s.IndexOfAny(new[] { ' ', '\t', '\r', '\n', '\"' }) >= 0)
+                {
+                    sb.Append('\"');
+                    sb.Append(s.Replace("\"", "\\\""));
+                    sb.Append('\"');
+                }
+                else
+                {
+                    sb.Append(s);
+                }
+            }
+
+            return sb.ToString();
+        }
+    }
+}
+"@
+
 if (-not ("Eigenverft.Tools.SafeProcessRunner" -as [type])) {
-    Add-Type -TypeDefinition $processHelperSource -Language CSharp
+    if (Test-Path Variable:processHelperSource -and $processHelperSource) {
+        try {
+            Add-Type -TypeDefinition $processHelperSource -Language CSharp -ErrorAction Stop | Out-Null
+        }
+        catch {
+            Write-Warning "SafeProcessRunner: Add-Type failed, continuing without C# helper. $($_.Exception.Message)"
+        }
+    }
+    else {
+        Write-Warning "SafeProcessRunner: no C# source found in \$processHelperSource, continuing without C# helper."
+    }
 }
 
 function Invoke-ProcessTyped {

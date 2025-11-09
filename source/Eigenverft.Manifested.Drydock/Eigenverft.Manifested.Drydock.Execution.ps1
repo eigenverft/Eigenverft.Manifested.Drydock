@@ -832,7 +832,10 @@ Controls shape of captured output. Allowed: Objects, Strings, Text. Default: Tex
         }
     }
 
-    $process.WaitForExit()
+    if (-not ($process.HasExited))
+    {
+        $process.WaitForExit()
+    }
 
     if ($MeasureTime -and $null -ne $stopwatch) {
         $stopwatch.Stop()

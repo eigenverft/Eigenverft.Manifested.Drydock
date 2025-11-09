@@ -744,7 +744,7 @@ Controls shape of captured output. Allowed: Objects, Strings, Text. Default: Tex
     $displayArgs        = _InvokeExecMaskArgs -ArgsToMask $finalArgs -SensitiveValues $HideValues
     $normalizedReturnType = $ReturnType.ToLowerInvariant()
 
-    _Write-StandardMessage -Message ("Before Command : (Executable: {0}, Args Count: {1})" -f $resolvedName, $finalArgs.Count) -Level INF
+    _Write-StandardMessage -Message ("Before Command : (Executable: {0}, Args Count: {1})" -f $resolvedName, $finalArgs.Count) -Level DBG
     _Write-StandardMessage -Message ("Full Command   : {0} {1}" -f $resolvedName, ($displayArgs -join ' ')) -Level INF
 
     $stopwatch = $null
@@ -885,7 +885,7 @@ Controls shape of captured output. Allowed: Objects, Strings, Text. Default: Tex
     if ($MeasureTime -and $null -ne $stopwatch) {
         $afterMessage = "After Command  : (Execution time: $($stopwatch.Elapsed))"
     }
-    _Write-StandardMessage -Message $afterMessage -Level INF
+    _Write-StandardMessage -Message $afterMessage -Level DBG
 
     if (-not $CaptureOutput) {
         return $null

@@ -359,17 +359,23 @@ namespace Eigenverft.Tools
 }
 "@
 
+
 if (-not ("Eigenverft.Tools.SafeProcessRunner" -as [type])) {
-    if (Test-Path Variable:processHelperSource -and $processHelperSource) {
-        try {
-            Add-Type -TypeDefinition $processHelperSource -Language CSharp -ErrorAction Stop | Out-Null
+    if (Test-Path Variable:processHelperSource) {
+        if ($processHelperSource) {
+            try {
+                Add-Type -TypeDefinition $processHelperSource -Language CSharp -ErrorAction Stop | Out-Null
+            }
+            catch {
+                Write-Warning "SafeProcessRunner: Add-Type failed, continuing without C# helper. $($_.Exception.Message)"
+            }
         }
-        catch {
-            Write-Warning "SafeProcessRunner: Add-Type failed, continuing without C# helper. $($_.Exception.Message)"
+        else {
+            Write-Warning "SafeProcessRunner: variable 'processHelperSource' is empty, continuing without C# helper."
         }
     }
     else {
-        Write-Warning "SafeProcessRunner: no C# source found in \$processHelperSource, continuing without C# helper."
+        Write-Warning "SafeProcessRunner: variable 'processHelperSource' not found, continuing without C# helper."
     }
 }
 

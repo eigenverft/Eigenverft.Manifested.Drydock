@@ -468,166 +468,61 @@ function Invoke-ProcessTyped {
 
     function _Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
         [CmdletBinding()]
         param(
-            [Parameter(Mandatory = $true)]
-            [ValidateNotNullOrEmpty()]
-            [string]$Message,
-
-            [Parameter(Mandatory = $false)]
-            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
-            [string]$Level = 'INF',
-
-            [Parameter(Mandatory = $false)]
-            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
-            [string]$MinLevel
+            [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$Message,
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
         )
-
-        if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
-            $gv = Get-Variable -Name 'ConsoleLogMinLevel' -Scope Global -ErrorAction SilentlyContinue
-            if ($null -ne $gv -and $null -ne $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)) {
-                $MinLevel = [string]$gv.Value
-            }
-            else {
-                $MinLevel = 'INF'
-            }
+        $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
+        if(-not $PSBoundParameters.ContainsKey('MinLevel')){
+            $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+            $MinLevel=if($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)){[string]$gv.Value}else{'INF'}
         }
-
-        $sevMap = @{
-            TRC = 0
-            DBG = 1
-            INF = 2
-            WRN = 3
-            ERR = 4
-            FTL = 5
-        }
-
-        $lvl = $Level.ToUpperInvariant()
-        $min = $MinLevel.ToUpperInvariant()
-
-        $sev  = $sevMap[$lvl]
-        $gate = $sevMap[$min]
-
-        if ($null -eq $sev) {
-            $sev = $sevMap['INF']
-            $lvl = 'INF'
-        }
-        if ($null -eq $gate) {
-            $gate = $sevMap['INF']
-            $min = 'INF'
-        }
-
-        if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) {
-            $lvl = $min
-            $sev = $gate
-        }
-
-        if ($sev -lt $gate) {
-            return
-        }
-
-        $ts = ([DateTime]::UtcNow).ToString('yyyy-MM-dd HH:mm:ss:fff')
-
-        $stack      = Get-PSCallStack
-        $helperName = $MyInvocation.MyCommand.Name
-        $orgFunc    = $null
-        $caller     = $null
-
-        if ($null -ne $stack -and $stack.Count -gt 0) {
-            $orgIdx = -1
-            for ($i = 0; $i -lt $stack.Count; $i++) {
-                if ($stack[$i].FunctionName -ne $helperName) {
-                    $orgFunc = $stack[$i]
-                    $orgIdx  = $i
-                    break
-                }
-            }
-
-            if ($orgIdx -ge 0) {
-                $callerIdx = $orgIdx + 1
-                if ($stack.Count -gt $callerIdx) {
-                    $caller = $stack[$callerIdx]
-                }
-                else {
-                    $caller = $orgFunc
-                }
+        $lvl=$Level.ToUpperInvariant()
+        $min=$MinLevel.ToUpperInvariant()
+        $sev=$sevMap[$lvl];if($null -eq $sev){$lvl='INF';$sev=$sevMap['INF']}
+        $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
+        if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
+        if($sev -lt $gate){return}
+        $ts=[DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $caller=$null
+        if($stack){for($i=0;$i -lt $stack.Count;$i++){if($stack[$i].FunctionName -ne $helperName){$caller=if($stack.Count -gt ($i+1)){$stack[$i+1]}else{$stack[$i]};break}}}
+        if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
+        $lineNumber=$null ; 
+        $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Position']
+            if($p -and $p.Value){
+                $sp=$p.Value.PSObject.Properties['StartLineNumber'];if($sp -and $sp.Value){$lineNumber=[string]$sp.Value}
             }
         }
-
-        if ($null -eq $caller) {
-            $caller = [pscustomobject]@{
-                ScriptName   = $PSCommandPath
-                FunctionName = '<ScriptBlock>'
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Location']
+            if($p -and $p.Value){
+                $m=[regex]::Match([string]$p.Value,':(\d+)\s+char:','IgnoreCase');if($m.Success -and $m.Groups.Count -gt 1){$lineNumber=$m.Groups[1].Value}
             }
         }
-
-        $file = 'console'
-        if ($caller.PSObject.Properties.Match('ScriptName').Count -gt 0) {
-            $scriptNameValue = $caller.ScriptName
-            if ($null -ne $scriptNameValue -and $scriptNameValue -ne '') {
-                $file = Split-Path -Leaf $scriptNameValue
-            }
+        $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
+        if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
+        $funcName=$caller.FunctionName
+        $hasFunc=-not [string]::IsNullOrEmpty($funcName) -and $funcName -notin '<scriptblock>','<ScriptBlock>'
+        $prefix="[$ts "
+        $suffix=if($hasFunc){"] [$file] [$funcName] $Message"}else{"] [$file] $Message"}
+        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='White';Back='DarkRed'}}[$lvl]
+        $fore=$cfg.Fore
+        $back=$cfg.Back
+        if($fore -or $back){
+            Write-Host -NoNewline $prefix
+            if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
+            elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
+            elseif($back){Write-Host -NoNewline $lvl -BackgroundColor $back}
+            Write-Host $suffix
+        } else {
+            Write-Host "$prefix$lvl$suffix"
         }
-
-        $func = '<ScriptBlock>'
-        if ($caller.PSObject.Properties.Match('FunctionName').Count -gt 0) {
-            $fn = $caller.FunctionName
-            if ($null -ne $fn -and $fn -ne '') {
-                $func = $fn
-            }
-        }
-
-        $lineNumber = ''
-
-        $lineProp = $caller.PSObject.Properties.Match('ScriptLineNumber')
-        if ($lineProp.Count -gt 0 -and $null -ne $lineProp[0].Value) {
-            $lineNumber = [string]$lineProp[0].Value
-        }
-
-        if ([string]::IsNullOrEmpty($lineNumber)) {
-            $posProp = $caller.PSObject.Properties.Match('Position')
-            if ($posProp.Count -gt 0 -and $null -ne $posProp[0].Value) {
-                $position = $posProp[0].Value
-                if ($null -ne $position) {
-                    $startLineProp = $position.PSObject.Properties.Match('StartLineNumber')
-                    if ($startLineProp.Count -gt 0 -and $null -ne $startLineProp[0].Value) {
-                        $lineNumber = [string]$startLineProp[0].Value
-                    }
-                }
-            }
-        }
-
-        if ([string]::IsNullOrEmpty($lineNumber)) {
-            $locProp = $caller.PSObject.Properties.Match('Location')
-            if ($locProp.Count -gt 0 -and $null -ne $locProp[0].Value) {
-                $locText = [string]$locProp[0].Value
-                if ($locText -ne '') {
-                    $match = [regex]::Match($locText, '[:](\d+)\s+char[:]', 'IgnoreCase')
-                    if ($match.Success -and $match.Groups.Count -gt 1) {
-                        $lineNumber = $match.Groups[1].Value
-                    }
-                }
-            }
-        }
-
-        $fileSegment = $file
-        if (-not [string]::IsNullOrEmpty($lineNumber)) {
-            $fileSegment = '{0}:{1}' -f $file, $lineNumber
-        }
-
-        $line = '[{0} {1}] [{2}] [{3}] {4}' -f $ts, $lvl, $fileSegment, $func, $Message
-
-        if ($sev -ge 4) {
-            if ($ErrorActionPreference -eq 'Stop') {
-                Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified -ErrorAction Stop
-            }
-            else {
-                Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified
-            }
-        }
-        else {
-            Write-Information -MessageData $line -InformationAction Continue
-        }
+        if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
     }
 
     function _InvokeExecBuildArgs {

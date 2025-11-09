@@ -531,8 +531,35 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
         if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
         if($sev -lt $gate){return}
         $ts=[DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
-        $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $caller=$null
-        if($stack){for($i=0;$i -lt $stack.Count;$i++){if($stack[$i].FunctionName -ne $helperName){$caller=if($stack.Count -gt ($i+1)){$stack[$i+1]}else{$stack[$i]};break}}}
+        $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
+        if($stack){
+            # 1: prefer first non-underscore function not defined in the helper's own file
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+            }
+            # 2: fallback to first non-underscore function (any file)
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')){$caller=$f;break}
+                }
+            }
+            # 3: fallback to first non-helper frame not from helper's own file
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                    if($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+                }
+            }
+            # 4: final fallback to first non-helper frame
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName){$caller=$f;break}
+                }
+            }
+        }
         if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
         $lineNumber=$null ; 
         $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
@@ -566,6 +593,8 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
         }
         if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
     }
+
+
 
     function _New-StatusRecord {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
@@ -787,3 +816,4 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
 
     return
 }
+

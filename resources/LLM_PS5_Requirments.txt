@@ -4,7 +4,7 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
    - MUST run on Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
 
 2) AUTOMATIC / RESERVED VARIABLES (PS5–PS7)
-   - Do not read/write/compare or shadow PowerShell automatic/reserved vars (any casing). Examples (not exhaustive): $_, $PSItem, $args/$Args, $IsWindows/$IsMacOS/$IsLinux, $Error, $PID, $LASTEXITCODE, $Matches, $PSBoundParameters, $PSScriptRoot, $MyInvocation. Do not name parameters/locals like these (no "Args", "IsWindows", "Error", etc.).
+   - Do not assign values to automatic/reserved vars or shadow PowerShell automatic/reserved vars (any casing). Examples (not exhaustive): $PSItem, $args/$Args, $IsWindows/$IsMacOS/$IsLinux, $Error, $pid, $PID, $LASTEXITCODE, $Matches, $home, $PSBoundParameters, $PSScriptRoot, $MyInvocation. Do not name parameters/locals like these (no "Args", "IsWindows", "Error", etc.).
 
 3) EXTERNAL TOOLS
    - IF an external tool is required (e.g., dotnet, robocopy), THEN fail fast with a clear, actionable error when it is missing.
@@ -30,54 +30,86 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
    - Format the Write function implement a inline helper function for it suggested format.
     function _Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
-        # This function has exceptions from the rest of any ruleset.
+        # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
         [CmdletBinding()]
         param(
-            [Parameter(Mandatory=$true)]
-            [ValidateNotNullOrEmpty()]
-            [string]$Message,
-            [Parameter(Mandatory=$false)]
-            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
-            [string]$Level = 'INF',
-            [Parameter(Mandatory=$false)]
-            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
-            [string]$MinLevel
+            [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$Message,
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
         )
-        # Resolve MinLevel: explicit > global > default.
-        if (-not $PSBoundParameters.ContainsKey('MinLevel')) { $MinLevel = if ($Global:ConsoleLogMinLevel) { $Global:ConsoleLogMinLevel } else { 'INF' } }
-        $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
-        $lvl = $Level.ToUpperInvariant() ; $min = $MinLevel.ToUpperInvariant() ; $sev = $sevMap[$lvl] ; $gate= $sevMap[$min]
-        # Auto-escalate requested errors to meet strict MinLevel (e.g., MinLevel=FTL)
-        if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) { $lvl = $min ; $sev = $gate}
-        # Drop below gate
-        if ($sev -lt $gate) { return }
-        # Timestamp
-        $ts = ([DateTime]::UtcNow).ToString('yyyy-MM-dd HH:mm:ss:fff')
-        # Resolve caller: prefer "caller of org func" (grandparent of helper)
-        $stack      = Get-PSCallStack
-        $helperName = $MyInvocation.MyCommand.Name
-        $orgFunc    = $null
-        $caller     = $null
-        if ($stack) {
-            $orgIdx = -1;
-            for ($i = 0; $i -lt $stack.Count; $i++) { if ($stack[$i].FunctionName -ne $helperName) { $orgFunc = $stack[$i]; $orgIdx = $i; break; }}
-            if ($orgIdx -ge 0) { $callerIdx = $orgIdx + 1; if ($stack.Count -gt $callerIdx) { $caller = $stack[$callerIdx]; } else { $caller = $orgFunc; } }
+        $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
+        if(-not $PSBoundParameters.ContainsKey('MinLevel')){
+            $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+            $MinLevel=if($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)){[string]$gv.Value}else{'INF'}
         }
-        if (-not $caller) { $caller = [pscustomobject]@{ ScriptName = $PSCommandPath; FunctionName = '<scriptblock>' }; }
-        $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'console' }
-        $func = if ($caller.FunctionName) { $caller.FunctionName } else { '<scriptblock>' }
-        # Keep original casing (no .ToLower()) to match definition casing
-        $line = "[{0} {1}] [{2}] [{3}] {4}" -f $ts, $lvl, $file, $func, $Message
-        # Emit: Output for non-errors; Error for ERR/FTL. Termination via $ErrorActionPreference.
-        if ($sev -ge 4) {
-            if ($ErrorActionPreference -eq 'Stop') {
-                Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified -ErrorAction Stop
-            } else {
-                Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified
+        $lvl=$Level.ToUpperInvariant()
+        $min=$MinLevel.ToUpperInvariant()
+        $sev=$sevMap[$lvl];if($null -eq $sev){$lvl='INF';$sev=$sevMap['INF']}
+        $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
+        if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
+        if($sev -lt $gate){return}
+        $ts=[DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
+        if($stack){
+            # 1: prefer first non-underscore function not defined in the helper's own file
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
             }
-        } else {
-            Write-Information -MessageData $line -InformationAction Continue
+            # 2: fallback to first non-underscore function (any file)
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')){$caller=$f;break}
+                }
+            }
+            # 3: fallback to first non-helper frame not from helper's own file
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                    if($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+                }
+            }
+            # 4: final fallback to first non-helper frame
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName){$caller=$f;break}
+                }
+            }
         }
+        if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
+        $lineNumber=$null ; 
+        $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Position']
+            if($p -and $p.Value){
+                $sp=$p.Value.PSObject.Properties['StartLineNumber'];if($sp -and $sp.Value){$lineNumber=[string]$sp.Value}
+            }
+        }
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Location']
+            if($p -and $p.Value){
+                $m=[regex]::Match([string]$p.Value,':(\d+)\s+char:','IgnoreCase');if($m.Success -and $m.Groups.Count -gt 1){$lineNumber=$m.Groups[1].Value}
+            }
+        }
+        $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
+        if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
+        $prefix="[$ts "
+        $suffix="] [$file] $Message"
+        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back='DarkRed'}}[$lvl]
+        $fore=$cfg.Fore
+        $back=$cfg.Back
+        if($fore -or $back){
+            Write-Host -NoNewline $prefix
+            if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
+            elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
+            elseif($back){Write-Host -NoNewline $lvl -BackgroundColor $back}
+            Write-Host $suffix
+        } else {
+            Write-Host "$prefix$lvl$suffix"
+        }
+        if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
     }
 
    Examples:
@@ -114,16 +146,22 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
     - NAMING: Use a distinct prefix to avoid collisions, e.g. _ (example: function _Norm-List { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param(...params...) ...code... }). PSUseApprovedVerbs needs to be between funcname and param.
     - COMMON PROBLEMS: Don't forget [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] in inline helper functions.
     - NO OUTPUT: Helpers MUST NOT write to the pipeline. If needed, return values explicitly and keep them inside the outer function.
-    - QUIET LOGGING: Helpers MUST NOT use Write-Output, Write-Error, Write-Verbose, or Write-Information. Use Write-Host only in the outer function for key actions.
+    - QUIET LOGGING: Helpers MUST NOT use Write-Output, Write-Error, Write-Verbose, or Write-Information. Use Write-Host only or implement _Write-StandardMessage in function for key actions.
     - NO EXPORT: Inline helpers MUST NOT be exported; they exist only for the duration of the outer function call.
     - IDEMPOTENT: Helpers MUST NOT rely on session-global state; they must be deterministic given their inputs.
 
 15) Assume StrictMode-safe 3 is active before the function call; the function must be StrictMode-safe 3.
    - Forbid references to uninitialized variables, including inside strings.
    - Forbid references to non-existent object properties.
-   - Forbid function calls that use method-call syntax.
+   - Forbid dynamic invocation tricks for core logic (e.g. & ($x) with uncontrolled values). Normal method calls ($obj.Method(), [Type]::Method()) are allowed.
    - Forbid out-of-bounds or unresolved array indices.
    - Definitive: The function must fully comply with StrictMode-safe 3.
+
+16) COMPARISONS
+   - ($null -ne $ext) $null should always be on the left side of the comparisons.
+
+17) RETURN VALUES OF FUNCTIONS
+   - Whenever a function is meant to return multiple elements as one definitive value (a single array, not a stream), end it with ,@(...) - or, if you want a typed array, with ,([type[]]@(...))
 
 DEFINITE: A function is "DONE" only if it meets ALL requirements above.
 

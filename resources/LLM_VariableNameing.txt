@@ -50,4 +50,7 @@ Root, Base, Relative, Full (absolute), Source, Destination, Input, Output, Versi
 - `ChannelVersionRelativePath`, `ChannelLatestRelativePath`, `DistOutputDirectory`, `NuGetIndexUri`
 - `SourcePattern = "*.sln"`, `MarkdownExtension = ".md"`
 
+## How to handle aliases
+- Remove existing aliases this rename task does not require to keep COMPATIBILITY.
+
 Definitive statement: Use the `Subject[Qualifier]TypeSuffix` pattern with the fixed suffix set above; never mutate a variable suffix as its type changes. Create a new variable. This keeps names precise, portable, and self-documenting across projects and languages.

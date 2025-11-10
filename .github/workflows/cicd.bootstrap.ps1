@@ -340,3 +340,4 @@ try { throw 'boom' } catch { Write-ConsoleLog -Level ERR -Message 'fatal path' }
     }
 }
 
+

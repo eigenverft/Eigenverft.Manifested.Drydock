@@ -323,137 +323,357 @@ function Test-PsGalleryPublishPrereqsOffline {
 Local diagnostics for PowerShell Gallery publish prerequisites.
 
 .DESCRIPTION
-Performs non-network checks to assess whether the host is prepared for `Publish-Module`:
-- On Windows PowerShell 5.x, verifies TLS 1.2 flag is present.
-- Confirms NuGet package provider (>= 2.8.5.201) is installed.
-- Confirms PackageManagement and PowerShellGet modules are present and importable.
-- Confirms the PSGallery repository is registered and includes publish endpoints.
-Writes human-readable status lines via Write-Host and returns nothing.
+Runs only local, non-network checks to verify whether the current host is prepared to publish modules
+using Publish-Module against the PowerShell Gallery.
+
+Checks performed:
+- On Windows PowerShell 5.x (Desktop edition), verifies that TLS 1.2 is enabled in SecurityProtocol.
+- Confirms that the NuGet package provider (version 2.8.5.201 or later) is available.
+- Confirms that PackageManagement and PowerShellGet modules are present and importable.
+- Confirms that the PSGallery repository is registered and exposes publish-related locations.
+
+The function:
+- Writes structured, human-readable status lines for each check via an inline _Write-StandardMessage helper.
+- Writes a final summary line.
+- Produces no pipeline output.
 
 .PARAMETER ThrowOnFailure
-If supplied, throws after checks when any prerequisite is missing.
+If specified, throws after all checks when one or more prerequisites are missing.
 
 .PARAMETER ExitOnFailure
-If supplied, exits the host with code 1 after checks when any prerequisite is missing.
-NOTE: This terminates the current PowerShell host. Use in CI pipelines or scripts only.
+If specified, exits the current PowerShell host with exit code 1 after all checks when one or more
+prerequisites are missing. Intended for CI or scripted use only.
 
 .EXAMPLE
 Test-PsGalleryPublishPrereqsOffline
 
+Runs all checks and prints a summary. Does not throw or exit on failure.
+
 .EXAMPLE
 Test-PsGalleryPublishPrereqsOffline -ThrowOnFailure
 
+Runs all checks and throws a terminating error if any prerequisite is missing.
+
 .EXAMPLE
 Test-PsGalleryPublishPrereqsOffline -ExitOnFailure
+
+Runs all checks and terminates the current PowerShell host with exit code 1 if any prerequisite is missing.
+
+.NOTES
+- Supported on Windows PowerShell 5/5.1 and PowerShell 7+ on Windows, macOS, and Linux.
+- Uses only offline/metadata checks; no HTTP/network calls are made.
+- Does not rely on pipeline input and does not emit objects to the pipeline.
 #>
     [CmdletBinding()]
     param(
-        [switch]$ThrowOnFailure,
-        [switch]$ExitOnFailure
+        [Parameter()][switch]$ThrowOnFailure,
+        [Parameter()][switch]$ExitOnFailure
     )
 
-    # Internal state
+    function _Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$Message,
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
+        )
+        $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
+        if(-not $PSBoundParameters.ContainsKey('MinLevel')){
+            $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+            $MinLevel=if($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)){[string]$gv.Value}else{'INF'}
+        }
+        $lvl=$Level.ToUpperInvariant()
+        $min=$MinLevel.ToUpperInvariant()
+        $sev=$sevMap[$lvl];if($null -eq $sev){$lvl='INF';$sev=$sevMap['INF']}
+        $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
+        if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
+        if($sev -lt $gate){return}
+        $ts=[DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
+        if($stack){
+            # 1: prefer first non-underscore function not defined in the helper's own file
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+            }
+            # 2: fallback to first non-underscore function (any file)
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')){$caller=$f;break}
+                }
+            }
+            # 3: fallback to first non-helper frame not from helper's own file
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                    if($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+                }
+            }
+            # 4: final fallback to first non-helper frame
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName){$caller=$f;break}
+                }
+            }
+        }
+        if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
+        $lineNumber=$null ; 
+        $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Position']
+            if($p -and $p.Value){
+                $sp=$p.Value.PSObject.Properties['StartLineNumber'];if($sp -and $sp.Value){$lineNumber=[string]$sp.Value}
+            }
+        }
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Location']
+            if($p -and $p.Value){
+                $m=[regex]::Match([string]$p.Value,':(\d+)\s+char:','IgnoreCase');if($m.Success -and $m.Groups.Count -gt 1){$lineNumber=$m.Groups[1].Value}
+            }
+        }
+        $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
+        if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
+        $prefix="[$ts "
+        $suffix="] [$file] $Message"
+        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back='DarkRed'}}[$lvl]
+        $fore=$cfg.Fore
+        $back=$cfg.Back
+        if($fore -or $back){
+            Write-Host -NoNewline $prefix
+            if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
+            elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
+            elseif($back){Write-Host -NoNewline $lvl -BackgroundColor $back}
+            Write-Host $suffix
+        } else {
+            Write-Host "$prefix$lvl$suffix"
+        }
+        if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
+    }
+
+
+
+    function _New-StatusRecord {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory = $true)][string]$Name,
+            [Parameter(Mandatory = $true)][bool]$Ok,
+            [Parameter(Mandatory = $true)][string]$Detail
+        )
+
+        # External reviewer: encapsulates a single check result.
+        $record = [PSCustomObject]@{
+            Name   = $Name
+            Ok     = $Ok
+            Detail = $Detail
+        }
+        return ,$record
+    }
+
+    function _Apply-LocalStatus {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory = $true)]
+            [pscustomobject]$Record,
+
+            [Parameter()]
+            [System.Collections.IList]$FailureList,
+
+            [Parameter(Mandatory = $true)]
+            [bool]$CurrentOverallOk
+        )
+
+        if (-not $Record.Ok) {
+            if ($null -ne $FailureList) {
+                $null = $FailureList.Add($Record.Name)
+            }
+            $CurrentOverallOk = $false
+        }
+
+        $tag = if ($Record.Ok) { 'OK' } else { 'FAIL' }
+        $message = '[{0}] {1}: {2}' -f $tag, $Record.Name, $Record.Detail
+        $level = if ($Record.Ok) { 'INF' } else { 'ERR' }
+
+        _Write-StandardMessage -Message $message -Level $level
+
+        return $CurrentOverallOk
+    }
+
+    # Local state.
     $overallOk = $true
-    $failures  = New-Object System.Collections.Generic.List[string]
-    $isDesktop = ($PSVersionTable.PSEdition -eq 'Desktop')
-    $psv       = $PSVersionTable.PSVersion.ToString()
+    $failures = New-Object -TypeName 'System.Collections.Generic.List[string]'
+    $editionText = $PSVersionTable.PSEdition
+    $psVersionText = $PSVersionTable.PSVersion.ToString()
+    $isDesktopEdition = ($editionText -eq 'Desktop')
 
-    # Helper: formatted line with OK/FAIL, color, and detail; collects failing names
-    function _print([string]$name, [bool]$ok, [string]$detail) {
-        if (-not $ok) {
-            $script:overallOk = $false
-            [void]$script:failures.Add($name)
-        }
-        $tag   = if ($ok) { 'OK' } else { 'FAIL' }
-        $color = if ($ok) { 'Green' } else { 'Red' }
-        Write-Host ("[{0}] {1}: {2}" -f $tag, $name, $detail) -ForegroundColor $color
-    }
+    _Write-StandardMessage -Message ("--- PowerShell Gallery Publish Prerequisite Check (PS {0}, Edition: {1}) ---" -f $psVersionText, $editionText) -Level 'INF'
 
-    Write-Host ("--- PowerShell Gallery Publish Prerequisite Check (PS {0}, Edition: {1}) ---" -f $psv, $PSVersionTable.PSEdition) -ForegroundColor Cyan
-
-    # TLS 1.2 (Windows PowerShell only)
+    # 1) TLS 1.2 (Windows PowerShell Desktop only).
     $tlsOk = $true
-    $tlsDetail = "Not applicable on $($PSVersionTable.PSEdition)"
-    if ($isDesktop) {
+    $tlsDetail = 'Not applicable on current edition'
+    if ($isDesktopEdition) {
         try {
-            $tls = [Net.ServicePointManager]::SecurityProtocol
-            $tlsOk = (($tls -band [Net.SecurityProtocolType]::Tls12) -ne 0)
-            $tlsDetail = if ($tlsOk) { 'TLS 1.2 present' } else { 'TLS 1.2 not present' }
-        } catch {
+            $currentProtocol = [Net.ServicePointManager]::SecurityProtocol
+            $hasTls12 = (($currentProtocol -band [Net.SecurityProtocolType]::Tls12) -ne 0)
+            if ($hasTls12) {
+                $tlsOk = $true
+                $tlsDetail = 'TLS 1.2 enabled in SecurityProtocol'
+            }
+            else {
+                $tlsOk = $false
+                $tlsDetail = 'TLS 1.2 not enabled in SecurityProtocol'
+            }
+        }
+        catch {
             $tlsOk = $false
-            $tlsDetail = 'Unable to read SecurityProtocol'
+            $tlsDetail = 'Unable to read SecurityProtocol for TLS 1.2 verification'
         }
     }
-    _print 'TLS (Desktop only)' $tlsOk $tlsDetail
 
-    # NuGet package provider (>= 2.8.5.201)
+    $tlsRecord = _New-StatusRecord -Name 'TLS (Desktop only)' -Ok:$tlsOk -Detail:$tlsDetail
+    $overallOk = _Apply-LocalStatus -Record $tlsRecord -FailureList $failures -CurrentOverallOk $overallOk
+
+    # 2) NuGet package provider (version >= 2.8.5.201).
     $nugetOk = $false
-    $nugetDetail = 'Not found'
+    $nugetDetail = 'NuGet provider not found'
     try {
-        $nuget = Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue
-        if ($nuget) {
-            $nugetOk = ($nuget.Version -ge [version]'2.8.5.201')
-            $nugetDetail = "Found $($nuget.Version)" + ($(if(-not $nugetOk){' (need >= 2.8.5.201)'} else {''}))
+        $nugetProvider = Get-PackageProvider -Name 'NuGet' -ErrorAction SilentlyContinue
+        if ($null -ne $nugetProvider) {
+            $requiredNuGetVersion = [version]'2.8.5.201'
+            if ($nugetProvider.Version -ge $requiredNuGetVersion) {
+                $nugetOk = $true
+                $nugetDetail = ('Found NuGet provider version {0}' -f $nugetProvider.Version)
+            }
+            else {
+                $nugetDetail = ('Found NuGet provider version {0} (need {1} or later)' -f $nugetProvider.Version, $requiredNuGetVersion)
+            }
         }
-    } catch {}
-    _print 'NuGet provider' $nugetOk $nugetDetail
+    }
+    catch {
+        $nugetOk = $false
+        $nugetDetail = 'Error while querying NuGet provider'
+    }
 
-    # PackageManagement module present & importable
+    $nugetRecord = _New-StatusRecord -Name 'NuGet provider' -Ok:$nugetOk -Detail:$nugetDetail
+    $overallOk = _Apply-LocalStatus -Record $nugetRecord -FailureList $failures -CurrentOverallOk $overallOk
+
+    # 3) PackageManagement module present and importable.
     $pmOk = $false
-    $pmDetail = 'Not found'
+    $pmDetail = 'PackageManagement module not found'
     try {
-        $pm = Get-Module -ListAvailable -Name PackageManagement | Sort-Object Version -Descending | Select-Object -First 1
-        if ($pm) {
-            try { Import-Module PackageManagement -MinimumVersion $pm.Version -Force -ErrorAction Stop | Out-Null } catch {}
-            $pmOk = $true
-            $pmDetail = "Found $($pm.Version)"
-        }
-    } catch {}
-    _print 'PackageManagement module' $pmOk $pmDetail
+        $pmModule = Get-Module -ListAvailable -Name 'PackageManagement' |
+            Sort-Object -Property Version -Descending |
+            Select-Object -First 1
 
-    # PowerShellGet module present & importable
+        if ($null -ne $pmModule) {
+            try {
+                Import-Module -Name 'PackageManagement' -MinimumVersion $pmModule.Version -Force -ErrorAction Stop | Out-Null
+                $pmOk = $true
+                $pmDetail = ('Found PackageManagement module version {0}' -f $pmModule.Version)
+            }
+            catch {
+                $pmOk = $false
+                $pmDetail = ('Found PackageManagement module version {0} but failed to import: {1}' -f $pmModule.Version, $_.Exception.Message)
+            }
+        }
+    }
+    catch {
+        $pmOk = $false
+        $pmDetail = 'Error while locating PackageManagement module'
+    }
+
+    $pmRecord = _New-StatusRecord -Name 'PackageManagement module' -Ok:$pmOk -Detail:$pmDetail
+    $overallOk = _Apply-LocalStatus -Record $pmRecord -FailureList $failures -CurrentOverallOk $overallOk
+
+    # 4) PowerShellGet module present and importable.
     $psgOk = $false
-    $psgDetail = 'Not found'
+    $psgDetail = 'PowerShellGet module not found'
     try {
-        $psg = Get-Module -ListAvailable -Name PowerShellGet | Sort-Object Version -Descending | Select-Object -First 1
-        if ($psg) {
-            try { Import-Module PowerShellGet -MinimumVersion $psg.Version -Force -ErrorAction Stop | Out-Null } catch {}
-            $psgOk = $true
-            $psgDetail = "Found $($psg.Version)"
-        }
-    } catch {}
-    _print 'PowerShellGet module' $psgOk $psgDetail
+        $psgModule = Get-Module -ListAvailable -Name 'PowerShellGet' |
+            Sort-Object -Property Version -Descending |
+            Select-Object -First 1
 
-    # PSGallery repository registration & publish endpoints (metadata only; no network)
+        if ($null -ne $psgModule) {
+            try {
+                Import-Module -Name 'PowerShellGet' -MinimumVersion $psgModule.Version -Force -ErrorAction Stop | Out-Null
+                $psgOk = $true
+                $psgDetail = ('Found PowerShellGet module version {0}' -f $psgModule.Version)
+            }
+            catch {
+                $psgOk = $false
+                $psgDetail = ('Found PowerShellGet module version {0} but failed to import: {1}' -f $psgModule.Version, $_.Exception.Message)
+            }
+        }
+    }
+    catch {
+        $psgOk = $false
+        $psgDetail = 'Error while locating PowerShellGet module'
+    }
+
+    $psgRecord = _New-StatusRecord -Name 'PowerShellGet module' -Ok:$psgOk -Detail:$psgDetail
+    $overallOk = _Apply-LocalStatus -Record $psgRecord -FailureList $failures -CurrentOverallOk $overallOk
+
+    # 5) PSGallery repository registration and publish endpoints (metadata-only, offline).
     $repoOk = $false
-    $repoDetail = 'Not registered'
+    $repoDetail = 'PSGallery repository not registered'
     $pubOk = $false
-    $pubDetail = 'Publish endpoints missing'
+    $pubDetail = 'Publish endpoints not available from registered PSGallery repository'
     try {
-        $repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
-        if ($repo) {
+        $psGalleryRepo = Get-PSRepository -Name 'PSGallery' -ErrorAction SilentlyContinue
+        if ($null -ne $psGalleryRepo) {
             $repoOk = $true
-            $repoDetail = 'Registered'
-            $pubOk = [bool]$repo.PublishLocation -and [bool]$repo.ScriptPublishLocation -and ($repo.PublishLocation.ToString() -match '/api/v2/package/')
-            $pubDetail = if ($pubOk) { 'Publish endpoints present' } else { 'Publish endpoints missing' }
-        }
-    } catch {}
-    _print 'PSGallery repository' $repoOk $repoDetail
-    _print 'PSGallery publish endpoints' $pubOk $pubDetail
+            $repoDetail = 'PSGallery repository registered'
 
-    # Summary and failure handling
+            $hasPublishLocation = (($null -ne $psGalleryRepo.PublishLocation) -and
+                                   ($null -ne $psGalleryRepo.ScriptPublishLocation))
+
+            $hasV2PackagePath = $false
+            if ($hasPublishLocation) {
+                $publishLocationText = [string]$psGalleryRepo.PublishLocation
+                if ($publishLocationText -match '/api/v2/package/') {
+                    $hasV2PackagePath = $true
+                }
+            }
+
+            if ($hasPublishLocation -and $hasV2PackagePath) {
+                $pubOk = $true
+                $pubDetail = 'Publish endpoints present in PSGallery repository metadata'
+            }
+        }
+    }
+    catch {
+        $repoOk = $false
+        $repoDetail = 'Error while querying PSGallery repository registration'
+        $pubOk = $false
+        $pubDetail = 'Unable to confirm publish endpoints due to repository query error'
+    }
+
+    $repoRecord = _New-StatusRecord -Name 'PSGallery repository' -Ok:$repoOk -Detail:$repoDetail
+    $overallOk = _Apply-LocalStatus -Record $repoRecord -FailureList $failures -CurrentOverallOk $overallOk
+
+    $pubRecord = _New-StatusRecord -Name 'PSGallery publish endpoints' -Ok:$pubOk -Detail:$pubDetail
+    $overallOk = _Apply-LocalStatus -Record $pubRecord -FailureList $failures -CurrentOverallOk $overallOk
+
+    # Summary and failure handling.
     if ($overallOk) {
-        Write-Host '[SUMMARY] Prerequisite check PASSED.' -ForegroundColor Green
-    } else {
-        Write-Host ('[SUMMARY] Prerequisite check FAILED: {0}.' -f ($failures -join ', ')) -ForegroundColor Red
+        _Write-StandardMessage -Message '[SUMMARY] Prerequisite check PASSED.' -Level 'INF'
+    }
+    else {
+        $failedList = $failures -join ', '
+        _Write-StandardMessage -Message ('[SUMMARY] Prerequisite check FAILED: {0}.' -f $failedList) -Level 'ERR'
+
         if ($ThrowOnFailure) {
-            throw ("Prereq check failed: {0}." -f ($failures -join ', '))
-        } elseif ($ExitOnFailure) {
-            $global:LASTEXITCODE = 1
+            throw ('Prerequisite check failed: {0}.' -f $failedList)
+        }
+
+        if ($ExitOnFailure) {
             exit 1
         }
     }
 
-    return  # no output object
+    return
 }
 

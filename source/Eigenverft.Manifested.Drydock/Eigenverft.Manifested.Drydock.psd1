@@ -12,7 +12,7 @@
 RootModule = 'Eigenverft.Manifested.Drydock.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.20256.16184'
+ModuleVersion = '0.20256.29726'
 
 # Supported PSEditions
 CompatiblePSEditions = @('Desktop','Core')
@@ -51,7 +51,7 @@ PowerShellVersion = '5.1'
 # ProcessorArchitecture = ''
 
 # Modules that must be imported into the global environment prior to importing this module
-# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20256.16184'; })
+# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20256.29726'; })
 
 # Assemblies that must be loaded prior to importing this module
 # RequiredAssemblies = @()
@@ -71,9 +71,13 @@ PowerShellVersion = '5.1'
 # Functions to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no functions to export.
 FunctionsToExport = @(
 
+    # ...Compression.ps1
+    'Compress-Directory',
+
     # ...Convert.ps1
     'Convert-FilePlaceholders',
     'Convert-TemplateFilePlaceholders',
+    'Convert-StringToBaseObject'
 
     # ...Deployments.ps1
     'Convert-BranchToDeploymentInfo',
@@ -88,9 +92,17 @@ FunctionsToExport = @(
     'New-DotnetDeprecatedReport',
     'New-DotnetOutdatedReport',
     'New-ThirdPartyNotice',
+    'Export-PackageLicenseTexts',
 
     # ...Execution.ps1
     'Invoke-Exec',
+    'Invoke-ProcessTyped',
+    
+    # ...Framework.ps1
+    'Get-DotNetFrameworkInfo',
+    'Get-DotNetFrameworkLatestByFamily',
+    'Get-DotNetFrameworkFamilyCapabilities',
+    'Get-DotNetFrameworkCapabilityByTarget'
 
     # ...Git.ps1
     'Get-GitTopLevelDirectory',
@@ -99,6 +111,9 @@ FunctionsToExport = @(
     'Get-GitRepositoryName',
     'Get-GitRemoteUrl',
     'Invoke-GitAddCommitPush',
+
+    # ...GitHub.ps1
+    'Get-GitHubLatestRelease'
 
     # ...IO.ps1
     'Find-FilesByPattern',
@@ -109,6 +124,7 @@ FunctionsToExport = @(
     'Find-TreeContentByFile',
     'Resolve-ModulePath',
     'Copy-FilesRecursively',
+    'Join-FileText',
 
     # ...Logging.ps1
     'Write-ConsoleLog',
@@ -146,6 +162,9 @@ FunctionsToExport = @(
     
     # ...ScheduledTask.ps1
     'New-CompatScheduledTask',
+
+    # ...String.ps1
+    'Join-Text',
 
     # ...Tests.ps1
     'Test-VariableValue',
@@ -220,7 +239,7 @@ PrivateData = @{
         ReleaseNotes = ''
 
         # Prerelease string of this module
-        Prerelease = ''
+        Prerelease = 'dev'
 
         # Flag to indicate whether the module requires explicit user acceptance for install/update/save
         # RequireLicenseAcceptance = $false

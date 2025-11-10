@@ -73,8 +73,9 @@ Convert-FilePlaceholders -InputFile './in.tpl' -OutputFile './out.txt' -Replacem
             [string]$MinLevel
         )
         if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
-            if ($Global:ConsoleLogMinLevel) {
-                $MinLevel = $Global:ConsoleLogMinLevel
+            $gv = Get-Variable -Name 'ConsoleLogMinLevel' -Scope Global -ErrorAction SilentlyContinue
+            if ($null -ne $gv -and $null -ne $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)) {
+                $MinLevel = [string]$gv.Value
             } else {
                 $MinLevel = 'INF'
             }
@@ -280,7 +281,6 @@ Convert-FilePlaceholders -InputFile './in.tpl' -OutputFile './out.txt' -Replacem
     }
 }
 
-
 function Convert-TemplateFilePlaceholders {
 <#
 .SYNOPSIS
@@ -377,8 +377,9 @@ Convert-TemplateFilePlaceholders -TemplateFile './appsettings.tlp.json' -Replace
             [string]$MinLevel
         )
         if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
-            if ($Global:ConsoleLogMinLevel) {
-                $MinLevel = $Global:ConsoleLogMinLevel
+            $gv = Get-Variable -Name 'ConsoleLogMinLevel' -Scope Global -ErrorAction SilentlyContinue
+            if ($null -ne $gv -and $null -ne $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)) {
+                $MinLevel = [string]$gv.Value
             } else {
                 $MinLevel = 'INF'
             }
@@ -615,3 +616,195 @@ Convert-TemplateFilePlaceholders -TemplateFile './appsettings.tlp.json' -Replace
         }
     }
 }
+
+function Convert-StringToBaseObject {
+<#
+.SYNOPSIS
+Converts string input into the most appropriate strongly-typed object using en-US culture.
+
+.DESCRIPTION
+Robust helper for normalizing textual output from tools into useful base types.
+First successful match wins; if nothing matches, the original string is returned.
+
+Conversion order:
+- Non-strings            : returned unchanged
+- Null-like literals     : $null
+- Boolean                : true/false
+- JSON                   : object/array when clearly JSON-shaped
+- Guid
+- Int32, Int64, BigInteger
+- Special floating       : NaN, +/-Infinity
+- Decimal                : simple fixed-point (no exponent)
+- Double                 : general floating (incl. exponents)
+- Version                : n.n / n.n.n / n.n.n.n   (checked before Date/Time to avoid 1.2.3 -> DateTime)
+- TimeSpan               : (en-US)
+- DateTime               : en-US, then ISO/Roundtrip
+
+If none match, returns the original string.
+
+.PARAMETER InputObject
+Value to convert. Strings are analyzed; non-strings are returned as-is.
+
+.PARAMETER TreatEmptyAsNull
+When set, empty/whitespace-only strings are converted to $null.
+
+.EXAMPLE
+"true","42","3.14","2024-01-02","{`"a`":1}" |
+    ForEach-Object { Convert-StringToBaseObject -InputObject $_ }
+
+.EXAMPLE
+$typed = Convert-StringToBaseObject -InputObject "1.2.3"
+# returns [version] 1.2.3
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        [object]$InputObject,
+
+        [Parameter()]
+        [switch]$TreatEmptyAsNull
+    )
+
+    # Non-string passthrough
+    if ($null -eq $InputObject) {
+        return $null
+    }
+    if ($InputObject -isnot [string]) {
+        return $InputObject
+    }
+
+    # Constants per invocation (PS5-safe)
+    $cultureEnUs   = [System.Globalization.CultureInfo]::GetCultureInfo('en-US')
+    $integerStyles = [System.Globalization.NumberStyles]::Integer
+    $floatStyles   = [System.Globalization.NumberStyles]::Float -bor [System.Globalization.NumberStyles]::AllowThousands
+    $dateStyles    = [System.Globalization.DateTimeStyles]::AllowWhiteSpaces
+    $nullLiterals  = @('null','<null>','none','n/a')
+
+    $raw  = $InputObject
+    $text = $raw.Trim()
+
+    # Empty handling
+    if ($text.Length -eq 0) {
+        if ($TreatEmptyAsNull) { return $null }
+        return $raw
+    }
+
+    $lower = $text.ToLowerInvariant()
+
+    # 1) Null-like
+    if ($nullLiterals -contains $lower) {
+        return $null
+    }
+
+    # 2) Boolean
+    $boolResult = $false
+    if ([bool]::TryParse($text, [ref]$boolResult)) {
+        return $boolResult
+    }
+
+    # 3) JSON (only clearly JSON-shaped)
+    if (
+        ($text.StartsWith('{') -and $text.EndsWith('}')) -or
+        ($text.StartsWith('[') -and $text.EndsWith(']'))
+    ) {
+        try {
+            $json = $text | ConvertFrom-Json -ErrorAction Stop
+            if ($null -ne $json) {
+                return $json
+            }
+        }
+        catch {
+            # ignore malformed; continue
+        }
+    }
+
+    # 4) Guid
+    $guidResult = [guid]::Empty
+    if ([guid]::TryParse($text, [ref]$guidResult)) {
+        return $guidResult
+    }
+
+    # 5) Int32
+    $int32Result = 0
+    if ([int]::TryParse($text, $integerStyles, $cultureEnUs, [ref]$int32Result)) {
+        return $int32Result
+    }
+
+    # 6) Int64
+    $int64Result = 0L
+    if ([long]::TryParse($text, $integerStyles, $cultureEnUs, [ref]$int64Result)) {
+        return $int64Result
+    }
+
+    # 7) BigInteger (only pure integer forms)
+    if ($text -match '^[\+\-]?\d+$') {
+        try {
+            $bigInt = [System.Numerics.BigInteger]::Parse($text, $cultureEnUs)
+            return $bigInt
+        }
+        catch {
+            # ignore
+        }
+    }
+
+    # 8) Special floating tokens
+    switch ($lower) {
+        'nan'       { return [double]::NaN }
+        'infinity'  { return [double]::PositiveInfinity }
+        '+infinity' { return [double]::PositiveInfinity }
+        '-infinity' { return [double]::NegativeInfinity }
+    }
+
+    # 9) Decimal (simple fixed-point, no exponent)
+    if ($text -match '^[\+\-]?\d+(\.\d+)?$') {
+        $decimalResult = [decimal]0
+        if ([decimal]::TryParse($text, $floatStyles, $cultureEnUs, [ref]$decimalResult)) {
+            return $decimalResult
+        }
+    }
+
+    # 10) Double (general float)
+    $doubleResult = [double]0
+    if ([double]::TryParse($text, $floatStyles, $cultureEnUs, [ref]$doubleResult)) {
+        return $doubleResult
+    }
+
+    # 11) Version (dotted numeric, 2-4 segments) BEFORE Date/Time to avoid 1.2.3 -> DateTime
+    if ($text -match '^\d+(\.\d+){1,3}$') {
+        try {
+            $ver = New-Object System.Version($text)
+            return $ver
+        }
+        catch {
+            # ignore
+        }
+    }
+
+    # 12) TimeSpan (en-US)
+    $timeSpanResult = [TimeSpan]::Zero
+    if ([TimeSpan]::TryParse($text, $cultureEnUs, [ref]$timeSpanResult)) {
+        return $timeSpanResult
+    }
+
+    # 13) DateTime (en-US)
+    $dateResult = [datetime]::MinValue
+    if ([datetime]::TryParse($text, $cultureEnUs, $dateStyles, [ref]$dateResult)) {
+        return $dateResult
+    }
+
+    # 14) DateTime (ISO / roundtrip, invariant)
+    $dateIsoResult = [datetime]::MinValue
+    if ([datetime]::TryParse(
+            $text,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::RoundtripKind,
+            [ref]$dateIsoResult
+        )) {
+        return $dateIsoResult
+    }
+
+    # Fallback: original string
+    return $raw
+}
+

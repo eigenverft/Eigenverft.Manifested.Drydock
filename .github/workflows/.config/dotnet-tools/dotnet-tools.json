@@ -15,13 +15,6 @@
         "nuget-license"
       ],
       "rollForward": false
-    },
-    "docfx": {
-      "version": "2.74.1",
-      "commands": [
-        "docfx"
-      ],
-      "rollForward": false
     }
   }
 }

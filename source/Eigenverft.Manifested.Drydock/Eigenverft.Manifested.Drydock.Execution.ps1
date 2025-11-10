@@ -740,7 +740,7 @@ function Invoke-ProcessTyped {
     $normalizedReturnType = $ReturnType.ToLowerInvariant()
 
     _Write-StandardMessage -Message ("Before Command : (Executable: {0}, Args Count: {1})" -f $resolvedName, $finalArgs.Count) -Level DBG
-    _Write-StandardMessage -Message ("Full Command   : {0} {1}" -f $resolvedExecutable.Path, ($displayArgs -join ' ')) -Level INF
+    _Write-StandardMessage -Message ("Full Command   : & ""{0}"" {1}" -f $resolvedExecutable.Path, ($displayArgs -join ' ')) -Level INF
 
     $stopwatch = $null
     if ($MeasureTime) {

@@ -470,7 +470,7 @@ function Invoke-ProcessTyped {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         [CmdletBinding()]
         param(
-            [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$Message,
+            [Parameter(Mandatory=$true)][ValidateNotNull()][string]$Message,
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
         )

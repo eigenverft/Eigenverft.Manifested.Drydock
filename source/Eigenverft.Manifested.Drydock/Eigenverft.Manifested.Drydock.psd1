@@ -171,7 +171,6 @@ FunctionsToExport = @(
     'Test-CommandAvailable',
     'Test-ModuleAvailable',
     'Test-PsGalleryPublishPrereqsOffline',
-    'Test-PsGalleryPublishPrereqsOffline2',
 
     # ...Version.ps1
     'Convert-DateTimeTo64SecVersionComponents',

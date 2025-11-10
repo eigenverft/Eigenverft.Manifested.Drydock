@@ -800,7 +800,7 @@ function Invoke-ProcessTyped {
 
     if (-not $isAllowed) {
         if ($CaptureOutput -and $null -ne $result) {
-            _Write-StandardMessage -Message 'Captured Output (non-success exit code):' -Level WRN
+            _Write-StandardMessage -Message "Captured Output (non-success exit code): $exitCode" -Level WRN
             foreach ($line in $result) {
                 if (-not [string]::IsNullOrEmpty($line))
                 {

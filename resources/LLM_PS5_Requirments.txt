@@ -29,7 +29,7 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
    - EMIT Write- or _Write-StandardMessage ONLY for key actions (created X, added/removed Y, enabled/disabled Z, updated trust). Keep minimal and consistent.
    - Format the Write function implement a inline helper function for it suggested format.
    - The _Write-StandardMessage is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise, it should be implmented as is,including no formatting changes.
-   - All write functions should have Tags at the begining showing the operation e.g [PROGRESS],[STATUS],[OK],[VALUE],[CHECK],[SOURCE],[TRUST],[CREATE],[SKIP],[SUMMARY]
+   - All write message functions should have Tags at the begining showing the operation e.g [PROGRESS],[STATUS],[OK],[VALUE],[CHECK],[SOURCE],[TRUST],[CREATE],[SKIP],[SUMMARY] just examples freely choose.
     function _Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.

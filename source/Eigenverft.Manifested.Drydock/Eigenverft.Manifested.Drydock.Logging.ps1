@@ -28,6 +28,7 @@ function Write-ConsoleLog {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string]$Message,
 
         [Parameter()]
@@ -191,4 +192,3 @@ function Write-ConsoleLog {
         throw ("ConsoleLog.{0}: {1}" -f $lvl, $Message)
     }
 }
-

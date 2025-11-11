@@ -375,10 +375,15 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
         # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
         [CmdletBinding()]
         param(
-            [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$Message,
+            [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
         )
+
+        if ($null -eq $Message) {
+            $Message = [string]::Empty
+        }
+
         $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
         if(-not $PSBoundParameters.ContainsKey('MinLevel')){
             $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
@@ -439,10 +444,12 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
         if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
         $prefix="[$ts "
         $suffix="] [$file] $Message"
-        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back='DarkRed'}}[$lvl]
+        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='Red';Back='DarkRed'}}[$lvl]
         $fore=$cfg.Fore
         $back=$cfg.Back
-        if($fore -or $back){
+        $isInteractive = [System.Environment]::UserInteractive
+
+        if($isInteractive -and ($fore -or $back)){
             Write-Host -NoNewline $prefix
             if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
             elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
@@ -451,10 +458,9 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
         } else {
             Write-Host "$prefix$lvl$suffix"
         }
+
         if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
     }
-
-
 
     function _New-StatusRecord {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]

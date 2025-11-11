@@ -28,21 +28,17 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
 8) OUTPUT & LOGGING
    - EMIT Write- or _Write-StandardMessage ONLY for key actions (created X, added/removed Y, enabled/disabled Z, updated trust). Keep minimal and consistent.
    - Format the Write function implement a inline helper function for it suggested format.
-   - The _Write-StandardMessage is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise, it should be implmented as is.
+   - The _Write-StandardMessage is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise, it should be implmented as is,including no formatting changes.
     function _Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
         [CmdletBinding()]
         param(
-            [Parameter(Mandatory=$true)][string]$Message,
+            [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
         )
-
-        if ($null -eq $Message) {
-            $Message = [string]::Empty
-        }
-
+        if ($null -eq $Message) { $Message = [string]::Empty }
         $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
         if(-not $PSBoundParameters.ContainsKey('MinLevel')){
             $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
@@ -107,7 +103,6 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
         $fore=$cfg.Fore
         $back=$cfg.Back
         $isInteractive = [System.Environment]::UserInteractive
-
         if($isInteractive -and ($fore -or $back)){
             Write-Host -NoNewline $prefix
             if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}

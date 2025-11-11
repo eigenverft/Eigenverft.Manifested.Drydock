@@ -147,7 +147,7 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
 
 14) INLINE HELPERS (SAFE MODE)
     - SCOPE: Inline (nested) helpers defined with function MUST be created in the local scope: function _Name { ... }.
-    - NAMING: Use a distinct prefix to avoid collisions, e.g. _ (example: function _Norm-List { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param(...params...) ...code... }). PSUseApprovedVerbs needs to be between funcname and param.
+    - NAMING: Use a distinct prefix to avoid collisions, e.g. _ (example: #ultrashortfunctiondescription function _Norm-List { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param(...params...) ...code... }). PSUseApprovedVerbs needs to be between funcname and param.
     - COMMON PROBLEMS: Don't forget [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] in inline helper functions.
     - NO OUTPUT: Helpers MUST NOT write to the pipeline. If needed, return values explicitly and keep them inside the outer function.
     - QUIET LOGGING: Helpers MUST NOT use Write-Output, Write-Error, Write-Verbose, or Write-Information. Use Write-Host only or implement _Write-StandardMessage in function for key actions.

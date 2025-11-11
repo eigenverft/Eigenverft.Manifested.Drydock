@@ -1,62 +1,33 @@
 function Write-ConsoleLog {
-<#
-.SYNOPSIS
-Deterministic logger gated ONLY by MinLevel; non-errors use Output, errors use Error.
+    <#
+    .SYNOPSIS
+    Writes a standardized log message with level, timestamp, and caller context.
 
-.DESCRIPTION
-Formats: "[yyyy-MM-dd HH:mm:ss:fff LEVEL] [file.ps1] [function] message"
-Visibility is controlled solely by MinLevel (TRC..FTL). Preferences like Verbose/Debug/Warning do not affect output.
-Streams:
-  - TRC/DBG/INF/WRN -> Write-Output
-  - ERR/FTL         -> Write-Error (terminates when $ErrorActionPreference = 'Stop')
-If an error is requested (ERR/FTL) but MinLevel is stricter (e.g., FTL), the function auto-escalates to match MinLevel
-so it isn’t filtered out (useful in catch).
+    .DESCRIPTION
+    Formats and writes console messages with a severity level, including timestamp and caller file/line info.
+    Uses an effective minimum log level from the MinLevel parameter or the global ConsoleLogMinLevel variable.
+    For ERR/FTL messages and ErrorActionPreference 'Stop', an exception is thrown after writing.
 
-.PARAMETER Message
-Text to log.
+    .PARAMETER Message
+    The message text to write.
 
-.PARAMETER Level
-TRC | DBG | INF | WRN | ERR | FTL. Default: INF.
+    .PARAMETER Level
+    The severity level of the message. Valid: TRC, DBG, INF, WRN, ERR, FTL.
 
-.PARAMETER MinLevel
-TRC | DBG | INF | WRN | ERR | FTL. Defaults to $Global:ConsoleLogMinLevel or 'INF'.
+    .PARAMETER MinLevel
+    The minimum severity level required to output a message. If omitted, ConsoleLogMinLevel or INF is used.
 
-.PARAMETER LocalTime
-Use local time (UTC is default).
+    .EXAMPLE
+    Write-ConsoleLog -Message 'Initialization complete.' -Level INF
 
-.EXAMPLE
-# Global config (only these matter)
-$ErrorActionPreference     = 'Stop'   # errors become terminating
-$Global:ConsoleLogMinLevel = 'INF'    # gate: TRC/DBG/INF/WRN/ERR/FTL
+    Writes an informational message including timestamp, level, and caller context.
+    #>
 
-.EXAMPLE
-# 1) Normal flow
-Write-ConsoleLog -Level INF -Message 'started'     # goes to Output
-
-.EXAMPLE
-# 2) Try/Catch – you just say ERR in catch
-try {
-    Write-ConsoleLog -Level INF -Message 'work ok'
-}
-catch {
-    Write-ConsoleLog -Level ERR -Message 'not ok'   # goes to Error; terminates because EAPref=Stop
-}
-
-.EXAMPLE
-# 3) Gate to warnings and above (no preferences involved)
-$Global:ConsoleLogMinLevel = 'WRN'
-Write-ConsoleLog -Level INF -Message 'hidden'
-Write-ConsoleLog -Level WRN -Message 'shown (Output)'
-
-.EXAMPLE
-# 4) Gate to fatal only; catch auto-escalates
-$Global:ConsoleLogMinLevel = 'FTL'
-try { throw 'boom' } catch { Write-ConsoleLog -Level ERR -Message 'fatal path' }  # escalates to FTL → Error → Stop
-#>
+    [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+    # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory, Position=0)]
-        [ValidateNotNullOrEmpty()]
+        [Parameter(Mandatory = $true)]
         [string]$Message,
 
         [Parameter()]
@@ -65,54 +36,159 @@ try { throw 'boom' } catch { Write-ConsoleLog -Level ERR -Message 'fatal path' }
 
         [Parameter()]
         [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
-        [string]$MinLevel,
-
-        [Parameter()]
-        [switch]$LocalTime
+        [string]$MinLevel
     )
 
-    # Resolve MinLevel: explicit > global > default
-    if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
-        $MinLevel = if ($Global:ConsoleLogMinLevel) { $Global:ConsoleLogMinLevel } else { 'INF' }
+    # Normalize null input defensively.
+    if ($null -eq $Message) {
+        $Message = [string]::Empty
     }
 
-    $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
+    # Severity mapping for gating.
+    $sevMap = @{
+        TRC = 0
+        DBG = 1
+        INF = 2
+        WRN = 3
+        ERR = 4
+        FTL = 5
+    }
+
+    # Resolve effective minimum level (parameter > global var > default).
+    if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
+        $gv = Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+        $MinLevel = if ($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)) {
+            [string]$gv.Value
+        }
+        else {
+            'INF'
+        }
+    }
+
     $lvl = $Level.ToUpperInvariant()
     $min = $MinLevel.ToUpperInvariant()
-    $sev = $sevMap[$lvl]
-    $gate= $sevMap[$min]
 
-    # Auto-escalate requested errors to meet strict MinLevel (e.g., MinLevel=FTL)
+    $sev = $sevMap[$lvl]
+    if ($null -eq $sev) {
+        $lvl = 'INF'
+        $sev = $sevMap['INF']
+    }
+
+    $gate = $sevMap[$min]
+    if ($null -eq $gate) {
+        $min = 'INF'
+        $gate = $sevMap['INF']
+    }
+
+    # If configuration demands a higher error-level minimum, align upward.
     if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) {
         $lvl = $min
         $sev = $gate
     }
 
-    # Drop below gate
-    if ($sev -lt $gate) { return }
+    # Below threshold: do nothing.
+    if ($sev -lt $gate) {
+        return
+    }
 
-    # Format line
-    $now = if ($LocalTime) { Get-Date } else { [DateTime]::UtcNow }
-    $ts  = $now.ToString('yyyy-MM-dd HH:mm:ss:fff')
+    $ts = [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
 
-    # Resolve caller (external reviewer perspective)
-    $self   = $MyInvocation.MyCommand.Name
-    $caller = Get-PSCallStack | Where-Object { $_.FunctionName -ne $self } | Select-Object -First 1
-    if (-not $caller) { $caller = [pscustomobject]@{ ScriptName=$PSCommandPath; FunctionName='<scriptblock>' } }
+    # Caller resolution: first frame that is not this function.
+    $helperName = $MyInvocation.MyCommand.Name
+    $stack      = Get-PSCallStack
+    $caller     = $null
 
-    $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'console' }
-    $func = if ($caller.FunctionName) { $caller.FunctionName } else { '<scriptblock>' }
-    $line = "[{0} {1}] [{2}] [{3}] {4}" -f $ts, $lvl, $file, $func.ToLower(), $Message
-
-    # Emit: Output for non-errors; Error for ERR/FTL. Termination via $ErrorActionPreference.
-    if ($sev -ge 4) {
-        if ($ErrorActionPreference -eq 'Stop') {
-            Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified -ErrorAction Stop
-        } else {
-            Write-Error -Message $line -ErrorId ("ConsoleLog.{0}" -f $lvl) -Category NotSpecified
+    if ($stack) {
+        foreach ($frame in $stack) {
+            if ($frame.FunctionName -and $frame.FunctionName -ne $helperName) {
+                $caller = $frame
+                break
+            }
         }
-    } else {
-        Write-Information -MessageData $line -InformationAction Continue
+    }
+
+    if (-not $caller) {
+        # Fallback when called from script/host directly.
+        $caller = [pscustomobject]@{
+            ScriptName   = $PSCommandPath
+            FunctionName = $null
+        }
+    }
+
+    # Try multiple strategies to get a line number from the caller metadata.
+    $lineNumber = $null
+
+    $p = $caller.PSObject.Properties['ScriptLineNumber']
+    if ($p -and $p.Value) {
+        $lineNumber = [string]$p.Value
+    }
+
+    if (-not $lineNumber) {
+        $p = $caller.PSObject.Properties['Position']
+        if ($p -and $p.Value) {
+            $sp = $p.Value.PSObject.Properties['StartLineNumber']
+            if ($sp -and $sp.Value) {
+                $lineNumber = [string]$sp.Value
+            }
+        }
+    }
+
+    if (-not $lineNumber) {
+        $p = $caller.PSObject.Properties['Location']
+        if ($p -and $p.Value) {
+            $m = [regex]::Match([string]$p.Value, ':(\d+)\s+char:', 'IgnoreCase')
+            if ($m.Success -and $m.Groups.Count -gt 1) {
+                $lineNumber = $m.Groups[1].Value
+            }
+        }
+    }
+
+    $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'cmd' }
+
+    if ($file -ne 'console' -and $lineNumber) {
+        $file = '{0}:{1}' -f $file, $lineNumber
+    }
+
+    $prefix = "[$ts "
+    $suffix = "] [$file] $Message"
+
+    # Level-to-color configuration.
+    $cfg = @{
+        TRC = @{ Fore = 'DarkGray'; Back = $null     }
+        DBG = @{ Fore = 'Cyan';     Back = $null     }
+        INF = @{ Fore = 'Green';    Back = $null     }
+        WRN = @{ Fore = 'Yellow';   Back = $null     }
+        ERR = @{ Fore = 'Red';      Back = $null     }
+        FTL = @{ Fore = 'Red';      Back = 'DarkRed' }
+    }[$lvl]
+
+    $fore = $cfg.Fore
+    $back = $cfg.Back
+
+    $isInteractive = [System.Environment]::UserInteractive
+
+    if ($isInteractive -and ($fore -or $back)) {
+        Write-Host -NoNewline $prefix
+
+        if ($fore -and $back) {
+            Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back
+        }
+        elseif ($fore) {
+            Write-Host -NoNewline $lvl -ForegroundColor $fore
+        }
+        elseif ($back) {
+            Write-Host -NoNewline $lvl -BackgroundColor $back
+        }
+
+        Write-Host $suffix
+    }
+    else {
+        Write-Host "$prefix$lvl$suffix"
+    }
+
+    # For high severities with strict error handling, escalate via exception.
+    if ($sev -ge 4 -and $ErrorActionPreference -eq 'Stop') {
+        throw ("ConsoleLog.{0}: {1}" -f $lvl, $Message)
     }
 }
 

@@ -651,7 +651,6 @@ Convert-TemplateFilePlaceholders -TemplateFile './appsettings.tlp.json' -Replace
     Get-Item $OutputFile
 }
 
-
 function Convert-StringToBaseObject {
 <#
 .SYNOPSIS

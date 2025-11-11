@@ -470,7 +470,7 @@ function Invoke-ProcessTyped {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         [CmdletBinding()]
         param(
-            [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$Message,
+            [Parameter(Mandatory=$true)][ValidateNotNull()][string]$Message,
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
         )
@@ -740,7 +740,7 @@ function Invoke-ProcessTyped {
     $normalizedReturnType = $ReturnType.ToLowerInvariant()
 
     _Write-StandardMessage -Message ("Before Command : (Executable: {0}, Args Count: {1})" -f $resolvedName, $finalArgs.Count) -Level DBG
-    _Write-StandardMessage -Message ("Full Command   : {0} {1}" -f $resolvedExecutable.Path, ($displayArgs -join ' ')) -Level INF
+    _Write-StandardMessage -Message ("Full Command   : & ""{0}"" {1}" -f $resolvedExecutable.Path, ($displayArgs -join ' ')) -Level INF
 
     $stopwatch = $null
     if ($MeasureTime) {
@@ -800,9 +800,12 @@ function Invoke-ProcessTyped {
 
     if (-not $isAllowed) {
         if ($CaptureOutput -and $null -ne $result) {
-            _Write-StandardMessage -Message 'Captured Output (non-success exit code):' -Level WRN
+            _Write-StandardMessage -Message "Captured Output (non-success exit code): $exitCode" -Level WRN
             foreach ($line in $result) {
-                _Write-StandardMessage -Message ([string]$line) -Level INF
+                if (-not [string]::IsNullOrEmpty($line))
+                {
+                    _Write-StandardMessage -Message ([string]$line) -Level INF
+                }
             }
         }
 

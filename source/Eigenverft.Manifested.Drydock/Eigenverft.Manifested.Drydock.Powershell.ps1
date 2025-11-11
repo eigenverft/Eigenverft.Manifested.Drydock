@@ -1884,19 +1884,183 @@ $name = Register-LocalPSGalleryRepository -RepositoryName LocalGallery -Reposito
         [string]$InstallationPolicy = 'Trusted'
     )
 
-    # Reviewer: Validate/generate the name; ensure it is safe and predictable.
+    function _Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyString()]
+            [string]$Message,
+
+            [Parameter()]
+            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
+            [string]$Level = 'INF',
+
+            [Parameter()]
+            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
+            [string]$MinLevel
+        )
+
+        if ($null -eq $Message) { $Message = [string]::Empty }
+
+        $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
+
+        if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
+            $gv = Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+            $MinLevel = if ($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)) {
+                [string]$gv.Value
+            }
+            else {
+                'INF'
+            }
+        }
+
+        $lvl = $Level.ToUpperInvariant()
+        $min = $MinLevel.ToUpperInvariant()
+
+        $sev  = $sevMap[$lvl]; if ($null -eq $sev)  { $lvl = 'INF'; $sev  = $sevMap['INF'] }
+        $gate = $sevMap[$min]; if ($null -eq $gate) { $min = 'INF'; $gate = $sevMap['INF'] }
+
+        if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) { $lvl = $min; $sev = $gate }
+        if ($sev -lt $gate) { return }
+
+        $ts = [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+
+        $stack        = Get-PSCallStack
+        $helperName   = $MyInvocation.MyCommand.Name
+        $helperScript = $MyInvocation.MyCommand.ScriptBlock.File
+        $caller       = $null
+
+        if ($stack) {
+            # 1: prefer first non-underscore function not defined in the helper's own file
+            for ($i = 0; $i -lt $stack.Count; $i++) {
+                $f  = $stack[$i]
+                $fn = $f.FunctionName
+                $sn = $f.ScriptName
+                if ($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and
+                    (-not $helperScript -or -not $sn -or $sn -ne $helperScript)) {
+                    $caller = $f; break
+                }
+            }
+            # 2: fallback to first non-underscore function (any file)
+            if (-not $caller) {
+                for ($i = 0; $i -lt $stack.Count; $i++) {
+                    $f  = $stack[$i]
+                    $fn = $f.FunctionName
+                    if ($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')) {
+                        $caller = $f; break
+                    }
+                }
+            }
+            # 3: fallback to first non-helper frame not from helper's own file
+            if (-not $caller) {
+                for ($i = 0; $i -lt $stack.Count; $i++) {
+                    $f  = $stack[$i]
+                    $fn = $f.FunctionName
+                    $sn = $f.ScriptName
+                    if ($fn -and $fn -ne $helperName -and
+                        (-not $helperScript -or -not $sn -or $sn -ne $helperScript)) {
+                        $caller = $f; break
+                    }
+                }
+            }
+            # 4: final fallback to first non-helper frame
+            if (-not $caller) {
+                for ($i = 0; $i -lt $stack.Count; $i++) {
+                    $f  = $stack[$i]
+                    $fn = $f.FunctionName
+                    if ($fn -and $fn -ne $helperName) {
+                        $caller = $f; break
+                    }
+                }
+            }
+        }
+
+        if (-not $caller) {
+            $caller = [pscustomobject]@{
+                ScriptName   = $PSCommandPath
+                FunctionName = $null
+            }
+        }
+
+        $lineNumber = $null
+
+        $p = $caller.PSObject.Properties['ScriptLineNumber']
+        if ($p -and $p.Value) { $lineNumber = [string]$p.Value }
+
+        if (-not $lineNumber) {
+            $p = $caller.PSObject.Properties['Position']
+            if ($p -and $p.Value) {
+                $sp = $p.Value.PSObject.Properties['StartLineNumber']
+                if ($sp -and $sp.Value) { $lineNumber = [string]$sp.Value }
+            }
+        }
+
+        if (-not $lineNumber) {
+            $p = $caller.PSObject.Properties['Location']
+            if ($p -and $p.Value) {
+                $m = [regex]::Match([string]$p.Value, ':(\d+)\s+char:', 'IgnoreCase')
+                if ($m.Success -and $m.Groups.Count -gt 1) { $lineNumber = $m.Groups[1].Value }
+            }
+        }
+
+        $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'cmd' }
+        if ($file -ne 'console' -and $lineNumber) { $file = '{0}:{1}' -f $file,$lineNumber }
+
+        $prefix = "[$ts "
+        $suffix = "] [$file] $Message"
+
+        $cfg = @{
+            TRC = @{ Fore='DarkGray';Back=$null     }
+            DBG = @{ Fore='Cyan';    Back=$null     }
+            INF = @{ Fore='Green';   Back=$null     }
+            WRN = @{ Fore='Yellow';  Back=$null     }
+            ERR = @{ Fore='Red';     Back=$null     }
+            FTL = @{ Fore='Red';     Back='DarkRed' }
+        }[$lvl]
+
+        $fore = $cfg.Fore
+        $back = $cfg.Back
+        $isInteractive = [System.Environment]::UserInteractive
+
+        if ($isInteractive -and ($fore -or $back)) {
+            Write-Host -NoNewline $prefix
+            if ($fore -and $back) { Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back }
+            elseif ($fore)       { Write-Host -NoNewline $lvl -ForegroundColor $fore }
+            elseif ($back)       { Write-Host -NoNewline $lvl -BackgroundColor $back }
+            Write-Host $suffix
+        }
+        else {
+            Write-Host "$prefix$lvl$suffix"
+        }
+
+        if ($sev -ge 4 -and $ErrorActionPreference -eq 'Stop') {
+            throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)
+        }
+    }
+
+    # Initial progress hint (showing requested or auto name intent)
+    $effectiveNameHint = if ([string]::IsNullOrWhiteSpace($RepositoryName)) { '<auto>' } else { $RepositoryName }
+    _Write-StandardMessage -Message ("[PROGRESS] Register-LocalPSGalleryRepository: Path='{0}', Name='{1}', Policy={2}" -f $RepositoryPath, $effectiveNameHint, $InstallationPolicy) -Level 'DBG'
+
+    # Validate/generate the name; ensure it is safe and predictable.
     $namePattern = '^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$'
     if ([string]::IsNullOrWhiteSpace($RepositoryName)) {
         $RepositoryName = 'TempPSGallery-' + ([Guid]::NewGuid().ToString('N').Substring(8))
-    } elseif ($RepositoryName -notmatch $namePattern) {
+        _Write-StandardMessage -Message ("[SOURCE] Generated temporary repository name '{0}'." -f $RepositoryName) -Level 'INF'
+    }
+    elseif ($RepositoryName -notmatch $namePattern) {
+        _Write-StandardMessage -Message ("[ERROR] RepositoryName '{0}' is invalid. Allowed: letters/digits; dot, hyphen, underscore allowed inside." -f $RepositoryName) -Level 'ERR'
         throw "RepositoryName '$RepositoryName' is invalid. Allowed: letters/digits; dot, hyphen, underscore allowed inside."
     }
 
     # Normalize the repo path; fail clearly if it cannot be made absolute.
     try {
         $RepositoryPath = [IO.Path]::GetFullPath((Join-Path -Path $RepositoryPath -ChildPath '.'))
-    } catch {
-        Write-Host "Invalid repository path '$RepositoryPath': $($_.Exception.Message)"
+    }
+    catch {
+        _Write-StandardMessage -Message ("[ERROR] Invalid repository path '{0}': {1}" -f $RepositoryPath, $_.Exception.Message) -Level 'ERR'
         throw
     }
 
@@ -1904,8 +2068,10 @@ $name = Register-LocalPSGalleryRepository -RepositoryName LocalGallery -Reposito
     if (-not (Test-Path -Path $RepositoryPath -PathType Container)) {
         try {
             New-Item -ItemType Directory -Path $RepositoryPath -Force -ErrorAction Stop | Out-Null
-        } catch {
-            Write-Host "Failed to create repository directory '$RepositoryPath': $($_.Exception.Message)"
+            _Write-StandardMessage -Message ("[CREATE] Created repository directory '{0}'." -f $RepositoryPath) -Level 'INF'
+        }
+        catch {
+            _Write-StandardMessage -Message ("[ERROR] Failed to create repository directory '{0}': {1}" -f $RepositoryPath, $_.Exception.Message) -Level 'ERR'
             throw
         }
     }
@@ -1914,26 +2080,30 @@ $name = Register-LocalPSGalleryRepository -RepositoryName LocalGallery -Reposito
     try {
         $existing = Get-PSRepository -Name $RepositoryName -ErrorAction SilentlyContinue
         if ($existing) {
-            Write-Host "Repository '$RepositoryName' already exists. Removing it."
+            _Write-StandardMessage -Message ("[STATUS] Repository '{0}' already exists. Removing it." -f $RepositoryName) -Level 'WRN'
             Unregister-PSRepository -Name $RepositoryName -ErrorAction Stop | Out-Null
         }
-    } catch {
-        Write-Host "Failed while checking/removing existing repository '$RepositoryName': $($_.Exception.Message)"
+    }
+    catch {
+        _Write-StandardMessage -Message ("[ERROR] Failed while checking/removing existing repository '{0}': {1}" -f $RepositoryName, $_.Exception.Message) -Level 'ERR'
         throw
     }
 
     # Register repository; suppress any objects the cmdlet might emit.
     try {
         Register-PSRepository -Name $RepositoryName -SourceLocation $RepositoryPath -InstallationPolicy $InstallationPolicy -ErrorAction Stop | Out-Null
-        Write-Host "Local repository '$RepositoryName' registered at: $RepositoryPath (Policy: $InstallationPolicy)"
-    } catch {
-        Write-Host "Failed to register repository '$RepositoryName' at '$RepositoryPath': $($_.Exception.Message)"
+        _Write-StandardMessage -Message ("[OK] Local repository '{0}' registered at '{1}' (Policy: {2})." -f $RepositoryName, $RepositoryPath, $InstallationPolicy) -Level 'INF'
+    }
+    catch {
+        _Write-StandardMessage -Message ("[ERROR] Failed to register repository '{0}' at '{1}': {2}" -f $RepositoryName, $RepositoryPath, $_.Exception.Message) -Level 'ERR'
         throw
     }
 
-    # Only pipeline output: the effective name.
+    _Write-StandardMessage -Message ("[SUMMARY] Effective local PSRepository name: '{0}'." -f $RepositoryName) -Level 'INF'
+
     return [string]$RepositoryName
 }
+
 
 function Unregister-LocalPSGalleryRepository {
     <#

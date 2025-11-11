@@ -258,7 +258,7 @@ function Test-VariableValue {
     }, $true)
 
     if (-not $varAst) {
-        _Write-StandardMessage -Message "The script block must contain a simple variable reference." -Level 'ERR'
+        _Write-StandardMessage -Message "[ERROR] The script block must contain a simple variable reference." -Level 'ERR'
         return
     }
 
@@ -270,15 +270,15 @@ function Test-VariableValue {
     # Check if the value is null or empty and exit if required.
     if ($ExitIfNullOrEmpty) {
         if ($null -eq $value) {
-            _Write-StandardMessage -Message "Test-VariableValue: '$varName' is null." -Level 'ERR'
+            _Write-StandardMessage -Message "[ERROR] Test-VariableValue: '$varName' is null." -Level 'ERR'
             exit 1
         }
         if (($value -is [string]) -and [string]::IsNullOrEmpty($value)) {
-            _Write-StandardMessage -Message "Test-VariableValue: '$varName' is an empty string." -Level 'ERR'
+            _Write-StandardMessage -Message "[ERROR] Test-VariableValue: '$varName' is an empty string." -Level 'ERR'
             exit 1
         }
         if ($value -is [hashtable] -and ($value.Count -eq 0)) {
-            _Write-StandardMessage -Message "Test-VariableValue: '$varName' is an empty hashtable." -Level 'ERR'
+            _Write-StandardMessage -Message "[ERROR] Test-VariableValue: '$varName' is an empty hashtable." -Level 'ERR'
             exit 1
         }
     }
@@ -297,7 +297,7 @@ function Test-VariableValue {
         }
     }
 
-    $outMsg = "Test-VariableValue: $varName, Value: $displayValue"
+    $outMsg = "[OK] Test-VariableValue: $varName, Value: $displayValue"
     _Write-StandardMessage -Message $outMsg -Level 'INF'
 }
 
@@ -510,7 +510,6 @@ Reviewer note: Prefer -ExitIfNotFound for CI/bootstrap; use -ThrowIfNotFound whe
 
     return $null
 }
-
 
 function Test-ModuleAvailable {
 <#

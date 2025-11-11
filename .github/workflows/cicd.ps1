@@ -58,7 +58,7 @@ if ($cmd = Test-CommandAvailable -Command "git") { Write-Host "Test-CommandAvail
 if ($cmd = Test-CommandAvailable -Command "dotnet") { Write-Host "Test-CommandAvailable: $($cmd.Name) $($cmd.Version) found at $($cmd.Source)" } else { Write-Error "dotnet not found"; exit 1 }
 
 # Enable the .NET tools specified in the manifest file
-Enable-TempDotnetTools -ManifestFile "$PSScriptRoot\.config\dotnet-tools\dotnet-tools.json" -NoReturn
+# Enable-TempDotnetTools -ManifestFile "$PSScriptRoot\.config\dotnet-tools\dotnet-tools.json" -NoReturn
 
 # Preload environment information
 $runEnvironment = Get-RunEnvironment

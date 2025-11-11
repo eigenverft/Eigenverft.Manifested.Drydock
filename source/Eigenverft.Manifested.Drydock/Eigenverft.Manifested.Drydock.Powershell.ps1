@@ -2108,41 +2108,192 @@ function Register-LocalNuGetPackageSource {
         [string]$InstallationPolicy = 'Trusted'
     )
 
+    function _Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
+        )
+
+        if ($null -eq $Message) { $Message = [string]::Empty }
+
+        $sevMap = @{ TRC=0; DBG=1; INF=2; WRN=3; ERR=4; FTL=5 }
+
+        if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
+            $gv = Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+            $MinLevel = if ($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)) { [string]$gv.Value } else { 'INF' }
+        }
+
+        $lvl = $Level.ToUpperInvariant()
+        $min = $MinLevel.ToUpperInvariant()
+
+        $sev = $sevMap[$lvl]; if ($null -eq $sev) { $lvl='INF'; $sev=$sevMap['INF'] }
+        $gate = $sevMap[$min]; if ($null -eq $gate) { $min='INF'; $gate=$sevMap['INF'] }
+
+        if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) { $lvl=$min; $sev=$gate }
+        if ($sev -lt $gate) { return }
+
+        $ts = [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+
+        $stack        = Get-PSCallStack
+        $helperName   = $MyInvocation.MyCommand.Name
+        $helperScript = $MyInvocation.MyCommand.ScriptBlock.File
+        $caller       = $null
+
+        if ($stack) {
+            # 1: prefer first non-underscore function not defined in the helper's own file
+            for ($i=0; $i -lt $stack.Count; $i++) {
+                $f  = $stack[$i]; $fn = $f.FunctionName; $sn = $f.ScriptName
+                if ($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and `
+                    (-not $helperScript -or -not $sn -or $sn -ne $helperScript)) { $caller=$f; break }
+            }
+            # 2: fallback to first non-underscore function (any file)
+            if (-not $caller) {
+                for ($i=0; $i -lt $stack.Count; $i++) {
+                    $f=$stack[$i]; $fn=$f.FunctionName
+                    if ($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')) { $caller=$f; break }
+                }
+            }
+            # 3: fallback to first non-helper frame not from helper's own file
+            if (-not $caller) {
+                for ($i=0; $i -lt $stack.Count; $i++) {
+                    $f=$stack[$i]; $fn=$f.FunctionName; $sn=$f.ScriptName
+                    if ($fn -and $fn -ne $helperName -and `
+                        (-not $helperScript -or -not $sn -or $sn -ne $helperScript)) { $caller=$f; break }
+                }
+            }
+            # 4: final fallback to first non-helper frame
+            if (-not $caller) {
+                for ($i=0; $i -lt $stack.Count; $i++) {
+                    $f=$stack[$i]; $fn=$f.FunctionName
+                    if ($fn -and $fn -ne $helperName) { $caller=$f; break }
+                }
+            }
+        }
+
+        if (-not $caller) {
+            $caller = [pscustomobject]@{
+                ScriptName   = $PSCommandPath
+                FunctionName = $null
+            }
+        }
+
+        $lineNumber = $null
+
+        $p = $caller.PSObject.Properties['ScriptLineNumber']
+        if ($p -and $p.Value) { $lineNumber = [string]$p.Value }
+
+        if (-not $lineNumber) {
+            $p = $caller.PSObject.Properties['Position']
+            if ($p -and $p.Value) {
+                $sp = $p.Value.PSObject.Properties['StartLineNumber']
+                if ($sp -and $sp.Value) { $lineNumber = [string]$sp.Value }
+            }
+        }
+
+        if (-not $lineNumber) {
+            $p = $caller.PSObject.Properties['Location']
+            if ($p -and $p.Value) {
+                $m = [regex]::Match([string]$p.Value,':(\d+)\s+char:','IgnoreCase')
+                if ($m.Success -and $m.Groups.Count -gt 1) { $lineNumber = $m.Groups[1].Value }
+            }
+        }
+
+        $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'cmd' }
+        if ($file -ne 'console' -and $lineNumber) { $file = '{0}:{1}' -f $file,$lineNumber }
+
+        $prefix = "[$ts "
+        $suffix = "] [$file] $Message"
+
+        $cfg = @{
+            TRC=@{Fore='DarkGray';Back=$null}
+            DBG=@{Fore='Cyan';    Back=$null}
+            INF=@{Fore='Green';   Back=$null}
+            WRN=@{Fore='Yellow';  Back=$null}
+            ERR=@{Fore='Red';     Back=$null}
+            FTL=@{Fore='Red';     Back='DarkRed'}
+        }[$lvl]
+
+        $fore = $cfg.Fore
+        $back = $cfg.Back
+        $isInteractive = [System.Environment]::UserInteractive
+
+        if ($isInteractive -and ($fore -or $back)) {
+            Write-Host -NoNewline $prefix
+            if ($fore -and $back) { Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back }
+            elseif ($fore)       { Write-Host -NoNewline $lvl -ForegroundColor $fore }
+            elseif ($back)       { Write-Host -NoNewline $lvl -BackgroundColor $back }
+            Write-Host $suffix
+        } else {
+            Write-Host "$prefix$lvl$suffix"
+        }
+
+        if ($sev -ge 4 -and $ErrorActionPreference -eq 'Stop') {
+            throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)
+        }
+    }
+
+    $effectiveName = if ([string]::IsNullOrWhiteSpace($SourceName)) { '<auto>' } else { $SourceName }
+    _Write-StandardMessage -Message ("[PROGRESS] Register-LocalNuGetPackageSource: Location='{0}', Name={1}, Policy={2}" -f $SourceLocation, $effectiveName, $InstallationPolicy) -Level 'INF'
+
     $namePattern = '^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$'
 
     # Detect URL vs. local path
+    _Write-StandardMessage -Message ("[CHECK] Detecting whether '{0}' is URL or local path." -f $SourceLocation) -Level 'DBG'
     $isUrl = $false
     try {
         $u = [Uri]$SourceLocation
         if ($u.IsAbsoluteUri -and ($u.Scheme -eq 'http' -or $u.Scheme -eq 'https')) { $isUrl = $true }
-    } catch { $isUrl = $false }
+    } catch {
+        $isUrl = $false
+    }
+
+    if ($isUrl) {
+        _Write-StandardMessage -Message ("[STATUS] Detected URL-based source location '{0}'." -f $SourceLocation) -Level 'DBG'
+    }
 
     if (-not $isUrl) {
         try {
             $SourceLocation = [IO.Path]::GetFullPath((Join-Path -Path $SourceLocation -ChildPath '.'))
+            _Write-StandardMessage -Message ("[STATUS] Using normalized local source path '{0}'." -f $SourceLocation) -Level 'DBG'
         } catch {
-            Write-Host "Invalid source path '$SourceLocation': $($_.Exception.Message)" -ForegroundColor Red
+            _Write-StandardMessage -Message ("[ERROR] Invalid source path '{0}': {1}" -f $SourceLocation, $_.Exception.Message) -Level 'ERR'
             throw
         }
 
         if (-not (Test-Path -Path $SourceLocation -PathType Container)) {
             try {
                 New-Item -ItemType Directory -Path $SourceLocation -Force -ErrorAction Stop | Out-Null
+                _Write-StandardMessage -Message ("[CREATE] Created source directory '{0}'." -f $SourceLocation) -Level 'INF'
             } catch {
-                Write-Host "Failed to create source directory '$SourceLocation': $($_.Exception.Message)" -ForegroundColor Red
+                _Write-StandardMessage -Message ("[ERROR] Failed to create source directory '{0}': {1}" -f $SourceLocation, $_.Exception.Message) -Level 'ERR'
                 throw
             }
+        } else {
+            _Write-StandardMessage -Message ("[SKIP] Source directory '{0}' already exists." -f $SourceLocation) -Level 'DBG'
         }
     }
 
+    _Write-StandardMessage -Message "[PROGRESS] Querying existing NuGet package sources." -Level 'DBG'
     $existing = Get-PackageSource -ProviderName NuGet -ErrorAction SilentlyContinue
 
     # Infer or validate name
     if ([string]::IsNullOrWhiteSpace($SourceName)) {
         $byLoc = $existing | Where-Object { $_.Location -eq $SourceLocation } | Select-Object -First 1
-        if ($byLoc) { $SourceName = $byLoc.Name }
-        else { $SourceName = 'TempNuGetSrc-' + ([Guid]::NewGuid().ToString('N').Substring(8)) }
-    } elseif ($SourceName -notmatch $namePattern) {
+        if ($byLoc) {
+            $SourceName = $byLoc.Name
+            _Write-StandardMessage -Message ("[SOURCE] Reusing existing source name '{0}' for location '{1}'." -f $SourceName, $SourceLocation) -Level 'INF'
+        }
+        else {
+            $SourceName = 'TempNuGetSrc-' + ([Guid]::NewGuid().ToString('N').Substring(8))
+            _Write-StandardMessage -Message ("[SOURCE] Generated temporary source name '{0}' for location '{1}'." -f $SourceName, $SourceLocation) -Level 'INF'
+        }
+    }
+    elseif ($SourceName -notmatch $namePattern) {
+        _Write-StandardMessage -Message ("[ERROR] SourceName '{0}' is invalid. Allowed: letters/digits; dot, hyphen, underscore allowed inside." -f $SourceName) -Level 'ERR'
         throw "SourceName '$SourceName' is invalid. Allowed: letters/digits; dot, hyphen, underscore allowed inside."
     }
 
@@ -2150,7 +2301,10 @@ function Register-LocalNuGetPackageSource {
     $wantTrusted = ($InstallationPolicy -eq 'Trusted')
 
     if ($byName) {
+        _Write-StandardMessage -Message ("[STATUS] Found existing NuGet source '{0}' at '{1}' (Trusted={2})." -f $byName.Name, $byName.Location, $byName.IsTrusted) -Level 'DBG'
+
         if ($byName.Location -ne $SourceLocation) {
+            _Write-StandardMessage -Message ("[WARN] Existing source '{0}' points to '{1}', expected '{2}'. Re-registering." -f $SourceName, $byName.Location, $SourceLocation) -Level 'WRN'
             try {
                 Unregister-PackageSource -Name $SourceName -ProviderName NuGet -Force -ErrorAction Stop
                 if ($wantTrusted) {
@@ -2158,33 +2312,50 @@ function Register-LocalNuGetPackageSource {
                 } else {
                     Register-PackageSource -Name $SourceName -Location $SourceLocation -ProviderName NuGet -ErrorAction Stop | Out-Null
                 }
+                _Write-StandardMessage -Message ("[OK] Re-registered NuGet source '{0}' at '{1}'." -f $SourceName, $SourceLocation) -Level 'INF'
             } catch {
+                _Write-StandardMessage -Message ("[ERROR] Re-registration of source '{0}' at '{1}' failed: {2}" -f $SourceName, $SourceLocation, $_.Exception.Message) -Level 'ERR'
                 try {
                     if ($byName.Location) {
                         Register-PackageSource -Name $SourceName -Location $byName.Location -ProviderName NuGet -ErrorAction SilentlyContinue | Out-Null
+                        _Write-StandardMessage -Message ("[WARN] Attempted to restore original source '{0}' at '{1}'." -f $SourceName, $byName.Location) -Level 'WRN'
                     }
                 } catch { }
                 throw
             }
-        } else {
+        }
+        else {
             if ($wantTrusted -and -not $byName.IsTrusted) {
-                try { Set-PackageSource -Name $SourceName -ProviderName NuGet -Trusted -ErrorAction Stop } catch { throw }
+                _Write-StandardMessage -Message ("[TRUST] Escalating NuGet source '{0}' to Trusted." -f $SourceName) -Level 'INF'
+                try {
+                    Set-PackageSource -Name $SourceName -ProviderName NuGet -Trusted -ErrorAction Stop
+                } catch {
+                    _Write-StandardMessage -Message ("[ERROR] Failed to set source '{0}' as Trusted: {1}" -f $SourceName, $_.Exception.Message) -Level 'ERR'
+                    throw
+                }
+            }
+            else {
+                _Write-StandardMessage -Message ("[SKIP] Source '{0}' already correctly configured; no changes required." -f $SourceName) -Level 'DBG'
             }
             # If Untrusted requested but currently trusted, leave as-is (no supported downgrade).
         }
-    } else {
+    }
+    else {
+        _Write-StandardMessage -Message ("[PROGRESS] No existing source named '{0}' found. Registering new source at '{1}' (Trusted={2})." -f $SourceName, $SourceLocation, $wantTrusted) -Level 'INF'
         try {
             if ($wantTrusted) {
                 Register-PackageSource -Name $SourceName -Location $SourceLocation -ProviderName NuGet -Trusted -ErrorAction Stop | Out-Null
             } else {
                 Register-PackageSource -Name $SourceName -Location $SourceLocation -ProviderName NuGet -ErrorAction Stop | Out-Null
             }
+            _Write-StandardMessage -Message ("[OK] Registered NuGet source '{0}' at '{1}'." -f $SourceName, $SourceLocation) -Level 'INF'
         } catch {
-            Write-Host "Failed to register NuGet source '$SourceName' at '$SourceLocation'." -ForegroundColor Red
+            _Write-StandardMessage -Message ("[ERROR] Failed to register NuGet source '{0}' at '{1}': {2}" -f $SourceName, $SourceLocation, $_.Exception.Message) -Level 'ERR'
             throw
         }
     }
 
+    _Write-StandardMessage -Message ("[SUMMARY] Using NuGet source '{0}' at '{1}' (Policy={2})." -f $SourceName, $SourceLocation, $InstallationPolicy) -Level 'INF'
     return $SourceName
 }
 

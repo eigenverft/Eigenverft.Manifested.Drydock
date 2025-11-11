@@ -104,12 +104,12 @@ Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPre
 Write-Host "===> Testing module manifest at: $($manifestFile.FullName)" -ForegroundColor Cyan
 Test-ModuleManifest -Path $($manifestFile.FullName)
 
+Publish-Module -Path $($manifestFile.DirectoryName) -Repository "$LocalPowershellGalleryName"
+
 if ($remoteResourcesOk)
 {
     Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$PsGalleryApiKey"
 }
-
-Publish-Module -Path $($manifestFile.DirectoryName) -Repository "$LocalPowershellGalleryName"
 
 if ($remoteResourcesOk)
 {

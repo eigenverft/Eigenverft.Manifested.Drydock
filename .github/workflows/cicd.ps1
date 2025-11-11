@@ -45,10 +45,6 @@ Test-PsGalleryPublishPrereqsOffline -ExitOnFailure
 # Clean up previous versions of the module to avoid conflicts in local PowerShell environments
 Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
 
-# Import optional integration script if it exists
-Import-Script -File @("$PSScriptRoot\cicd.integration.ps1") -NormalizeSeparators
-Write-IntegrationMsg -Message "This function is defined in the optional integration script. That should be integrated into this main module script."
-
 # In the case the secrets are not passed as parameters, try to get them from the secrets file, local development or CI/CD environment
 # TBD https://learn.microsoft.com/de-de/powershell/utility-modules/secretmanagement/overview?view=ps-modules
 $PsGalleryApiKey = Get-ConfigValue -Check $PsGalleryApiKey -FilePath (Join-Path $PSScriptRoot 'cicd.secrets.json') -Property 'PsGalleryApiKey'

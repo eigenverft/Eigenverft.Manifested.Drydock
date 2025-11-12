@@ -2671,7 +2671,7 @@ Export-PackageLicenseTexts3 -JsonPath .\ThirdPartyLicencesNotices.json -FillMiss
         # Prepare file name parts
         $pkgBase = if ([string]::IsNullOrEmpty($pkgId)) { "UNKNOWN" } else { $pkgId }
         $licBase = if ([string]::IsNullOrEmpty($licenseId)) { "UNSPECIFIED" } else { $licenseId }
-        $pkgUpper = (_Sanitize-FileName -Name $pkgBase).ToUpperInvariant()
+        $pkgUpper = (_Sanitize-FileName -Name $pkgBase).ToUpperInvariant().Replace('.','_')
         $licUpper = (_Sanitize-FileName -Name $licBase).ToUpperInvariant()
         $fileName = "LICENSE-{1}" -f $licUpper, $pkgUpper
         $outFile  = Join-Path -Path $OutputDirectory -ChildPath $fileName

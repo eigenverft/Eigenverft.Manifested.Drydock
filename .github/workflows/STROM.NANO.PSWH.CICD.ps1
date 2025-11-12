@@ -1,68 +1,3 @@
-function Update-ModuleIfNewer {
-    <#
-    .SYNOPSIS
-        Installs or updates a module from a repository only if a newer version is available.
-
-    .DESCRIPTION
-        This function uses Find-Module to search for a module (default repository is PSGallery) and compares the
-        remote version with the locally installed version (if any) using Get-InstalledModule. If the module is not installed
-        or the remote version is newer, it then installs the module using Install-Module. This prevents forcing a download
-        when the installed module is already up to date.
-
-    .PARAMETER ModuleName
-        The name of the module to check and install/update.
-
-    .PARAMETER Repository
-        The repository from which to search for the module. Defaults to 'PSGallery'.
-
-    .EXAMPLE
-        PS C:\> Update-ModuleIfNewer -ModuleName 'STROM.NANO.PSWH.CICD'
-        Searches PSGallery for the module 'STROM.NANO.PSWH.CICD' and installs it only if it is not installed or if a newer version is available.
-    #>
-    [CmdletBinding()]
-    [alias("umn")]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ModuleName,
-
-        [Parameter(Mandatory = $false)]
-        [string]$Repository = 'PSGallery'
-    )
-
-    try {
-        Write-Verbose "Searching for module '$ModuleName' in repository '$Repository'..."
-        $remoteModule = Find-Module -Name $ModuleName -Repository $Repository -ErrorAction Stop
-
-        if (-not $remoteModule) {
-            Write-Error "Module '$ModuleName' not found in repository '$Repository'."
-            return
-        }
-
-        $remoteVersion = [version]$remoteModule.Version
-
-        # Check if the module is installed locally.
-        $localModule = Get-InstalledModule -Name $ModuleName -ErrorAction SilentlyContinue
-
-        if ($localModule) {
-            $localVersion = [version]$localModule.Version
-            if ($remoteVersion -gt $localVersion) {
-                Write-Host "A newer version ($remoteVersion) is available (local version: $localVersion). Installing update..."
-                Install-Module -Name $ModuleName -Repository $Repository -Force
-            }
-            else {
-                Write-Host "The installed module ($localVersion) is up to date."
-            }
-        }
-        else {
-            Write-Host "Module '$ModuleName' is not installed. Installing version $remoteVersion..."
-            Install-Module -Name $ModuleName -Repository $Repository -Force
-        }
-    }
-    catch {
-        Write-Error "An error occurred: $_"
-    }
-}
-
 function Install-UserModule {
     <#
     .SYNOPSIS
@@ -162,6 +97,4 @@ function Initialize-DotNet {
         Write-Host "PATH already contains DOTNET_ROOT and tools folder." -ForegroundColor Yellow
     }
 }
-
-
 

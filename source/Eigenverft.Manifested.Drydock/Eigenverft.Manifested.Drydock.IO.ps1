@@ -1456,12 +1456,14 @@ function Copy-FilesRecursively2 {
          - If $false, only directories that contain at least one file matching the filter (in that
            directory or any subdirectory) will be created.
         The –ForceOverwrite parameter (default $true) determines whether existing files are overwritten.
-        The –CleanDestination parameter controls removal of extra files at the destination
-        that do not exist in the source:
+        The –CleanDestination parameter controls removal of extra items at the destination that do not
+        exist in the source:
          - "False" (default): no cleaning.
          - "Root": remove only extra files in the destination root (matches original behavior).
          - "WithSubdirs": remove extra files in the destination root and all subdirectories.
-        Note: Cleaning removes files only (no directory deletion).
+         - "Full": remove extra files (entire tree, ignoring the filter) and remove extra directories
+                   that do not exist in the source (mirror-style clean).
+        Note: For "Root" / "WithSubdirs", only files are removed. "Full" also removes directories.
 
     .PARAMETER SourceDirectory
         The directory from which files and directories are copied.
@@ -1482,13 +1484,14 @@ function Copy-FilesRecursively2 {
         Defaults to $true.
 
     .PARAMETER CleanDestination
-        Controls whether to remove files that exist in the destination but not in the source
-        (matching the filter).
+        Controls whether to remove items that exist in the destination but not in the source.
         Allowed values:
           - "False": no cleaning (default)
-          - "Root": clean only destination root files
-          - "WithSubdirs": clean destination root and all subdirectories
-        Note: Only files are removed; directories are left untouched.
+          - "Root": clean only destination root files (uses -Filter)
+          - "WithSubdirs": clean destination root and all subdirectories (files only; uses -Filter)
+          - "Full": clean entire destination tree; removes extra files (ignores -Filter) and removes
+                    directories that do not exist in the source.
+        Note: "Full" mirrors the source structure by deleting extra directories as well.
 
     .EXAMPLE
         # Copy all *.txt files, create only directories that hold matching files, and clean extra files in the destination root.
@@ -1504,6 +1507,12 @@ function Copy-FilesRecursively2 {
         Copy-FilesRecursively2 -SourceDirectory "C:\Source" `
                                -DestinationDirectory "C:\Dest" `
                                -CleanDestination "WithSubdirs"
+
+    .EXAMPLE
+        # Mirror-style cleanup: remove all extra files and directories in destination.
+        Copy-FilesRecursively2 -SourceDirectory "C:\Source" `
+                               -DestinationDirectory "C:\Dest" `
+                               -CleanDestination "Full"
 
     .EXAMPLE
         # Copy all files, recreate the full directory tree without cleaning extra files.
@@ -1528,7 +1537,7 @@ function Copy-FilesRecursively2 {
         [bool]$ForceOverwrite = $true,
 
         [Parameter()]
-        [ValidateSet('False','Root','WithSubdirs')]
+        [ValidateSet('False','Root','WithSubdirs','Full')]
         [string]$CleanDestination = 'False'
     )
 
@@ -1556,7 +1565,7 @@ function Copy-FilesRecursively2 {
     $sourceFullPath = (Get-Item $SourceDirectory).FullName.TrimEnd('\')
     $destFullPath   = (Get-Item $DestinationDirectory).FullName.TrimEnd('\')
 
-    # Clean destination according to requested scope (files only).
+    # Clean destination according to requested scope.
     switch ($CleanDestination) {
         'Root' {
             Write-Verbose "Cleaning destination root: removing extra files not present in source."
@@ -1573,12 +1582,37 @@ function Copy-FilesRecursively2 {
             Write-Verbose "Cleaning destination tree: removing extra files not present in source (recursive)."
             $destFiles = Get-ChildItem -Path $destFullPath -Recurse -File -Filter $Filter
             foreach ($destFile in $destFiles) {
-                # Compute relative path from destination to map to source
                 $relative = $destFile.FullName.Substring($destFullPath.Length).TrimStart('\')
                 $sourceFilePath = Join-Path -Path $sourceFullPath -ChildPath $relative
                 if (-not (Test-Path -Path $sourceFilePath -PathType Leaf)) {
                     Write-Verbose "Removing file: $($destFile.FullName)"
                     Remove-Item -Path $destFile.FullName -Force
+                }
+            }
+        }
+        'Full' {
+            Write-Verbose "Full clean: removing extra files and directories to mirror source."
+
+            # 1) Remove extra files (entire tree, ignore filter).
+            $destFilesAll = Get-ChildItem -Path $destFullPath -Recurse -File
+            foreach ($destFile in $destFilesAll) {
+                $relative = $destFile.FullName.Substring($destFullPath.Length).TrimStart('\')
+                $sourceFilePath = Join-Path -Path $sourceFullPath -ChildPath $relative
+                if (-not (Test-Path -Path $sourceFilePath -PathType Leaf)) {
+                    Write-Verbose "Removing file: $($destFile.FullName)"
+                    Remove-Item -Path $destFile.FullName -Force
+                }
+            }
+
+            # 2) Remove directories that don't exist in source (deepest-first).
+            $destDirs = Get-ChildItem -Path $destFullPath -Recurse -Directory |
+                        Sort-Object { $_.FullName.Length } -Descending
+            foreach ($destDir in $destDirs) {
+                $relativeDir = $destDir.FullName.Substring($destFullPath.Length).TrimStart('\')
+                $sourceDirPath = Join-Path -Path $sourceFullPath -ChildPath $relativeDir
+                if (-not (Test-Path -Path $sourceDirPath -PathType Container)) {
+                    Write-Verbose "Removing directory: $($destDir.FullName)"
+                    Remove-Item -Path $destDir.FullName -Recurse -Force
                 }
             }
         }
@@ -1589,7 +1623,6 @@ function Copy-FilesRecursively2 {
 
     if ($CopyEmptyDirs) {
         Write-Verbose "Recreating complete directory structure from source."
-        # Recreate every directory under the source.
         Get-ChildItem -Path $sourceFullPath -Recurse -Directory | ForEach-Object {
             $relativePath = $_.FullName.Substring($sourceFullPath.Length)
             $newDestDir   = Join-Path -Path $destFullPath -ChildPath $relativePath
@@ -1600,7 +1633,6 @@ function Copy-FilesRecursively2 {
     }
     else {
         Write-Verbose "Creating directories only for files matching the filter."
-        # Using previously obtained $matchingFiles.
         foreach ($file in $matchingFiles) {
             $sourceDir   = Split-Path -Path $file.FullName -Parent
             $relativeDir = $sourceDir.Substring($sourceFullPath.Length)
@@ -1611,7 +1643,6 @@ function Copy-FilesRecursively2 {
         }
     }
 
-    # Copy files matching the filter, preserving relative paths.
     Write-Verbose "Copying files from source to destination."
     if ($CopyEmptyDirs) {
         $filesToCopy = Get-ChildItem -Path $SourceDirectory -Recurse -File -Filter $Filter
@@ -1623,13 +1654,11 @@ function Copy-FilesRecursively2 {
         $relativePath = $file.FullName.Substring($sourceFullPath.Length)
         $destFile     = Join-Path -Path $destFullPath -ChildPath $relativePath
 
-        # Skip copying if overwrite is disabled and the file already exists.
         if (-not $ForceOverwrite -and (Test-Path -Path $destFile)) {
             Write-Verbose "Skipping existing file (overwrite disabled): $destFile"
             continue
         }
 
-        # Ensure the destination directory exists.
         $destDir = Split-Path -Path $destFile -Parent
         if (-not (Test-Path -Path $destDir)) {
             New-Item -ItemType Directory -Path $destDir | Out-Null

@@ -2673,7 +2673,7 @@ Export-PackageLicenseTexts3 -JsonPath .\ThirdPartyLicencesNotices.json -FillMiss
         $licBase = if ([string]::IsNullOrEmpty($licenseId)) { "UNSPECIFIED" } else { $licenseId }
         $pkgUpper = (_Sanitize-FileName -Name $pkgBase).ToUpperInvariant()
         $licUpper = (_Sanitize-FileName -Name $licBase).ToUpperInvariant()
-        $fileName = "LICENSE-{0}-{1}.txt" -f $licUpper, $pkgUpper
+        $fileName = "LICENSE-{1}" -f $licUpper, $pkgUpper
         $outFile  = Join-Path -Path $OutputDirectory -ChildPath $fileName
 
         # SPDX main/exception split

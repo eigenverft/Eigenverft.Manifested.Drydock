@@ -331,7 +331,7 @@ If set, the function does not return the object to the pipeline (console stays c
     }
 }
 
-function Enable-TempDotnetTools {
+function Enable-TempDotnetTools1 {
 <#
 .SYNOPSIS
 Install local-tools from a manifest into an ephemeral cache and expose them for THIS session.
@@ -647,12 +647,6 @@ If set, the function does not return the object to the pipeline (console stays c
             }
         }
 
-        # Per-tool status (color removed, semantic tag instead)
-        switch ($status) {
-            "Installed" { $fc = "Green" }
-            "Updated"   { $fc = "Yellow" }
-            default     { $fc = "Cyan" } # AlreadyPresent
-        }
         _Write-StandardMessage -Message ("[STATUS] [{0,-10}] {1}@{2}" -f $status, $id, $ver) -Level 'INF'
 
         $toolsResult += [pscustomobject]@{ Id = $id; Version = $ver; Status = $status }
@@ -731,17 +725,420 @@ If set, the function does not return the object to the pipeline (console stays c
     foreach ($r in $rows) {
         # ASCII status symbol and simple colors (no Unicode)
         $symbol   = "-"
-        $symColor = "DarkGray"
-        if ($r.Has) { $symbol = "+"; $symColor = "Green" }
-
-        $cmdColor = "DarkGray"
-        if ($r.Has) { $cmdColor = "White" }
-
         $line = ("  {0} {1} ... {2}" -f $symbol, $r.Id.PadRight($idWidth), $r.Cmds)
         $tag  = if ($r.Has) { "[OK]" } else { "[SKIP]" }
         _Write-StandardMessage -Message ("{0} {1}" -f $tag, $line) -Level 'INF'
     }
 
+    # -----------------------
+    # 6) Return single object (unless -NoReturn)
+    # -----------------------
+    if (-not $NoReturn) {
+        return [pscustomobject]@{
+            ToolPath = $ToolPath
+            Tools    = $toolsResult
+        }
+    }
+}
+
+function Enable-TempDotnetTools {
+<#
+.SYNOPSIS
+Install local-tools from a manifest into an ephemeral cache and expose them for THIS session.
+
+.DESCRIPTION
+- Reads a standard dotnet local tools manifest (dotnet-tools.json) with exact versions.
+- Ensures each tool exists in a --tool-path cache (sticky or fresh).
+- Puts that folder at the front of PATH for the current session only.
+- Returns a single object: @{ ToolPath = "..."; Tools = [ @{Id,Version,Status[,Command]}, ... ] }.
+
+.PARAMETER ManifestFile
+Path to the dotnet local tools manifest (dotnet-tools.json).
+
+.PARAMETER ToolPath
+Optional explicit --tool-path. If omitted, a stable cache path is derived from the manifest hash.
+
+.PARAMETER Fresh
+If set, uses a brand-new GUID cache folder (cold start each time).
+
+.PARAMETER NoCache
+If set, passes --no-cache to dotnet (disables NuGet HTTP cache; slower).
+
+.PARAMETER NoReturn
+If set, the function does not return the object to the pipeline (console stays clean).
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ManifestFile,
+        [string]$ToolPath,
+        [switch]$Fresh,
+        [switch]$NoCache,
+        [switch]$NoReturn
+    )
+
+    # -----------------------
+    # Local helper functions
+    # -----------------------
+
+    function _Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
+        )
+        if ($null -eq $Message) { $Message = [string]::Empty }
+        if (-not [string]::IsNullOrEmpty($Message)) {
+            $msgTrim = $Message.TrimStart()
+            if (-not $msgTrim.StartsWith('[')) {
+                $Message = ('[STATUS] {0}' -f $Message)
+            }
+        }
+        $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
+        if(-not $PSBoundParameters.ContainsKey('MinLevel')){
+            $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+            $MinLevel=if($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)){[string]$gv.Value}else{'INF'}
+        }
+        $lvl=$Level.ToUpperInvariant()
+        $min=$MinLevel.ToUpperInvariant()
+        $sev=$sevMap[$lvl];if($null -eq $sev){$lvl='INF';$sev=$sevMap['INF']}
+        $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
+        if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
+        if($sev -lt $gate){return}
+        $ts=[DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
+        if($stack){
+            # 1: prefer first non-underscore function not defined in the helper's own file
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+            }
+            # 2: fallback to first non-underscore function (any file)
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')){$caller=$f;break}
+                }
+            }
+            # 3: fallback to first non-helper frame not from helper's own file
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                    if($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+                }
+            }
+            # 4: final fallback to first non-helper frame
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName){$caller=$f;break}
+                }
+            }
+        }
+        if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
+        $lineNumber=$null ; 
+        $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Position']
+            if($p -and $p.Value){
+                $sp=$p.Value.PSObject.Properties['StartLineNumber'];if($sp -and $sp.Value){$lineNumber=[string]$sp.Value}
+            }
+        }
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Location']
+            if($p -and $p.Value){
+                $m=[regex]::Match([string]$p.Value,':(\d+)\s+char:','IgnoreCase');if($m.Success -and $m.Groups.Count -gt 1){$lineNumber=$m.Groups[1].Value}
+            }
+        }
+        $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
+        if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
+        $prefix="[$ts "
+        $suffix="] [$file] $Message"
+        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='Red';Back='DarkRed'}}[$lvl]
+        $fore=$cfg.Fore
+        $back=$cfg.Back
+        $isInteractive = [System.Environment]::UserInteractive
+        if($isInteractive -and ($fore -or $back)){
+            Write-Host -NoNewline $prefix
+            if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
+            elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
+            elseif($back){Write-Host -NoNewline $lvl -BackgroundColor $back}
+            Write-Host $suffix
+        } else {
+            Write-Host "$prefix$lvl$suffix"
+        }
+
+        if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
+    }
+
+    function _GetToolsInPath {
+        param([Parameter(Mandatory)][string]$Path)
+
+        # Prefer --detail for stable parsing; fall back to table format but skip header.
+        $map = @{}
+
+        $detail = & dotnet tool list --tool-path $Path --detail 2>$null
+        if ($LASTEXITCODE -eq 0 -and $detail -and ($detail -match 'Package Id\s*:')) {
+            $block = @()
+            foreach ($line in ($detail -split "`r?`n")) {
+                if ([string]::IsNullOrWhiteSpace($line)) {
+                    if ($block.Count) {
+                        $id=$null; $ver=$null
+                        foreach ($l in $block) {
+                            if ($l -match '^\s*Package Id\s*:\s*(.+)$') { $id = $matches[1].Trim() }
+                            elseif ($l -match '^\s*Version\s*:\s*(.+)$')   { $ver = $matches[1].Trim() }
+                        }
+                        if ($id) { $map[$id] = $ver }
+                        $block = @()
+                    }
+                } else { $block += $line }
+            }
+            if ($block.Count) {
+                $id=$null; $ver=$null
+                foreach ($l in $block) {
+                    if     ($l -match '^\s*Package Id\s*:\s*(.+)$') { $id = $matches[1].Trim() }
+                    elseif ($l -match '^\s*Version\s*:\s*(.+)$')     { $ver = $matches[1].Trim() }
+                }
+                if ($id) { $map[$id] = $ver }
+            }
+            return $map
+        }
+
+        $table = & dotnet tool list --tool-path $Path 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $table) { return @{} }
+        foreach ($l in ($table -split "`r?`n")) {
+            if ($l -match '^\s*(\S+)\s+(\S+)\s+') {
+                $id = $matches[1]; $ver = $matches[2]
+                if ($id -eq 'Package' -and $ver -eq 'Id') { continue } # skip header
+                $map[$id] = $ver
+            }
+        }
+        return $map
+    }
+
+    function _GetToolCommandsInPath {
+        param([Parameter(Mandatory)][string]$Path)
+        # Parse commands from --detail; returns @{ <id> = @('cmd1','cmd2') }
+        $cmds = @{}
+        $detail = & dotnet tool list --tool-path $Path --detail 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $detail) { return $cmds }
+
+        $block = @()
+        foreach ($line in ($detail -split "`r?`n")) {
+            if ([string]::IsNullOrWhiteSpace($line)) {
+                if ($block.Count) {
+                    $id=$null; $names=$null
+                    foreach ($l in $block) {
+                        if ($l -match '^\s*Package Id\s*:\s*(.+)$')        { $id    = $matches[1].Trim() }
+                        elseif ($l -match '^\s*Tool command name\s*:\s*(.+)$') { $names = $matches[1].Trim() }
+                    }
+                    if ($id -and $names) {
+                        $arr = @()
+                        foreach ($n in ($names -split ',')) { $arr += $n.Trim() }
+                        $cmds[$id] = $arr
+                    }
+                    $block = @()
+                }
+            } else { $block += $line }
+        }
+        if ($block.Count) {
+            $id=$null; $names=$null
+            foreach ($l in $block) {
+                if     ($l -match '^\s*Package Id\s*:\s*(.+)$')           { $id    = $matches[1].Trim() }
+                elseif ($l -match '^\s*Tool command name\s*:\s*(.+)$')    { $names = $matches[1].Trim() }
+            }
+            if ($id -and $names) {
+                $arr = @()
+                foreach ($n in ($names -split ',')) { $arr += $n.Trim() }
+                $cmds[$id] = $arr
+            }
+        }
+        return $cmds
+    }
+
+    function _EnsureExactTool {
+        param(
+            [Parameter(Mandatory)][string]$Path,
+            [Parameter(Mandatory)][string]$Id,
+            [Parameter(Mandatory)][string]$Version,
+            [switch]$NoCache,
+            [switch]$TryUpdateFirst
+        )
+        # Order: update -> install (when present) or install -> update (when missing)
+        if ($TryUpdateFirst) {
+            $cliArgs = @("tool","update","--tool-path",$Path,"--version",$Version,$Id)
+            if ($NoCache) { $cliArgs += "--no-cache" }
+            & dotnet @cliArgs 2>$null
+            if ($LASTEXITCODE -eq 0) { return $true }
+            $cliArgs = @("tool","install","--tool-path",$Path,"--version",$Version,$Id)
+            if ($NoCache) { $cliArgs += "--no-cache" }
+            & dotnet @cliArgs
+            return ($LASTEXITCODE -eq 0)
+        }
+        else {
+            $cliArgs = @("tool","install","--tool-path",$Path,"--version",$Version,$Id)
+            if ($NoCache) { $cliArgs += "--no-cache" }
+            & dotnet @cliArgs 2>$null
+            if ($LASTEXITCODE -eq 0) { return $true }
+            $cliArgs = @("tool","update","--tool-path",$Path,"--version",$Version,$Id)
+            if ($NoCache) { $cliArgs += "--no-cache" }
+            & dotnet @cliArgs
+            return ($LASTEXITCODE -eq 0)
+        }
+    }
+
+    function _PrependPathIfMissing {
+        param([Parameter(Mandatory)][string]$Path)
+        $sep = [IO.Path]::PathSeparator
+        $parts = $env:PATH -split [regex]::Escape($sep)
+        foreach ($p in $parts) { if ($p -eq $Path) { return } }
+        $env:PATH = ($Path + $sep + $env:PATH)
+    }
+
+    # -----------------------
+    # 1) Resolve inputs
+    # -----------------------
+
+    $mf = Resolve-Path -LiteralPath $ManifestFile -ErrorAction Stop
+    _Write-StandardMessage -Message ("[SOURCE] Using manifest file: {0}" -f $mf.Path) -Level 'INF'
+
+    $manifest = Get-Content -Raw -LiteralPath $mf | ConvertFrom-Json
+    if (-not $manifest.tools) { throw "Manifest has no 'tools' entries: $mf" }
+
+    # Derive tool-path: fresh GUID or sticky cache (hash of manifest) or explicit path
+    if ($Fresh) {
+        $ToolPath = Join-Path $env:TEMP ("dotnet-tools\" + [guid]::NewGuid().ToString("n"))
+    }
+    elseif (-not $ToolPath) {
+        $hash = (Get-FileHash -LiteralPath $mf -Algorithm SHA256).Hash.Substring(0,16)
+        $base = [Environment]::GetFolderPath('LocalApplicationData')
+        if (-not $base) { $base = $env:TEMP }
+        $ToolPath = Join-Path $base ("dotnet-tools-cache\" + $hash)
+    }
+    New-Item -ItemType Directory -Force -Path $ToolPath | Out-Null
+    _Write-StandardMessage -Message ("[CACHE] Using tool cache path: {0}" -f $ToolPath) -Level 'INF'
+
+    # -----------------------
+    # 2) Snapshot BEFORE
+    # -----------------------
+    $before = _GetToolsInPath -Path $ToolPath
+    if ($before.Count -gt 0) {
+        _Write-StandardMessage -Message ("[CACHE] Cache contains {0} tool(s) before ensure." -f $before.Count) -Level 'INF'
+        foreach ($k in ($before.Keys | Sort-Object)) {
+            _Write-StandardMessage -Message ("[CACHE] Tool in cache before ensure: {0}@{1}" -f $k, $before[$k]) -Level 'DBG'
+        }
+    } else {
+        _Write-StandardMessage -Message "[CACHE] Cache contains 0 tool(s) before ensure." -Level 'INF'
+    }
+
+    # -----------------------
+    # 3) Ensure each tool (sorted for readability)
+    # -----------------------
+    $toolsResult = @()
+    $toolProps = $manifest.tools.PSObject.Properties | Sort-Object Name
+    foreach ($prop in $toolProps) {
+        $id = [string]$prop.Name
+        $ver = [string]$prop.Value.version
+        if (-not $ver) { throw "Tool '$id' in manifest lacks a 'version'." }
+
+        $present   = $before.ContainsKey($id)
+        $unchanged = $present -and ($before[$id] -eq $ver)
+
+        $status = "AlreadyPresent"
+        if (-not $unchanged) {
+            _Write-StandardMessage -Message ("[CHECK] Ensuring manifest tool {0}@{1} in cache." -f $id, $ver) -Level 'INF'
+            $ok = _EnsureExactTool -Path $ToolPath -Id $id -Version $ver -NoCache:$NoCache -TryUpdateFirst:$present
+            if (-not $ok) { throw "Failed to ensure $id@$ver in $ToolPath." }
+            if ($present) {
+                $status = "Updated"
+            } else {
+                $status = "Installed"
+            }
+        }
+
+        _Write-StandardMessage -Message ("[STATUS] Tool {1}@{2} is {0} in cache." -f $status, $id, $ver) -Level 'INF'
+
+        $toolsResult += [pscustomobject]@{ Id = $id; Version = $ver; Status = $status }
+    }
+
+    # -----------------------
+    # 4) PATH (session only)
+    # -----------------------
+    _PrependPathIfMissing -Path $ToolPath
+    _Write-StandardMessage -Message ("[PATH] Tool cache prepended to PATH for this session: {0}" -f $ToolPath) -Level 'INF'
+
+
+    # -----------------------
+    # 5) Snapshot AFTER (normalize versions actually resolved by dotnet) + commands (from manifest)
+    # -----------------------
+    $after = _GetToolsInPath -Path $ToolPath
+
+    # Build command map from the manifest (tools.<id>.commands)
+    $cmdInfo = @{}
+    $manifestToolsProps = $manifest.tools.PSObject.Properties | Sort-Object Name
+    foreach ($p in $manifestToolsProps) {
+        $id = [string]$p.Name
+        $cmds = @()
+        if ($p.Value.PSObject.Properties.Name -contains 'commands') {
+            foreach ($n in @($p.Value.commands)) {
+                if ($n) { $cmds += [string]$n }
+            }
+        }
+        if ($cmds.Count -gt 0) { $cmdInfo[$id] = $cmds }
+    }
+
+    for ($i = 0; $i -lt $toolsResult.Count; $i++) {
+        $rid = $toolsResult[$i].Id
+        if ($after.ContainsKey($rid)) {
+            if ($toolsResult[$i].Version -ne $after[$rid]) {
+                _Write-StandardMessage -Message ("[VALUE] Resolved version for {2}: {0} -> {1}" -f $toolsResult[$i].Version, $after[$rid], $rid) -Level 'INF'
+            }
+            $toolsResult[$i].Version = $after[$rid]
+        }
+
+        if ($cmdInfo.ContainsKey($rid)) {
+            $cmdsText = ($cmdInfo[$rid] -join ", ")
+            # Attach Command property always, so the printout is consistent.
+            Add-Member -InputObject $toolsResult[$i] -NotePropertyName Command -NotePropertyValue $cmdsText -Force
+        }
+    }
+
+    # -----------------------
+    # Pretty print manifest-sourced command names (ASCII only, PS5-safe)
+    # -----------------------
+    $rows = @()
+    foreach ($p in $manifestToolsProps) {
+        $id = [string]$p.Name
+        $hasCmd = $false
+        $joined = "(none)"
+        if ($cmdInfo.ContainsKey($id) -and $cmdInfo[$id].Count -gt 0) {
+            $joined = ($cmdInfo[$id] -join ", ")
+            $hasCmd = $true
+        }
+        $rows += New-Object psobject -Property @{ Id = $id; Cmds = $joined; Has = $hasCmd }
+    }
+
+    # Determine column width for PACKAGE column (min width 8)
+    $idWidth = 8
+    foreach ($r in $rows) { if ($r.Id.Length -gt $idWidth) { $idWidth = $r.Id.Length } }
+
+    $headerLeft  = "PACKAGE".PadRight($idWidth)
+    $headerRight = "TOOLCOMMANDNAMES"
+    $sepLeft  = ("-" * $idWidth)
+    $sepRight = ("-" * $headerRight.Length)
+
+    _Write-StandardMessage -Message ("[SUMMARY] Manifest tool commands: {0} tool(s)." -f $rows.Count) -Level 'INF'
+    _Write-StandardMessage -Message ("[SUMMARY]   {0}   {1}" -f $headerLeft, $headerRight) -Level 'INF'
+    _Write-StandardMessage -Message ("[SUMMARY]   {0}   {1}" -f $sepLeft,     $sepRight)   -Level 'INF'
+
+    foreach ($r in $rows) {
+        # ASCII status symbol and simple colors (no Unicode)
+        $symbol   = "-"
+        $line = ("  {0} {1} ... {2}" -f $symbol, $r.Id.PadRight($idWidth), $r.Cmds)
+        $tag  = if ($r.Has) { "[OK]" } else { "[SKIP]" }
+        _Write-StandardMessage -Message ("[SUMMARY] {0} Tool {1} commands: {2}" -f $tag, $r.Id, $r.Cmds) -Level 'INF'
+    }
 
     # -----------------------
     # 6) Return single object (unless -NoReturn)

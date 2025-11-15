@@ -2555,4 +2555,3 @@ No pipeline input. No WhatIf/Confirm. ASCII-only implementation.
     }
 }
 
-Copy-FilesRecursively4 -SourceDirectory "C:\dev\github.com\eigenverft\Eigenverft.Distributed.Drydock\output\repopublish\development" -DestinationDirectory "C:\Temp\Eigenverft.Distributed.Drydock-drops\rep\Eigenverft.Distributed.Drydock\distributed" -CleanDestination "MirrorTree"

@@ -2358,6 +2358,366 @@ function Copy-FilesRecursively4 {
     _Write-StandardMessage -Message "[SUMMARY] Files copied: $filesCopied; files skipped: $filesSkipped; files removed: $filesRemoved; directories created: $dirsCreated; directories removed: $dirsRemoved." -Level 'INF'
 }
 
+function Copy-FilesRecursively5 {
+    <#
+    .SYNOPSIS
+        Recursively copies files from a source directory to a destination directory.
+
+    .DESCRIPTION
+        This function copies files from the specified source directory to the destination directory.
+        The file filter (default "*") limits the files that are copied. The -CopyEmptyDirs parameter
+        controls directory creation:
+         - If $true (default), the complete source directory tree is recreated.
+         - If $false, only directories that contain at least one file matching the filter (in that
+           directory or any subdirectory) will be created.
+        The -ForceOverwrite parameter (default $true) determines whether existing files are overwritten.
+        The -CleanDestination parameter controls removal of extra items at the destination that do not
+        exist in the source.
+
+    .PARAMETER SourceDirectory
+        The directory from which files and directories are copied.
+
+    .PARAMETER DestinationDirectory
+        The target directory to which files and directories will be copied.
+
+    .PARAMETER Filter
+        A wildcard filter that limits which files are copied. Defaults to "*".
+
+    .PARAMETER CopyEmptyDirs
+        If $true, the entire directory structure from the source is recreated in the destination.
+        If $false, only directories that will contain at least one file matching the filter are created.
+        Defaults to $true.
+
+    .PARAMETER ForceOverwrite
+        A Boolean value that indicates whether existing files should be overwritten.
+        Defaults to $true.
+
+    .PARAMETER CleanDestination
+        Controls removal of items that exist in the destination but not in the source. The source
+        is never modified; only extra items in the destination are deleted. Items that exist in
+        the source are always preserved in the destination.
+
+        Allowed values:
+          - "None":
+              No cleaning (default). The destination may accumulate extra files or directories
+              over time; this function will only add or overwrite files, never remove anything.
+
+          - "RootFiles":
+              Removes extra files located directly in the destination root directory. Matching is
+              done by file name only and respects -Filter. Subdirectories and any files inside
+              them are not touched, even if they do not exist in the source.
+
+          - "FilesRecursive":
+              Removes extra files in the destination root and all subdirectories. Matching is
+              done by full relative path and respects -Filter. Only files are deleted; directory
+              structures are left in place, even if the directory itself does not exist in the
+              source.
+
+          - "MirrorTree":
+              Mirror-style cleanup. First, removes all files under the destination that do not
+              have a corresponding file in the source (ignores -Filter). Then, removes any
+              directories under the destination that do not exist in the source (deepest-first),
+              effectively pruning entire directory trees that are not present in the source.
+              The destination root folder itself is never removed.
+
+        Note:
+          - "RootFiles" and "FilesRecursive" only remove files that match -Filter.
+          - "MirrorTree" ignores -Filter and can delete entire directory subtrees that are not
+            present in the source, making the destination closely mirror the source structure.
+
+    .EXAMPLE
+        # Copy all *.txt files, create only directories that hold matching files, and clean extra files in the destination root.
+        Copy-FilesRecursively5 -SourceDirectory "C:\Source" -DestinationDirectory "C:\Dest" -Filter "*.txt" -CopyEmptyDirs $false -ForceOverwrite $true -CleanDestination "RootFiles"
+
+    .EXAMPLE
+        # Copy all files and clean extra files across the entire destination tree (files only).
+        Copy-FilesRecursively5 -SourceDirectory "C:\Source" -DestinationDirectory "C:\Dest" -CleanDestination "FilesRecursive"
+
+    .EXAMPLE
+        # Mirror-style cleanup: remove all extra files and directories in destination.
+        Copy-FilesRecursively5 -SourceDirectory "C:\Source" -DestinationDirectory "C:\Dest" -CleanDestination "MirrorTree"
+
+    .EXAMPLE
+        # Copy all files, recreate the full directory tree without cleaning extra files.
+        Copy-FilesRecursively5 -SourceDirectory "C:\Source" -DestinationDirectory "C:\Dest"
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$SourceDirectory,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationDirectory,
+
+        [Parameter()]
+        [string]$Filter = "*",
+
+        [Parameter()]
+        [bool]$CopyEmptyDirs = $true,
+
+        [Parameter()]
+        [bool]$ForceOverwrite = $true,
+
+        [Parameter()]
+        [ValidateSet('None','RootFiles','FilesRecursive','MirrorTree')]
+        [string]$CleanDestination = 'None'
+    )
+
+    function _Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
+        )
+        if ($null -eq $Message) { $Message = [string]::Empty }
+        $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
+        if(-not $PSBoundParameters.ContainsKey('MinLevel')){
+            $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+            $MinLevel=if($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)){[string]$gv.Value}else{'INF'}
+        }
+        $lvl=$Level.ToUpperInvariant()
+        $min=$MinLevel.ToUpperInvariant()
+        $sev=$sevMap[$lvl];if($null -eq $sev){$lvl='INF';$sev=$sevMap['INF']}
+        $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
+        if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
+        if($sev -lt $gate){return}
+        $ts=[DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
+        if($stack){
+            # 1: prefer first non-underscore function not defined in the helper's own file
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+            }
+            # 2: fallback to first non-underscore function (any file)
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')){$caller=$f;break}
+                }
+            }
+            # 3: fallback to first non-helper frame not from helper's own file
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                    if($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+                }
+            }
+            # 4: final fallback to first non-helper frame
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName){$caller=$f;break}
+                }
+            }
+        }
+        if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
+        $lineNumber=$null 
+        $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Position']
+            if($p -and $p.Value){
+                $sp=$p.Value.PSObject.Properties['StartLineNumber'];if($sp -and $sp.Value){$lineNumber=[string]$sp.Value}
+            }
+        }
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Location']
+            if($p -and $p.Value){
+                $m=[regex]::Match([string]$p.Value,':(\d+)\s+char:','IgnoreCase');if($m.Success -and $m.Groups.Count -gt 1){$lineNumber=$m.Groups[1].Value}
+            }
+        }
+        $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
+        if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
+        $prefix="[$ts "
+        $suffix="] [$file] $Message"
+        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='Red';Back='DarkRed'}}[$lvl]
+        $fore=$cfg.Fore
+        $back=$cfg.Back
+        $isInteractive = [System.Environment]::UserInteractive
+        if($isInteractive -and ($fore -or $back)){
+            Write-Host -NoNewline $prefix
+            if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
+            elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
+            elseif($back){Write-Host -NoNewline $lvl -BackgroundColor $back}
+            Write-Host $suffix
+        } else {
+            Write-Host "$prefix$lvl$suffix"
+        }
+
+        if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
+    }
+
+    # Title (first log, no tag)
+    _Write-StandardMessage -Message "--- Copy-FilesRecursively5: Recursively copy files and optionally clean destination ---" -Level 'INF'
+
+    # Counters for summary statistics
+    [int]$filesCopied  = 0
+    [int]$filesSkipped = 0
+    [int]$filesRemoved = 0
+    [int]$dirsCreated  = 0
+    [int]$dirsRemoved  = 0
+
+    # Validate that the source directory exists.
+    if (-not (Test-Path -Path $SourceDirectory -PathType Container)) {
+        _Write-StandardMessage -Message "[ERROR] Source dir '$SourceDirectory' not found." -Level 'ERR'
+        return
+    }
+
+    # If CopyEmptyDirs is false, check if there are any files matching the filter.
+    if (-not $CopyEmptyDirs) {
+        $matchingFiles = Get-ChildItem -Path $SourceDirectory -Recurse -File -Filter $Filter -ErrorAction SilentlyContinue
+        if (-not $matchingFiles -or $matchingFiles.Count -eq 0) {
+            _Write-StandardMessage -Message "[SKIP] No files match filter; CopyEmptyDirs = false." -Level 'INF'
+            return
+        }
+    }
+
+    # Create the destination directory if it doesn't exist.
+    if (-not (Test-Path -Path $DestinationDirectory -PathType Container)) {
+        _Write-StandardMessage -Message "[CREATE] Dest dir '$DestinationDirectory' missing; creating." -Level 'INF'
+        New-Item -ItemType Directory -Path $DestinationDirectory | Out-Null
+        $dirsCreated++
+    }
+
+    # Set full paths for easier manipulation.
+    $sourceFullPath = (Get-Item $SourceDirectory).FullName.TrimEnd('\')
+    $destFullPath   = (Get-Item $DestinationDirectory).FullName.TrimEnd('\')
+
+    # Compact from/to info (INF)
+    _Write-StandardMessage -Message "[STATUS] From: $sourceFullPath" -Level 'INF'
+    _Write-StandardMessage -Message "[STATUS]   To: $destFullPath" -Level 'INF'
+
+    # Clean destination according to requested scope.
+    switch ($CleanDestination) {
+        'RootFiles' {
+            _Write-StandardMessage -Message "[STATUS] Clean: root files only." -Level 'DBG'
+            $destRootFiles = Get-ChildItem -Path $DestinationDirectory -File -Filter $Filter
+            foreach ($destFile in $destRootFiles) {
+                $sourceFilePath = Join-Path -Path $SourceDirectory -ChildPath $destFile.Name
+                if (-not (Test-Path -Path $sourceFilePath -PathType Leaf)) {
+                    _Write-StandardMessage -Message "[REMOVE] File: $($destFile.FullName)" -Level 'DBG'
+                    Remove-Item -Path $destFile.FullName -Force
+                    $filesRemoved++
+                }
+            }
+        }
+        'FilesRecursive' {
+            _Write-StandardMessage -Message "[STATUS] Clean: files recursive." -Level 'DBG'
+            $destFiles = Get-ChildItem -Path $destFullPath -Recurse -File -Filter $Filter
+            foreach ($destFile in $destFiles) {
+                $relative = $destFile.FullName.Substring($destFullPath.Length).TrimStart('\')
+                $sourceFilePath = Join-Path -Path $sourceFullPath -ChildPath $relative
+                if (-not (Test-Path -Path $sourceFilePath -PathType Leaf)) {
+                    _Write-StandardMessage -Message "[REMOVE] File: $($destFile.FullName)" -Level 'DBG'
+                    Remove-Item -Path $destFile.FullName -Force
+                    $filesRemoved++
+                }
+            }
+        }
+        'MirrorTree' {
+            _Write-StandardMessage -Message "[STATUS] Clean: mirror tree (files + dirs)." -Level 'DBG'
+
+            # 1) Remove extra files (entire tree, ignore filter).
+            $destFilesAll = Get-ChildItem -Path $destFullPath -Recurse -File
+            foreach ($destFile in $destFilesAll) {
+                $relative = $destFile.FullName.Substring($destFullPath.Length).TrimStart('\')
+                $sourceFilePath = Join-Path -Path $sourceFullPath -ChildPath $relative
+                if (-not (Test-Path -Path $sourceFilePath -PathType Leaf)) {
+                    _Write-StandardMessage -Message "[REMOVE] File: $($destFile.FullName)" -Level 'DBG'
+                    Remove-Item -Path $destFile.FullName -Force
+                    $filesRemoved++
+                }
+            }
+
+            # 2) Remove directories that don't exist in source (deepest-first).
+            $destDirs = Get-ChildItem -Path $destFullPath -Recurse -Directory |
+                        Sort-Object { $_.FullName.Length } -Descending
+            foreach ($destDir in $destDirs) {
+                $relativeDir = $destDir.FullName.Substring($destFullPath.Length).TrimStart('\')
+                $sourceDirPath = Join-Path -Path $sourceFullPath -ChildPath $relativeDir
+                if (-not (Test-Path -Path $sourceDirPath -PathType Container)) {
+                    _Write-StandardMessage -Message "[REMOVE] Dir: $($destDir.FullName)" -Level 'DBG'
+                    Remove-Item -Path $destDir.FullName -Recurse -Force
+                    $dirsRemoved++
+                }
+            }
+        }
+        default {
+            _Write-StandardMessage -Message "[STATUS] CleanDestination = None." -Level 'DBG'
+        }
+    }
+
+    if ($CopyEmptyDirs) {
+        _Write-StandardMessage -Message "[STATUS] Mode: full dir tree." -Level 'DBG'
+        Get-ChildItem -Path $sourceFullPath -Recurse -Directory | ForEach-Object {
+            $relativePath = $_.FullName.Substring($sourceFullPath.Length)
+            $newDestDir   = Join-Path -Path $destFullPath -ChildPath $relativePath
+            if (-not (Test-Path -Path $newDestDir)) {
+                _Write-StandardMessage -Message "[CREATE] Dir: $newDestDir" -Level 'DBG'
+                New-Item -ItemType Directory -Path $newDestDir | Out-Null
+                $dirsCreated++
+            }
+        }
+    }
+    else {
+        _Write-StandardMessage -Message "[STATUS] Mode: dirs for matching files only." -Level 'DBG'
+        foreach ($file in $matchingFiles) {
+            $sourceDir   = Split-Path -Path $file.FullName -Parent
+            $relativeDir = $sourceDir.Substring($sourceFullPath.Length)
+            $newDestDir  = Join-Path -Path $destFullPath -ChildPath $relativeDir
+            if (-not (Test-Path -Path $newDestDir)) {
+                _Write-StandardMessage -Message "[CREATE] Dir: $newDestDir" -Level 'DBG'
+                New-Item -ItemType Directory -Path $newDestDir | Out-Null
+                $dirsCreated++
+            }
+        }
+    }
+
+    # Copy files
+    if ($CopyEmptyDirs) {
+        $filesToCopy = Get-ChildItem -Path $SourceDirectory -Recurse -File -Filter $Filter
+    }
+    else {
+        $filesToCopy = $matchingFiles
+    }
+
+    _Write-StandardMessage -Message "[STATUS] Copying files..." -Level 'INF'
+
+    foreach ($file in $filesToCopy) {
+        $relativePath = $file.FullName.Substring($sourceFullPath.Length)
+        $destFile     = Join-Path -Path $destFullPath -ChildPath $relativePath
+
+        if (-not $ForceOverwrite -and (Test-Path -Path $destFile)) {
+            _Write-StandardMessage -Message "[SKIP] Exists (no overwrite): $destFile" -Level 'DBG'
+            $filesSkipped++
+            continue
+        }
+
+        $destDir = Split-Path -Path $destFile -Parent
+        if (-not (Test-Path -Path $destDir)) {
+            _Write-StandardMessage -Message "[CREATE] Dir for file: $destDir" -Level 'DBG'
+            New-Item -ItemType Directory -Path $destDir | Out-Null
+            $dirsCreated++
+        }
+
+        _Write-StandardMessage -Message "[STATUS] File: $($file.FullName) -> $destFile" -Level 'DBG'
+        if ($ForceOverwrite) {
+            Copy-Item -Path $file.FullName -Destination $destFile -Force
+        }
+        else {
+            Copy-Item -Path $file.FullName -Destination $destFile
+        }
+        $filesCopied++
+    }
+
+    # Summary line (compact but readable)
+    _Write-StandardMessage -Message (
+        "[SUMMARY] Files (copied/skipped/removed): {0}/{1}/{2}; Dirs (created/removed): {3}/{4}." -f $filesCopied, $filesSkipped, $filesRemoved, $dirsCreated, $dirsRemoved
+    ) -Level 'INF'
+}
+
 
 
 

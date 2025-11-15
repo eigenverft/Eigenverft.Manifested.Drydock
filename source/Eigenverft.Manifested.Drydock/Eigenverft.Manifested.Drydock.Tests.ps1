@@ -115,7 +115,7 @@ function Test-VariableValue {
             return
         }
 
-        $ts = [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $ts = [DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
 
         $stack        = Get-PSCallStack
         $helperName   = $MyInvocation.MyCommand.Name
@@ -385,7 +385,7 @@ Reviewer note: Prefer -ExitIfNotFound for CI/bootstrap; use -ThrowIfNotFound whe
         $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
         if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
         if($sev -lt $gate){return}
-        $ts=[DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $ts=[DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
         $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
         if($stack){
             # 1: prefer first non-underscore function not defined in the helper's own file
@@ -718,7 +718,7 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
         $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
         if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
         if($sev -lt $gate){return}
-        $ts=[DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $ts=[DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
         $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
         if($stack){
             # 1: prefer first non-underscore function not defined in the helper's own file

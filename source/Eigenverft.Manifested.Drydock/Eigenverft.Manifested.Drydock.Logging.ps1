@@ -92,7 +92,7 @@ function Write-ConsoleLog {
         return
     }
 
-    $ts = [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+    $ts = [DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
 
     # Caller resolution: first frame that is not this function.
     $helperName = $MyInvocation.MyCommand.Name

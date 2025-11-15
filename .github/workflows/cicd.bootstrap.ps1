@@ -315,7 +315,7 @@ function Write-ConsoleLog {
         return
     }
 
-    $ts = [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+    $ts = [DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
 
     # Caller resolution: first frame that is not this function.
     $helperName = $MyInvocation.MyCommand.Name
@@ -540,7 +540,7 @@ prerelease is available, no change is made.
             return
         }
 
-        $ts = [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $ts = [DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
         $stack = Get-PSCallStack
         $helperName = $MyInvocation.MyCommand.Name
         $helperScript = $MyInvocation.MyCommand.ScriptBlock.File

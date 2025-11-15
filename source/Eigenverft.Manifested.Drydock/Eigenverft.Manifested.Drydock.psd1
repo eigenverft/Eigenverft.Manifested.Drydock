@@ -124,9 +124,6 @@ FunctionsToExport = @(
     'Find-TreeContentByFile',
     'Resolve-ModulePath',
     'Copy-FilesRecursively',
-    'Copy-FilesRecursively2',
-    'Copy-FilesRecursively3',
-    'Copy-FilesRecursively4',
     'Copy-FilesRecursively5',
     'Join-FileText',
 

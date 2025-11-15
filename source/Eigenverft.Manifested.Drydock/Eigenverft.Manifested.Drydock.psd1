@@ -124,7 +124,6 @@ FunctionsToExport = @(
     'Find-TreeContentByFile',
     'Resolve-ModulePath',
     'Copy-FilesRecursively',
-    'Copy-FilesRecursively5',
     'Join-FileText',
 
     # ...Logging.ps1

@@ -1725,7 +1725,8 @@ function Copy-FilesRecursively5 {
 
     # Create the destination directory if it doesn't exist.
     if (-not (Test-Path -Path $DestinationDirectory -PathType Container)) {
-        _Write-StandardMessage -Message "[CREATE] Dest dir '$DestinationDirectory' missing; creating." -Level 'INF'
+        $destDirDisplay = _Format-PathForDisplay -Path $DestinationDirectory -MaxSegmentLength 6
+        _Write-StandardMessage -Message "[CREATE] Dest dir '$destDirDisplay' missing; creating." -Level 'INF'
         New-Item -ItemType Directory -Path $DestinationDirectory | Out-Null
         $dirsCreated++
     }
@@ -1835,7 +1836,7 @@ function Copy-FilesRecursively5 {
         $filesToCopy = $matchingFiles
     }
 
-    _Write-StandardMessage -Message "[STATUS] Copying files..." -Level 'INF'
+    _Write-StandardMessage -Message "[STATUS] Copying files..." -Level 'DBG'
 
     foreach ($file in $filesToCopy) {
         $relativePath = $file.FullName.Substring($sourceFullPath.Length)

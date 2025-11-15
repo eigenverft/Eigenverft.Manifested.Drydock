@@ -2726,7 +2726,7 @@ New-ThirdPartyNotice
         $lvl = $Level.ToUpperInvariant() ; $min = $MinLevel.ToUpperInvariant() ; $sev = $sevMap[$lvl] ; $gate= $sevMap[$min]
         if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) { $lvl = $min ; $sev = $gate}
         if ($sev -lt $gate) { return }
-        $ts = ([DateTime]::UtcNow).ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $ts = [DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
         $stack      = Get-PSCallStack
         $helperName = $MyInvocation.MyCommand.Name
         $orgFunc    = $null
@@ -2993,7 +2993,7 @@ Export-PackageLicenseTexts3 -JsonPath .\ThirdPartyLicencesNotices.json -FillMiss
         $sev = $sevMap[$lvl]; $gate = $sevMap[$min]
         if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) { $lvl = $min; $sev = $gate }
         if ($sev -lt $gate) { return }
-        $ts = ([DateTime]::UtcNow).ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $ts = [DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
         $stack = Get-PSCallStack; $helperName = $MyInvocation.MyCommand.Name
         $orgFunc = $null; $caller = $null
         if ($stack) {

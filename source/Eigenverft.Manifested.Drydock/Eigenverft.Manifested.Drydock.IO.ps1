@@ -1795,7 +1795,7 @@ No pipeline input. No WhatIf/Confirm. ASCII-only implementation.
         # Drop below gate
         if ($sev -lt $gate) { return }
         # Timestamp
-        $ts = ([DateTime]::UtcNow).ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $ts = [DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
         # Resolve caller: prefer "caller of org func" (grandparent of helper)
         $stack      = Get-PSCallStack
         $helperName = $MyInvocation.MyCommand.Name

@@ -1635,40 +1635,68 @@ function Copy-FilesRecursively5 {
     }
 
     function _Format-PathForDisplay {
-    <#
-    .SYNOPSIS
-        Formats a path for log output by shortening long segments.
-    #>
-    [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$Path,
-        [int]$MaxSegmentLength = 24
-    )
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        <#
+        .SYNOPSIS
+            Formats a path for log output by shortening long segments.
 
-    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+        .DESCRIPTION
+            Splits the path into segments and shortens only those segments whose length
+            exceeds the specified limit. The following segments are never shortened:
+            - The drive segment (e.g. C:)
+            - Any segment that contains at least one numeric character (e.g. 1.0.0, v2)
 
-    # Normalize separators to backslash for display.
-    $normalized = $Path.Replace('/', '\')
+        .PARAMETER Path
+            The full path to format for display.
 
-    # Split into segments (keep empties so UNC is not broken).
-    $segments = $normalized.Split('\')
+        .PARAMETER MaxSegmentLength
+            Maximum length of a non-numeric segment before it is shortened. Default is 24.
 
-    for ($i = 0; $i -lt $segments.Count; $i++) {
-        $seg = $segments[$i]
-        if ([string]::IsNullOrEmpty($seg)) { continue }
+        .EXAMPLE
+            _Format-PathForDisplay -Path "C:\dev\tools\MyVeryLongFolderName\9.0.11" -MaxSegmentLength 16
+            # Returns: C:\dev\tools\MyVeryLongFol...\9.0.11
+        #>
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$Path,
+            [int]$MaxSegmentLength = 24
+        )
 
-        # Keep drive segment like "C:" untouched.
-        if ($i -eq 0 -and $seg -match '^[A-Za-z]:$') { continue }
-
-        if ($seg.Length -gt $MaxSegmentLength -and $MaxSegmentLength -gt 3) {
-            $segments[$i] = $seg.Substring(0, $MaxSegmentLength - 3) + '...'
+        if ([string]::IsNullOrWhiteSpace($Path)) {
+            return $Path
         }
-    }
 
-    return ($segments -join '\')
-    }
+        # Normalize separators for display.
+        $normalized = $Path.Replace('/', '\')
 
+        # Split into segments (keep empties so UNC prefixes are preserved).
+        $segments = $normalized.Split('\')
+
+        for ($i = 0; $i -lt $segments.Count; $i++) {
+            $seg = $segments[$i]
+
+            if ([string]::IsNullOrEmpty($seg)) {
+                continue
+            }
+
+            # Keep drive segment like "C:" unchanged.
+            if ($i -eq 0 -and $seg -match '^[A-Za-z]:$') {
+                continue
+            }
+
+            # If the segment contains any digit (likely version or numbered dir), do not shorten.
+            if ($seg -match '\d') {
+                continue
+            }
+
+            # Shorten only long, non-numeric segments.
+            if ($seg.Length -gt $MaxSegmentLength -and $MaxSegmentLength -gt 3) {
+                $segments[$i] = $seg.Substring(0, $MaxSegmentLength - 3) + '...'
+            }
+        }
+
+        return ($segments -join '\')
+    }
 
     # Title (first log, no tag)
     _Write-StandardMessage -Message "--- Copy-FilesRecursively: Recursively copy files and optionally clean destination ---" -Level 'INF'
@@ -1707,8 +1735,8 @@ function Copy-FilesRecursively5 {
     $destFullPath   = (Get-Item $DestinationDirectory).FullName.TrimEnd('\')
 
     # Compact from/to info (INF)
-    $srcDisplay = _Format-PathForDisplay -Path $sourceFullPath -MaxSegmentLength 18
-    $dstDisplay = _Format-PathForDisplay -Path $destFullPath   -MaxSegmentLength 18
+    $srcDisplay = _Format-PathForDisplay -Path $sourceFullPath -MaxSegmentLength 6
+    $dstDisplay = _Format-PathForDisplay -Path $destFullPath   -MaxSegmentLength 6
 
     _Write-StandardMessage -Message "[STATUS] From: $srcDisplay" -Level 'INF'
     _Write-StandardMessage -Message "[STATUS]   To: $dstDisplay" -Level 'INF'

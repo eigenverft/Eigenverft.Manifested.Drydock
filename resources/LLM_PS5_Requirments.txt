@@ -28,7 +28,11 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
 8) OUTPUT & LOGGING
    - EMIT Write- or _Write-StandardMessage ONLY for key actions (created X, added/removed Y, enabled/disabled Z, updated trust).
    - Format the Write function implement a inline helper function for it suggested format.
-   - The first call to a write function do have some title like write e.g. --- What the function is about etc. --- in this case no tags required.
+   - The first call inside the main function should emit some title like write- e.g. --- What the function is about etc. --- in this case no tags required.
+   - For logging / user-facing messages, prefer _Write-StandardMessage when it is available.
+   - If _Write-StandardMessage is defined in the function (or available in scope), all log-style messages (status, progress, summary, warnings, errors that are not thrown) MUST go through _Write-StandardMessage.
+   - Do NOT use other Write-* cmdlets for logging in that function.
+   - If _Write-StandardMessage is not available, use Write-Host for key actions. Do NOT use Write-Output, Write-Verbose, Write-Information, or Write-Error for logging
    - All write message functions should have Tags at the begining showing the operation e.g [PROGRESS],[STATUS],[OK],[VALUE],[CHECK],[SOURCE],[TRUST],[CREATE],[SKIP],[SUMMARY] just examples freely choose.
    - The _Write-StandardMessage is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise, it should be implmented as is,including no formatting changes.
     function _Write-StandardMessage {
@@ -167,6 +171,9 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
 
 17) RETURN VALUES OF FUNCTIONS
    - Whenever a function is meant to return multiple elements as one definitive value (a single array, not a stream), end it with ,@(...) - or, if you want a typed array, with ,([type[]]@(...))
+
+18) LINE CONTINUATION
+   - For all PowerShell you generate, never use the backtick (`) for line continuation. Keep each command on a single line, or use other techniques like splatting or separate statements, but do not insert backticks for line breaks.
 
 DEFINITE: A function is "DONE" only if it meets ALL requirements above.
 

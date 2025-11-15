@@ -125,6 +125,8 @@ FunctionsToExport = @(
     'Resolve-ModulePath',
     'Copy-FilesRecursively',
     'Copy-FilesRecursively2',
+    'Copy-FilesRecursively3',
+    'Copy-FilesRecursively4',
     'Join-FileText',
 
     # ...Logging.ps1

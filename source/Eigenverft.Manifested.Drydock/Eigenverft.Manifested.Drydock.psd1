@@ -125,6 +125,7 @@ FunctionsToExport = @(
     'Resolve-ModulePath',
     'Copy-FilesRecursively',
     'Join-FileText',
+    'Sync-DirectoryTreeLockSafe',
 
     # ...Logging.ps1
     'Write-ConsoleLog',

@@ -1894,3 +1894,968 @@ No pipeline input. No WhatIf/Confirm. ASCII-only implementation.
     }
 }
 
+function Sync-DirectoryTreeLockSafe {
+<#
+.SYNOPSIS
+Mirrors a source directory tree to a destination directory with retries and locking.
+
+.DESCRIPTION
+Sync-DirectoryTreeLockSafe synchronizes a destination directory so that it becomes a mirror
+of the source directory:
+
+- Recursively copies all files from source to destination (overwriting existing files).
+- Creates missing directories in the destination.
+- Removes files and directories from the destination that do not exist in the source.
+- Uses separate lock files in source and destination roots while work is in progress.
+- Waits and retries when lock files already exist.
+- Uses file-level copy retries with configurable retry count and delay.
+- Optionally preserves timestamps on copied files.
+
+The function is idempotent: repeated executions converge to the same state without
+causing drift. Operations are logged via an internal _Write-StandardMessage helper.
+
+Locking strategy per directory:
+
+- Read locks (source role): multiple files named "transit.source.<token>.lock" are allowed.
+- Write lock (destination role): single file named "transit.destination.lock" is exclusive.
+
+Source semantics:
+- Waits while "transit.destination.lock" exists in the source root (no reading while writing).
+- Then best-effort creates a per-call read lock "transit.source.<token>.lock".
+  If the source is read-only for this process, creation may fail; in that case we log a warning
+  and continue without a source lock, still honoring existing writer locks.
+
+Destination semantics:
+- Waits until no "transit.destination.lock" AND no "transit.source.*.lock" exist in the
+  destination root (no writing while any reader or writer is active).
+- Then creates "transit.destination.lock" for the whole mirror duration.
+
+Each lock file contains JSON metadata:
+
+{
+  "CreatedUtc": "2025-11-16T06:00:00.0000000Z",
+  "ExpiresUtc": "2025-11-17T06:00:00.0000000Z"
+}
+
+Stale locks (ExpiresUtc in the past, or legacy/invalid tokens older than
+LockTokenExpiryHours based on file timestamps) are considered dead and are automatically
+deleted when possible during lock acquisition.
+
+Special case: if an expired writer lock is on a read-only source and cannot be deleted
+due to insufficient permissions, it is logged as a warning and then ignored so that
+readers are not permanently blocked.
+
+Lock files are never treated as content and are not mirrored between directories.
+
+.PARAMETER SourcePath
+The existing source directory whose contents should be mirrored.
+
+.PARAMETER DestinationPath
+The destination directory to mirror to. Created if it does not exist.
+
+.PARAMETER CopyRetryCount
+Number of retry attempts after the initial copy attempt for each file.
+Default is 3 (for a total of 4 attempts including the first).
+
+.PARAMETER CopyRetryDelaySeconds
+Delay in seconds between file copy retry attempts. Default is 5.
+
+.PARAMETER LockRetryCount
+Number of retries when lock files already exist in the source or destination
+root directories. Default is 10.
+
+.PARAMETER LockRetryDelaySeconds
+Delay in seconds between lock acquisition retry attempts. Default is 30.
+
+.PARAMETER LockTokenExpiryHours
+Number of hours after which lock files are considered stale and may be removed
+automatically during lock acquisition. Default is 12. Values less than or equal
+to 0 are normalized to 24 with a warning.
+
+.PARAMETER PreserveTimestamp
+Controls whether timestamps from source files are preserved on destination files.
+'Disabled' (default) ignores timestamps. 'Enabled' sets destination file
+CreationTimeUtc and LastWriteTimeUtc to match the source file.
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourcePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath,
+
+        [Parameter()]
+        [int]$CopyRetryCount = 3,
+
+        [Parameter()]
+        [int]$CopyRetryDelaySeconds = 5,
+
+        [Parameter()]
+        [int]$LockRetryCount = 10,
+
+        [Parameter()]
+        [int]$LockRetryDelaySeconds = 30,
+
+        [Parameter()]
+        [int]$LockTokenExpiryHours = 12,
+
+        [Parameter()]
+        [ValidateSet('Disabled','Enabled')]
+        [string]$PreserveTimestamp = 'Disabled'
+    )
+
+    $sourceLockBaseName = 'transit.source'
+    $destinationLockFileName = 'transit.destination.lock'
+
+    # local logger with call-site metadata and severity routing
+    function local:_Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Message,
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level = 'INF',
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
+        )
+
+        if ($null -eq $Message) {
+            $Message = [string]::Empty
+        }
+
+        $sevMap = @{
+            TRC = 0
+            DBG = 1
+            INF = 2
+            WRN = 3
+            ERR = 4
+            FTL = 5
+        }
+
+        if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
+            $gv = Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+            if ($null -ne $gv -and $null -ne $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)) {
+                $MinLevel = [string]$gv.Value
+            }
+            else {
+                $MinLevel = 'INF'
+            }
+        }
+
+        $lvl = $Level.ToUpperInvariant()
+        $min = $MinLevel.ToUpperInvariant()
+
+        $sev = $sevMap[$lvl]
+        if ($null -eq $sev) {
+            $lvl = 'INF'
+            $sev = $sevMap['INF']
+        }
+
+        $gate = $sevMap[$min]
+        if ($null -eq $gate) {
+            $min = 'INF'
+            $gate = $sevMap['INF']
+        }
+
+        if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) {
+            $lvl = $min
+            $sev = $gate
+        }
+
+        if ($sev -lt $gate) {
+            return
+        }
+
+        $ts = [DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
+        $stack = Get-PSCallStack
+        $helperName = $MyInvocation.MyCommand.Name
+        $helperScript = $MyInvocation.MyCommand.ScriptBlock.File
+        $caller = $null
+
+        if ($null -ne $stack) {
+            for ($i = 0; $i -lt $stack.Count; $i = $i + 1) {
+                $f = $stack[$i]
+                $fn = $f.FunctionName
+                $sn = $f.ScriptName
+                if ($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)) {
+                    $caller = $f
+                    break
+                }
+            }
+
+            if ($null -eq $caller) {
+                for ($i = 0; $i -lt $stack.Count; $i = $i + 1) {
+                    $f = $stack[$i]
+                    $fn = $f.FunctionName
+                    if ($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')) {
+                        $caller = $f
+                        break
+                    }
+                }
+            }
+
+            if ($null -eq $caller) {
+                for ($i = 0; $i -lt $stack.Count; $i = $i + 1) {
+                    $f = $stack[$i]
+                    $fn = $f.FunctionName
+                    $sn = $f.ScriptName
+                    if ($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)) {
+                        $caller = $f
+                        break
+                    }
+                }
+            }
+
+            if ($null -eq $caller) {
+                for ($i = 0; $i -lt $stack.Count; $i = $i + 1) {
+                    $f = $stack[$i]
+                    $fn = $f.FunctionName
+                    if ($fn -and $fn -ne $helperName) {
+                        $caller = $f
+                        break
+                    }
+                }
+            }
+        }
+
+        if ($null -eq $caller) {
+            $caller = [pscustomobject]@{
+                ScriptName   = $PSCommandPath
+                FunctionName = $null
+            }
+        }
+
+        $lineNumber = $null
+
+        $p = $caller.PSObject.Properties['ScriptLineNumber']
+        if ($null -ne $p -and $null -ne $p.Value) {
+            $lineNumber = [string]$p.Value
+        }
+
+        if (-not $lineNumber) {
+            $p = $caller.PSObject.Properties['Position']
+            if ($null -ne $p -and $null -ne $p.Value) {
+                $sp = $p.Value.PSObject.Properties['StartLineNumber']
+                if ($null -ne $sp -and $null -ne $sp.Value) {
+                    $lineNumber = [string]$sp.Value
+                }
+            }
+        }
+
+        if (-not $lineNumber) {
+            $p = $caller.PSObject.Properties['Location']
+            if ($null -ne $p -and $null -ne $p.Value) {
+                $m = [regex]::Match([string]$p.Value, ':(\d+)\s+char:', 'IgnoreCase')
+                if ($m.Success -and $m.Groups.Count -gt 1) {
+                    $lineNumber = $m.Groups[1].Value
+                }
+            }
+        }
+
+        $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'cmd' }
+        if ($file -ne 'console' -and $lineNumber) {
+            $file = '{0}:{1}' -f $file, $lineNumber
+        }
+
+        $prefix = "[$ts "
+        $suffix = "] [$file] $Message"
+
+        $cfg = @{
+            TRC = @{ Fore = 'DarkGray';Back = $null }
+            DBG = @{ Fore = 'Cyan';    Back = $null }
+            INF = @{ Fore = 'Green';   Back = $null }
+            WRN = @{ Fore = 'Yellow';  Back = $null }
+            ERR = @{ Fore = 'Red';     Back = $null }
+            FTL = @{ Fore = 'Red';     Back = 'DarkRed' }
+        }[$lvl]
+
+        $fore = $cfg.Fore
+        $back = $cfg.Back
+        $isInteractive = [System.Environment]::UserInteractive
+
+        if ($isInteractive -and ($fore -or $back)) {
+            Write-Host -NoNewline $prefix
+            if ($fore -and $back) {
+                Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back
+            }
+            elseif ($fore) {
+                Write-Host -NoNewline $lvl -ForegroundColor $fore
+            }
+            elseif ($back) {
+                Write-Host -NoNewline $lvl -BackgroundColor $back
+            }
+            Write-Host $suffix
+        }
+        else {
+            Write-Host "$prefix$lvl$suffix"
+        }
+
+        if ($sev -ge 4 -and $ErrorActionPreference -eq 'Stop') {
+            throw ("ConsoleLog.{0}: {1}" -f $lvl, $Message)
+        }
+    }
+
+    if ($LockTokenExpiryHours -le 0) {
+        $LockTokenExpiryHours = 24
+        _Write-StandardMessage -Message "[WRN] LockTokenExpiryHours was <= 0; defaulting to 24 hours." -Level 'WRN'
+    }
+
+    # returns all items under a path in bottom-up traversal order
+    function local:_Get-DirectoryTraversalOrder {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Path,
+
+            [Parameter()]
+            [switch]$IncludeRoot
+        )
+
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+            throw "Path '$Path' does not exist or is not a directory."
+        }
+
+        $resolvedRootPath = (Resolve-Path -LiteralPath $Path).ProviderPath
+
+        $items = Get-ChildItem -LiteralPath $resolvedRootPath -Recurse -Force
+
+        $decorated = @()
+
+        foreach ($item in $items) {
+            $relativePath = $item.FullName.Substring($resolvedRootPath.Length).TrimStart('\', '/')
+            $segments = @()
+            if (-not [string]::IsNullOrEmpty($relativePath)) {
+                $segments = $relativePath -split '[\\/]+'
+            }
+            $depth = $segments.Length
+
+            $decorated += [PSCustomObject]@{
+                Item  = $item
+                Depth = $depth
+            }
+        }
+
+        $ordered = @()
+        if ($decorated.Count -gt 0) {
+            $ordered = @(
+                $decorated |
+                    Sort-Object -Property Depth -Descending |
+                    ForEach-Object { $_.Item }
+            )
+        }
+
+        if ($IncludeRoot.IsPresent) {
+            $rootInfo = Get-Item -LiteralPath $resolvedRootPath -Force
+            $ordered += $rootInfo
+        }
+
+        _Write-StandardMessage -Message "[SUMMARY] Directory traversal order computed; found $($ordered.Count) items (including lock files)."
+
+        ,@($ordered)
+    }
+
+    # writes JSON metadata payload with created/expiry timestamps into a lock file
+    function local:_Write-LockTokenFile {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$LockFilePath,
+            [Parameter(Mandatory = $true)]
+            [int]$LockTokenExpiryHours
+        )
+
+        $nowUtc = [DateTime]::UtcNow
+        $expiresUtc = $nowUtc.AddHours($LockTokenExpiryHours)
+
+        $payload = [PSCustomObject]@{
+            CreatedUtc = $nowUtc.ToString('o')
+            ExpiresUtc = $expiresUtc.ToString('o')
+        }
+
+        $json = $payload | ConvertTo-Json -Compress
+        Set-Content -LiteralPath $LockFilePath -Value $json -Encoding UTF8 -Force
+    }
+
+    # removes a stale lock file if expired, optionally ignoring delete failures
+    function local:_Remove-StaleLockIfExpired {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$LockFilePath,
+            [Parameter(Mandatory = $true)]
+            [int]$LockTokenExpiryHours,
+            [Parameter()]
+            [switch]$IgnoreDeleteFailure
+        )
+
+        if (-not (Test-Path -LiteralPath $LockFilePath -PathType Leaf -ErrorAction SilentlyContinue)) {
+            return $false
+        }
+
+        if ($LockTokenExpiryHours -le 0) {
+            return $false
+        }
+
+        $nowUtc = [DateTime]::UtcNow
+        $expiresUtc = $null
+        $isExpired = $false
+
+        try {
+            $rawContent = Get-Content -LiteralPath $LockFilePath -Raw -ErrorAction Stop
+            if (-not [string]::IsNullOrWhiteSpace($rawContent)) {
+                try {
+                    $jsonObject = ConvertFrom-Json -InputObject $rawContent -ErrorAction Stop
+                    $expiresProperty = $jsonObject.PSObject.Properties['ExpiresUtc']
+                    if ($null -ne $expiresProperty -and $null -ne $expiresProperty.Value) {
+                        $expiresString = [string]$expiresProperty.Value
+                        if (-not [string]::IsNullOrWhiteSpace($expiresString)) {
+                            $expiresUtc = [DateTime]::Parse(
+                                $expiresString,
+                                [System.Globalization.CultureInfo]::InvariantCulture,
+                                [System.Globalization.DateTimeStyles]::AdjustToUniversal
+                            )
+                        }
+                    }
+                }
+                catch {
+                    # fall back to timestamp-based expiry if JSON is invalid
+                }
+            }
+
+            if ($null -eq $expiresUtc) {
+                $fileInfo = Get-Item -LiteralPath $LockFilePath -Force -ErrorAction Stop
+                $timestamp = $fileInfo.LastWriteTimeUtc
+                if ($fileInfo.CreationTimeUtc -gt $timestamp) {
+                    $timestamp = $fileInfo.CreationTimeUtc
+                }
+                $expiresUtc = $timestamp.AddHours($LockTokenExpiryHours)
+            }
+
+            if ($nowUtc -gt $expiresUtc) {
+                $isExpired = $true
+            }
+        }
+        catch {
+            _Write-StandardMessage -Message "[WRN] Failed to read or parse lock '$LockFilePath'; treating as stale. $($_.Exception.Message)" -Level 'WRN'
+            $isExpired = $true
+        }
+
+        if (-not $isExpired) {
+            return $false
+        }
+
+        try {
+            Remove-Item -LiteralPath $LockFilePath -Force -ErrorAction Stop
+            _Write-StandardMessage -Message "[WRN] Removed stale lock '$LockFilePath'."
+            return $true
+        }
+        catch {
+            $ex = $_.Exception
+            if ($IgnoreDeleteFailure.IsPresent -and ($ex -is [System.UnauthorizedAccessException])) {
+                _Write-StandardMessage -Message "[WRN] Stale lock '$LockFilePath' could not be deleted due to insufficient permissions; ignoring. $($ex.Message)" -Level 'WRN'
+                return $true
+            }
+
+            _Write-StandardMessage -Message "[ERR] Failed to remove stale lock '$LockFilePath': $($ex.Message)" -Level 'ERR'
+            throw "Failed to delete stale lock '$LockFilePath'. $($ex.Message)"
+        }
+    }
+
+    # checks for writer lock in source, then best-effort acquires a per-call read lock
+    function local:_Acquire-SourceLock {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$RootPath,
+            [Parameter(Mandatory = $true)]
+            [string]$LockFileName,
+            [Parameter(Mandatory = $true)]
+            [string]$DestinationLockFileName,
+            [Parameter(Mandatory = $true)]
+            [int]$RetryCount,
+            [Parameter(Mandatory = $true)]
+            [int]$RetryDelaySeconds,
+            [Parameter(Mandatory = $true)]
+            [int]$LockTokenExpiryHours,
+            [Parameter(Mandatory = $true)]
+            [ref]$LockAcquired,
+            [Parameter(Mandatory = $true)]
+            [ref]$LockFileNameInstance
+        )
+
+        $LockAcquired.Value = $false
+        $LockFileNameInstance.Value = $null
+
+        $writerLockPath = Join-Path -Path $RootPath -ChildPath $DestinationLockFileName
+        $attempt = 0
+
+        while ($true) {
+            $writerExists = Test-Path -LiteralPath $writerLockPath -PathType Leaf -ErrorAction SilentlyContinue
+            if (-not $writerExists) {
+                break
+            }
+
+            $staleRemoved = _Remove-StaleLockIfExpired -LockFilePath $writerLockPath -LockTokenExpiryHours $LockTokenExpiryHours -IgnoreDeleteFailure
+            if ($staleRemoved) {
+                continue
+            }
+
+            if ($attempt -ge $RetryCount) {
+                _Write-StandardMessage -Message "[ERR] Writer lock '$writerLockPath' still present in source after $RetryCount retries." -Level 'ERR'
+                throw "Writer lock '$writerLockPath' already exists in source '$RootPath' after $RetryCount retries."
+            }
+
+            $attempt = $attempt + 1
+            _Write-StandardMessage -Message "[CHECK] Writer lock '$writerLockPath' in source detected, waiting $RetryDelaySeconds seconds (attempt $attempt of $RetryCount)."
+            Start-Sleep -Seconds $RetryDelaySeconds
+        }
+
+        try {
+            $baseName = if ([string]::IsNullOrEmpty($LockFileName)) { 'transit.source' } else { $LockFileName }
+            $token = [Guid]::NewGuid().ToString('N')
+            $instanceName = "{0}.{1}.lock" -f $baseName, $token
+            $lockFilePath = Join-Path -Path $RootPath -ChildPath $instanceName
+
+            New-Item -ItemType File -Path $lockFilePath -Force -ErrorAction Stop | Out-Null
+            _Write-LockTokenFile -LockFilePath $lockFilePath -LockTokenExpiryHours $LockTokenExpiryHours
+            _Write-StandardMessage -Message "[STATUS] Acquired source lock '$lockFilePath'."
+            $LockAcquired.Value = $true
+            $LockFileNameInstance.Value = $instanceName
+        }
+        catch {
+            $ex = $_.Exception
+            if ($ex -is [System.UnauthorizedAccessException]) {
+                _Write-StandardMessage -Message "[WRN] Cannot create source lock in '$RootPath' due to insufficient permissions. Proceeding without source lock; writer locks are still honored." -Level 'WRN'
+            }
+            else {
+                _Write-StandardMessage -Message "[ERR] Failed to create source lock in '$RootPath': $($ex.Message)" -Level 'ERR'
+                throw "Failed to create source lock in '$RootPath'. $($ex.Message)"
+            }
+        }
+    }
+
+    # acquires exclusive writer lock for destination, waiting for all readers/writers to finish
+    function local:_Acquire-Lock {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$RootPath,
+            [Parameter(Mandatory = $true)]
+            [string]$LockFileName,
+            [Parameter(Mandatory = $true)]
+            [string]$SourceLockFileName,
+            [Parameter(Mandatory = $true)]
+            [int]$RetryCount,
+            [Parameter(Mandatory = $true)]
+            [int]$RetryDelaySeconds,
+            [Parameter(Mandatory = $true)]
+            [int]$LockTokenExpiryHours
+        )
+
+        $lockFilePath = Join-Path -Path $RootPath -ChildPath $LockFileName
+        $attempt = 0
+
+        while ($true) {
+            $writerExists = Test-Path -LiteralPath $lockFilePath -PathType Leaf -ErrorAction SilentlyContinue
+            if ($writerExists) {
+                $staleWriterRemoved = _Remove-StaleLockIfExpired -LockFilePath $lockFilePath -LockTokenExpiryHours $LockTokenExpiryHours
+                if ($staleWriterRemoved) {
+                    $writerExists = $false
+                }
+            }
+
+            $readerExists = $false
+
+            if (-not [string]::IsNullOrEmpty($SourceLockFileName)) {
+                try {
+                    $readerItems = Get-ChildItem -LiteralPath $RootPath -File -Force -ErrorAction SilentlyContinue
+                    foreach ($readerItem in $readerItems) {
+                        $name = $readerItem.Name
+                        if ([string]::Equals($name, $SourceLockFileName, [System.StringComparison]::OrdinalIgnoreCase) -or
+                            $name.StartsWith($SourceLockFileName + '.', [System.StringComparison]::OrdinalIgnoreCase)) {
+
+                            $readerPath = $readerItem.FullName
+                            $staleReaderRemoved = _Remove-StaleLockIfExpired -LockFilePath $readerPath -LockTokenExpiryHours $LockTokenExpiryHours
+                            if (-not $staleReaderRemoved) {
+                                $readerExists = $true
+                            }
+                        }
+                    }
+                }
+                catch {
+                    _Write-StandardMessage -Message "[ERR] Failed to inspect reader locks in '$RootPath': $($_.Exception.Message)" -Level 'ERR'
+                    throw "Failed to inspect reader locks in '$RootPath'. $($_.Exception.Message)"
+                }
+            }
+
+            if (-not $writerExists -and -not $readerExists) {
+                try {
+                    New-Item -ItemType File -Path $lockFilePath -Force -ErrorAction Stop | Out-Null
+                    _Write-LockTokenFile -LockFilePath $lockFilePath -LockTokenExpiryHours $LockTokenExpiryHours
+                    _Write-StandardMessage -Message "[STATUS] Acquired lock '$lockFilePath'."
+                    break
+                }
+                catch {
+                    _Write-StandardMessage -Message "[ERR] Failed to create lock '$lockFilePath': $($_.Exception.Message)" -Level 'ERR'
+                    throw "Failed to create lock file '$lockFilePath'. $($_.Exception.Message)"
+                }
+            }
+            else {
+                if ($attempt -ge $RetryCount) {
+                    $reasonParts = @()
+                    if ($writerExists) {
+                        $reasonParts += 'writer lock present'
+                    }
+                    if ($readerExists) {
+                        $reasonParts += 'reader lock(s) present'
+                    }
+                    $reason = [string]::Join(', ', $reasonParts)
+                    if ([string]::IsNullOrEmpty($reason)) {
+                        $reason = 'lock(s) present'
+                    }
+                    _Write-StandardMessage -Message "[ERR] Destination '$RootPath' still blocked ($reason) after $RetryCount retries." -Level 'ERR'
+                    throw "Destination '$RootPath' still blocked ($reason) after $RetryCount retries."
+                }
+
+                $attempt = $attempt + 1
+                _Write-StandardMessage -Message "[CHECK] Destination '$RootPath' locked (writer: $writerExists, readers: $readerExists). Waiting $RetryDelaySeconds seconds (attempt $attempt of $RetryCount)."
+                Start-Sleep -Seconds $RetryDelaySeconds
+            }
+        }
+    }
+
+    # removes an existing lock file from the given root path
+    function local:_Release-Lock {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$RootPath,
+            [Parameter(Mandatory = $true)]
+            [string]$LockFileName
+        )
+
+        $lockFilePath = Join-Path -Path $RootPath -ChildPath $LockFileName
+
+        if (Test-Path -LiteralPath $lockFilePath -PathType Leaf) {
+            try {
+                Remove-Item -LiteralPath $lockFilePath -Force -ErrorAction Stop
+                _Write-StandardMessage -Message "[STATUS] Released lock '$lockFilePath'."
+            }
+            catch {
+                _Write-StandardMessage -Message "[ERR] Failed to remove lock '$lockFilePath': $($_.Exception.Message)" -Level 'ERR'
+                throw "Failed to delete lock file '$lockFilePath'. $($_.Exception.Message)"
+            }
+        }
+        else {
+            _Write-StandardMessage -Message "[CHECK] Lock file '$lockFilePath' already absent on release."
+        }
+    }
+
+    # copies a single file with retry logic and optional timestamp preservation
+    function local:_Copy-ItemWithRetry {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$SourceFullPath,
+            [Parameter(Mandatory = $true)]
+            [string]$DestinationFullPath,
+            [Parameter(Mandatory = $true)]
+            [int]$RetryCount,
+            [Parameter(Mandatory = $true)]
+            [int]$RetryDelaySeconds,
+            [Parameter(Mandatory = $true)]
+            [string]$PreserveTimestamp,
+            [Parameter()]
+            [long]$LargeFileSizeThresholdBytes = [long](1024 * 1024 * 200)
+        )
+
+        $maxAttempts = $RetryCount + 1
+        $attempt = 0
+
+        $fileSizeBytes = 0
+        $shouldLogLargeFile = $false
+        $fileName = Split-Path -Path $SourceFullPath -Leaf
+
+        if ($LargeFileSizeThresholdBytes -gt 0) {
+            try {
+                $fileInfo = Get-Item -LiteralPath $SourceFullPath -Force
+                $fileSizeBytes = [long]$fileInfo.Length
+                if ($fileSizeBytes -ge $LargeFileSizeThresholdBytes) {
+                    $shouldLogLargeFile = $true
+                }
+            }
+            catch {
+                _Write-StandardMessage -Message "[WRN] Could not read file size for '$SourceFullPath' when evaluating large-file threshold. Proceeding without size-based progress logging. $($_.Exception.Message)" -Level 'WRN'
+            }
+        }
+
+        while ($attempt -lt $maxAttempts) {
+            try {
+                $destinationDirectory = Split-Path -Path $DestinationFullPath -Parent
+                if (-not [string]::IsNullOrEmpty($destinationDirectory)) {
+                    [System.IO.Directory]::CreateDirectory($destinationDirectory) | Out-Null
+                }
+
+                if ($attempt -eq 0 -and $shouldLogLargeFile) {
+                    $sizeMB = 0.0
+                    if ($fileSizeBytes -gt 0) {
+                        $sizeMB = [Math]::Round([double]$fileSizeBytes / 1048576.0, 2)
+                    }
+
+                    _Write-StandardMessage -Message "[STATUS] Currently copying large file (about $sizeMB MB), this may take a while: '$fileName'."
+                }
+
+                Copy-Item -LiteralPath $SourceFullPath -Destination $DestinationFullPath -Force -ErrorAction Stop
+
+                if ($PreserveTimestamp -eq 'Enabled') {
+                    try {
+                        $sourceInfo = Get-Item -LiteralPath $SourceFullPath -Force
+                        $destInfo = Get-Item -LiteralPath $DestinationFullPath -Force
+                        $destInfo.LastWriteTimeUtc = $sourceInfo.LastWriteTimeUtc
+                        $destInfo.CreationTimeUtc = $sourceInfo.CreationTimeUtc
+                    }
+                    catch {
+                        _Write-StandardMessage -Message "[ERR] Failed to preserve timestamps for '$DestinationFullPath': $($_.Exception.Message)" -Level 'ERR'
+                        throw
+                    }
+                }
+
+                if ($attempt -gt 0) {
+                    _Write-StandardMessage -Message "[STATUS] Successfully copied '$SourceFullPath' to '$DestinationFullPath' after retry attempt $attempt."
+                }
+
+                break
+            }
+            catch {
+                $attempt = $attempt + 1
+
+                if ($attempt -ge $maxAttempts) {
+                    _Write-StandardMessage -Message "[ERR] Failed to copy '$SourceFullPath' to '$DestinationFullPath' after $maxAttempts attempts. $($_.Exception.Message)" -Level 'ERR'
+                    throw "Sync-DirectoryTreeLockSafe failed to copy '$SourceFullPath' to '$DestinationFullPath' after $maxAttempts attempts. $($_.Exception.Message)"
+                }
+                else {
+                    _Write-StandardMessage -Message "[WRN] Copy attempt $attempt of $maxAttempts failed for '$SourceFullPath' to '$DestinationFullPath'. Waiting $RetryDelaySeconds seconds before retry. $($_.Exception.Message)" -Level 'WRN'
+                    Start-Sleep -Seconds $RetryDelaySeconds
+                }
+            }
+        }
+    }
+
+    _Write-StandardMessage -Message "--- Sync-DirectoryTreeLockSafe: synchronize directory trees ---"
+
+    if (-not (Test-Path -LiteralPath $SourcePath -PathType Container)) {
+        throw "Source directory '$SourcePath' does not exist or is not a directory."
+    }
+
+    $removedFilesCount = 0
+    $removedDirectoriesCount = 0
+    $createdDirectoriesCount = 0
+    $copiedFilesCount = 0
+
+    $sourceRootResolved = (Resolve-Path -LiteralPath $SourcePath).ProviderPath
+    $destinationRootResolved = $null
+
+    $sourceLockAcquired = $false
+    $sourceLockFileInstanceName = $null
+    $destinationLockAcquired = $false
+
+    try {
+        _Acquire-SourceLock -RootPath $sourceRootResolved -LockFileName $sourceLockBaseName -DestinationLockFileName $destinationLockFileName -RetryCount $LockRetryCount -RetryDelaySeconds $LockRetryDelaySeconds -LockTokenExpiryHours $LockTokenExpiryHours -LockAcquired ([ref]$sourceLockAcquired) -LockFileNameInstance ([ref]$sourceLockFileInstanceName)
+
+        if (-not (Test-Path -LiteralPath $DestinationPath -PathType Container)) {
+            try {
+                New-Item -ItemType Directory -Path $DestinationPath -Force -ErrorAction Stop | Out-Null
+                $createdDirectoriesCount = $createdDirectoriesCount + 1
+                _Write-StandardMessage -Message "[CREATE] Created destination root '$DestinationPath'."
+            }
+            catch {
+                _Write-StandardMessage -Message "[ERR] Failed to create destination root '$DestinationPath': $($_.Exception.Message)" -Level 'ERR'
+                throw "Failed to create destination directory '$DestinationPath'. $($_.Exception.Message)"
+            }
+        }
+
+        $destinationRootResolved = (Resolve-Path -LiteralPath $DestinationPath).ProviderPath
+
+        if ([string]::Equals($sourceRootResolved, $destinationRootResolved, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Source and destination paths must be different."
+        }
+
+        _Acquire-Lock -RootPath $destinationRootResolved -LockFileName $destinationLockFileName -SourceLockFileName $sourceLockBaseName -RetryCount $LockRetryCount -RetryDelaySeconds $LockRetryDelaySeconds -LockTokenExpiryHours $LockTokenExpiryHours
+        $destinationLockAcquired = $true
+
+        $sourceFileSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        $sourceDirSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        $null = $sourceDirSet.Add([string]::Empty)
+
+        $sourceItems = Get-ChildItem -LiteralPath $sourceRootResolved -Recurse -Force
+
+        foreach ($item in $sourceItems) {
+            $relativePath = $item.FullName.Substring($sourceRootResolved.Length).TrimStart('\', '/')
+
+            if (-not [string]::IsNullOrEmpty($relativePath)) {
+                $segments = $relativePath -split '[\\/]+'
+                $name = $segments[$segments.Length - 1]
+
+                if ([string]::Equals($name, $destinationLockFileName, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    [string]::Equals($name, $sourceLockBaseName, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    $name.StartsWith($sourceLockBaseName + '.', [System.StringComparison]::OrdinalIgnoreCase)) {
+                    continue
+                }
+            }
+
+            if ($item.PSIsContainer) {
+                if (-not $sourceDirSet.Contains($relativePath)) {
+                    $null = $sourceDirSet.Add($relativePath)
+                }
+            }
+            else {
+                if (-not $sourceFileSet.Contains($relativePath)) {
+                    $null = $sourceFileSet.Add($relativePath)
+                }
+            }
+        }
+
+        $destFileSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        $destDirSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        $null = $destDirSet.Add([string]::Empty)
+
+        $destItems = Get-ChildItem -LiteralPath $destinationRootResolved -Recurse -Force
+
+        foreach ($item in $destItems) {
+            $relativePath = $item.FullName.Substring($destinationRootResolved.Length).TrimStart('\', '/')
+
+            if ($item.PSIsContainer) {
+                if (-not $destDirSet.Contains($relativePath)) {
+                    $null = $destDirSet.Add($relativePath)
+                }
+            }
+            else {
+                if (-not $destFileSet.Contains($relativePath)) {
+                    $null = $destFileSet.Add($relativePath)
+                }
+            }
+        }
+
+        if ($destDirSet.Count -gt 0 -or $destFileSet.Count -gt 0) {
+            $destTraversal = _Get-DirectoryTraversalOrder -Path $destinationRootResolved
+
+            foreach ($destItem in $destTraversal) {
+                $relativePath = $destItem.FullName.Substring($destinationRootResolved.Length).TrimStart('\', '/')
+
+                if (-not [string]::IsNullOrEmpty($relativePath)) {
+                    $segments = $relativePath -split '[\\/]+'
+                    $name = $segments[$segments.Length - 1]
+                    if ([string]::Equals($name, $destinationLockFileName, [System.StringComparison]::OrdinalIgnoreCase) -or
+                        [string]::Equals($name, $sourceLockBaseName, [System.StringComparison]::OrdinalIgnoreCase) -or
+                        $name.StartsWith($sourceLockBaseName + '.', [System.StringComparison]::OrdinalIgnoreCase)) {
+                        continue
+                    }
+                }
+
+                if ($destItem.PSIsContainer) {
+                    if (-not $sourceDirSet.Contains($relativePath)) {
+                        try {
+                            _Write-StandardMessage -Message "[REMOVE] Removing extra directory '$($destItem.FullName)'."
+                            Remove-Item -LiteralPath $destItem.FullName -Recurse -Force -ErrorAction Stop
+                            $removedDirectoriesCount = $removedDirectoriesCount + 1
+                        }
+                        catch {
+                            _Write-StandardMessage -Message "[ERR] Failed to remove directory '$($destItem.FullName)': $($_.Exception.Message)" -Level 'ERR'
+                            throw "Failed to remove extra directory '$($destItem.FullName)'. $($_.Exception.Message)"
+                        }
+                    }
+                }
+                else {
+                    if (-not $sourceFileSet.Contains($relativePath)) {
+                        try {
+                            _Write-StandardMessage -Message "[REMOVE] Removing extra file '$($destItem.FullName)'."
+                            Remove-Item -LiteralPath $destItem.FullName -Force -ErrorAction Stop
+                            $removedFilesCount = $removedFilesCount + 1
+                        }
+                        catch {
+                            _Write-StandardMessage -Message "[ERR] Failed to remove file '$($destItem.FullName)': $($_.Exception.Message)" -Level 'ERR'
+                            throw "Failed to remove extra file '$($destItem.FullName)'. $($_.Exception.Message)"
+                        }
+                    }
+                }
+            }
+        }
+
+        $sourceDirectories = Get-ChildItem -LiteralPath $sourceRootResolved -Recurse -Directory -Force
+
+        $directoryDecorated = @()
+        foreach ($dir in $sourceDirectories) {
+            $relativePath = $dir.FullName.Substring($sourceRootResolved.Length).TrimStart('\', '/')
+            $segments = @()
+            if (-not [string]::IsNullOrEmpty($relativePath)) {
+                $segments = $relativePath -split '[\\/]+'
+            }
+            $depth = $segments.Length
+
+            $directoryDecorated += [PSCustomObject]@{
+                Directory = $dir
+                Depth     = $depth
+            }
+        }
+
+        if ($directoryDecorated.Count -gt 0) {
+            $orderedDirectories = @(
+                $directoryDecorated |
+                    Sort-Object -Property Depth |
+                    ForEach-Object { $_.Directory }
+            )
+
+            foreach ($dir in $orderedDirectories) {
+                $relativePath = $dir.FullName.Substring($sourceRootResolved.Length).TrimStart('\', '/')
+                if (-not [string]::IsNullOrEmpty($relativePath)) {
+                    $destDirFullPath = Join-Path -Path $destinationRootResolved -ChildPath $relativePath
+
+                    if (-not (Test-Path -LiteralPath $destDirFullPath -PathType Container)) {
+                        try {
+                            [System.IO.Directory]::CreateDirectory($destDirFullPath) | Out-Null
+                            $createdDirectoriesCount = $createdDirectoriesCount + 1
+                            _Write-StandardMessage -Message "[CREATE] Ensured directory '$destDirFullPath' exists."
+                        }
+                        catch {
+                            _Write-StandardMessage -Message "[ERR] Failed to ensure directory '$destDirFullPath' exists: $($_.Exception.Message)" -Level 'ERR'
+                            throw "Failed to create or validate directory '$destDirFullPath'. $($_.Exception.Message)"
+                        }
+                    }
+                }
+            }
+        }
+
+        $sourceFiles = Get-ChildItem -LiteralPath $sourceRootResolved -Recurse -File -Force
+
+        foreach ($file in $sourceFiles) {
+            $relativePath = $file.FullName.Substring($sourceRootResolved.Length).TrimStart('\', '/')
+
+            if (-not [string]::IsNullOrEmpty($relativePath)) {
+                $segments = $relativePath -split '[\\/]+'
+                $name = $segments[$segments.Length - 1]
+                if ([string]::Equals($name, $destinationLockFileName, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    [string]::Equals($name, $sourceLockBaseName, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    $name.StartsWith($sourceLockBaseName + '.', [System.StringComparison]::OrdinalIgnoreCase)) {
+                    continue
+                }
+            }
+
+            $destFileFullPath = Join-Path -Path $destinationRootResolved -ChildPath $relativePath
+
+            _Copy-ItemWithRetry -SourceFullPath $file.FullName -DestinationFullPath $destFileFullPath -RetryCount $CopyRetryCount -RetryDelaySeconds $CopyRetryDelaySeconds -PreserveTimestamp $PreserveTimestamp
+            $copiedFilesCount = $copiedFilesCount + 1
+        }
+
+        _Write-StandardMessage -Message "[SUMMARY] Sync-DirectoryTreeLockSafe completed. Created $createdDirectoriesCount directories, removed $removedDirectoriesCount directories, removed $removedFilesCount files, copied $copiedFilesCount files."
+    }
+    finally {
+        if ($destinationLockAcquired -and ($null -ne $destinationRootResolved)) {
+            _Release-Lock -RootPath $destinationRootResolved -LockFileName $destinationLockFileName
+        }
+
+        if ($sourceLockAcquired -and (-not [string]::IsNullOrEmpty($sourceLockFileInstanceName))) {
+            _Release-Lock -RootPath $sourceRootResolved -LockFileName $sourceLockFileInstanceName
+        }
+    }
+}
+

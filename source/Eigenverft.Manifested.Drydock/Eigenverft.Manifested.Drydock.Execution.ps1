@@ -465,7 +465,7 @@ function Invoke-ProcessTyped {
         [string]$ReturnType = 'Text'
     )
 
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
         [CmdletBinding()]

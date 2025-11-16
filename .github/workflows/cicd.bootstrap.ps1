@@ -491,7 +491,7 @@ prerelease is available, no change is made.
         [string]$AllowPrerelease = 'true'
     )
 
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         [CmdletBinding()]
         param(

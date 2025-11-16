@@ -58,7 +58,7 @@ Convert-FilePlaceholders -InputFile './in.tpl' -OutputFile './out.txt' -Replacem
 
     # Inline helpers (local scope, deterministic, no pipeline writes)
 
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
         [CmdletBinding()]
@@ -392,7 +392,7 @@ Convert-TemplateFilePlaceholders -TemplateFile './appsettings.tlp.json' -Replace
 
     # Inline helpers (local scope, deterministic, no pipeline writes)
 
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
         [CmdletBinding()]

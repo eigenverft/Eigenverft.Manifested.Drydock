@@ -90,7 +90,7 @@ Requires internet access. Uses GitHub's public API and a default User-Agent. Han
 
     # ---- Inline helpers (local scope only) ---------------------------------
 
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
         [CmdletBinding()]

@@ -37,7 +37,7 @@ If set, the function does not return the object to the pipeline (console stays c
     # Local helper functions
     # -----------------------
 
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         [CmdletBinding()]
         param(
@@ -2276,7 +2276,7 @@ New-DotnetBillOfMaterialsReport -jsonInput $json -OutputFile 'reports/bom.md' -O
     )
 
     # ---------------- helpers (local scope; no pipeline writes) ----------------
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         [CmdletBinding()]
         param(
@@ -2699,7 +2699,7 @@ New-ThirdPartyNotice
     )
 
     # ---------------- Inline helpers (local scope) ----------------
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         # This function has exceptions from the rest of any ruleset.
         [CmdletBinding()]
@@ -2978,7 +2978,7 @@ Export-PackageLicenseTexts3 -JsonPath .\ThirdPartyLicencesNotices.json -FillMiss
     )
 
     # -------- minimal console logger (idempotent; PS5-safe) --------
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         [CmdletBinding()]
         param(

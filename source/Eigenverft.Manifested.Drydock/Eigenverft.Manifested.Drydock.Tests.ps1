@@ -50,7 +50,7 @@ function Test-VariableValue {
         [switch]$ExitIfNullOrEmpty
     )
 
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
         [CmdletBinding()]
@@ -364,7 +364,7 @@ Reviewer note: Prefer -ExitIfNotFound for CI/bootstrap; use -ThrowIfNotFound whe
         [int]$ExitCode = 127
     )
 
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
         [CmdletBinding()]
@@ -693,7 +693,7 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
         [Parameter()][switch]$ExitOnFailure
     )
 
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
         [CmdletBinding()]

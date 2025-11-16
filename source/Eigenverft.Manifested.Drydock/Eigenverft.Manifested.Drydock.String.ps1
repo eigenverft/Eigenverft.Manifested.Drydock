@@ -67,7 +67,7 @@ Join-Text -InputObject @('x', '', 'y') -LogLevel INF
 
     # Inline helper for minimal, structured console messages.
     # NOTE: This helper is explicitly allowed to deviate from some rules per your spec.
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         [CmdletBinding()]
         param(

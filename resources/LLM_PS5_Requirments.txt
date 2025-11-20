@@ -37,7 +37,6 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
    - The _Write-StandardMessage is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise, it should be implmented as is,including no formatting changes.
     function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
-        [CmdletBinding()]
         param(
             [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',

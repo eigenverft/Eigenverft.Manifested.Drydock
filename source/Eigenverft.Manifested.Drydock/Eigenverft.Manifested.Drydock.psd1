@@ -126,7 +126,6 @@ FunctionsToExport = @(
     'Copy-FilesRecursively',
     'Join-FileText',
     'Sync-DirectoryTreeLockSafe',
-    'Sync-DirectoryTreeLockSafe2',
 
     # ...Logging.ps1
     'Write-ConsoleLog',

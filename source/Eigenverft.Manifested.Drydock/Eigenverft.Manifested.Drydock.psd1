@@ -73,6 +73,7 @@ FunctionsToExport = @(
 
     # ...Compression.ps1
     'Compress-Directory',
+    'Add-FileToZipArchive',
 
     # ...Convert.ps1
     'Convert-FilePlaceholders',

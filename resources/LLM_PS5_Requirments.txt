@@ -33,8 +33,8 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
    - If _Write-StandardMessage is defined in the function (or available in scope), all log-style messages (status, progress, summary, warnings, errors that are not thrown) MUST go through _Write-StandardMessage.
    - Do NOT use other Write-* cmdlets for logging in that function.
    - If _Write-StandardMessage is not available, use Write-Host for key actions. Do NOT use Write-Output, Write-Verbose, Write-Information, or Write-Error for logging
-   - All write message functions should have Tags at the begining showing the operation e.g [PROGRESS],[STATUS],[OK],[VALUE],[CHECK],[SOURCE],[TRUST],[CREATE],[SKIP],[SUMMARY] just examples freely choose.
-   - The _Write-StandardMessage is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise, it should be implmented as is,including no formatting changes.
+   - All write message functions should have string tag at the begining showing the operation e.g [PROGRESS],[STATUS],[OK],[VALUE],[CHECK],[SOURCE],[TRUST],[CREATE],[SKIP],[SUMMARY] just examples freely choose.
+   - The _Write-StandardMessage is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise, it should be implmented as is,including no formatting changes. e.g local:_Write-StandardMessage -Message "[Tag] ..."
     function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param(

@@ -130,7 +130,92 @@ function Remove-FilesByPattern {
         [string]$RemoveEmptyDirs = 'Yes'
     )
 
-    # [reviewer] Validate root path early and fail fast with concise message.
+    function local:_Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
+        )
+        if ($null -eq $Message) { $Message = [string]::Empty }
+        $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
+        if(-not $PSBoundParameters.ContainsKey('MinLevel')){
+            $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+            $MinLevel=if($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)){[string]$gv.Value}else{'INF'}
+        }
+        $lvl=$Level.ToUpperInvariant()
+        $min=$MinLevel.ToUpperInvariant()
+        $sev=$sevMap[$lvl];if($null -eq $sev){$lvl='INF';$sev=$sevMap['INF']}
+        $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
+        if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
+        if($sev -lt $gate){return}
+        $ts=[DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
+        $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
+        if($stack){
+            # 1: prefer first non-underscore function not defined in the helper's own file
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+            }
+            # 2: fallback to first non-underscore function (any file)
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')){$caller=$f;break}
+                }
+            }
+            # 3: fallback to first non-helper frame not from helper's own file
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                    if($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+                }
+            }
+            # 4: final fallback to first non-helper frame
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName){$caller=$f;break}
+                }
+            }
+        }
+        if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
+        $lineNumber=$null ; 
+        $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Position']
+            if($p -and $p.Value){
+                $sp=$p.Value.PSObject.Properties['StartLineNumber'];if($sp -and $sp.Value){$lineNumber=[string]$sp.Value}
+            }
+        }
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Location']
+            if($p -and $p.Value){
+                $m=[regex]::Match([string]$p.Value,':(\d+)\s+char:','IgnoreCase');if($m.Success -and $m.Groups.Count -gt 1){$lineNumber=$m.Groups[1].Value}
+            }
+        }
+        $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
+        if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
+        $prefix="[$ts "
+        $suffix="] [$file] $Message"
+        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='Red';Back='DarkRed'}}[$lvl]
+        $fore=$cfg.Fore
+        $back=$cfg.Back
+        $isInteractive = [System.Environment]::UserInteractive
+        if($isInteractive -and ($fore -or $back)){
+            Write-Host -NoNewline $prefix
+            if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
+            elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
+            elseif($back){Write-Host -NoNewline $lvl -BackgroundColor $back}
+            Write-Host $suffix
+        } else {
+            Write-Host "$prefix$lvl$suffix"
+        }
+
+        if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
+    }
+
+    # Validate root path early and fail fast with concise message.
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
         throw "The specified path '$Path' does not exist or is not a directory."
     }
@@ -174,19 +259,27 @@ function Remove-FilesByPattern {
     while ($stack.Count -gt 0) {
         $dir = $stack.Pop()
 
-        # [reviewer] Track directories for later empty-dir cleanup; skip the root itself.
+        # Track directories for later empty-dir cleanup; skip the root itself.
         if ($dir.FullName -ne $rootFull) { [void]$allDirs.Add($dir) }
 
         # Discover subdirectories; continue on errors.
         $subs = @()
-        try { $subs = Get-ChildItem -LiteralPath $dir.FullName -Directory -ErrorAction Stop }
-        catch { Write-Warning "Cannot list directories in '$($dir.FullName)': $_" }
+        try {
+            $subs = Get-ChildItem -LiteralPath $dir.FullName -Directory -ErrorAction Stop
+        }
+        catch {
+            local:_Write-StandardMessage -Message ("Cannot list directories in '{0}': {1}" -f $dir.FullName, $_) -Level 'WRN'
+        }
         foreach ($sd in $subs) { $stack.Push($sd) }
 
         # List files; continue on errors.
         $files = @()
-        try { $files = Get-ChildItem -LiteralPath $dir.FullName -File -ErrorAction Stop }
-        catch { Write-Warning "Cannot list files in '$($dir.FullName)': $_" }
+        try {
+            $files = Get-ChildItem -LiteralPath $dir.FullName -File -ErrorAction Stop
+        }
+        catch {
+            local:_Write-StandardMessage -Message ("Cannot list files in '{0}': {1}" -f $dir.FullName, $_) -Level 'WRN'
+        }
 
         # Match filenames against wildcard set; first-hit wins.
         foreach ($f in $files) {
@@ -206,7 +299,7 @@ function Remove-FilesByPattern {
             }
         }
         catch {
-            Write-Warning "Failed to delete '$($fi.FullName)': $_"
+            local:_Write-StandardMessage -Message ("Failed to delete '{0}': {1}" -f $fi.FullName, $_) -Level 'WRN'
         }
     }
 
@@ -226,15 +319,15 @@ function Remove-FilesByPattern {
                 }
             }
             catch {
-                # [reviewer] Ignore cleanup failures; keep traversal robust/cross-platform.
+                # Ignore cleanup failures; keep traversal robust/cross-platform.
             }
         }
     }
 
-    # Minimal, consistent logging per policy.
-    Write-Host ("Deleted files: {0}" -f $deleted)
+    # Minimal, consistent logging via local:_Write-StandardMessage.
+    local:_Write-StandardMessage -Message ("Deleted files: {0}" -f $deleted) -Level 'INF'
     if ($RemoveEmptyDirs -eq 'Yes') {
-        Write-Host ("Removed empty directories: {0}" -f $removedDirs)
+        local:_Write-StandardMessage -Message ("Removed empty directories: {0}" -f $removedDirs) -Level 'INF'
     }
 }
 

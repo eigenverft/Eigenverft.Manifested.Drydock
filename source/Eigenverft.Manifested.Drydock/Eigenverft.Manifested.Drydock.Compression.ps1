@@ -152,6 +152,9 @@ Rebuilds out.zip using fastest compression.
         if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
     }
 
+    # First call: title (no tag prefix in message)
+    _Write-StandardMessage -Message '--- Compress directory to zip archive ---' -Level 'INF'
+
     # Require Compress-Archive (fail fast if missing).
     $compressCmd = Get-Command -Name 'Compress-Archive' -ErrorAction SilentlyContinue
     if ($null -eq $compressCmd) {
@@ -174,7 +177,7 @@ Rebuilds out.zip using fastest compression.
         if (-not (Test-Path -LiteralPath $DestinationParentPath -PathType Container)) {
             New-Item -ItemType Directory -Path $DestinationParentPath -Force | Out-Null
             $DestinationParentDirectory = $DestinationParentPath
-            _Write-StandardMessage -Message ("Created output directory: {0}" -f $DestinationParentDirectory)
+            _Write-StandardMessage -Message ("[CREATE] Created output directory: {0}" -f $DestinationParentDirectory) -Level 'INF'
         }
     }
 
@@ -182,25 +185,39 @@ Rebuilds out.zip using fastest compression.
     $DestinationFileExists = Test-Path -LiteralPath $DestinationFile -PathType Leaf
     if ($DestinationFileExists) {
         if ($FilePolicy -eq 'SkipIfExists') {
-            _Write-StandardMessage -Message ("Zip already present, skipped: {0}" -f $DestinationFile)
+            _Write-StandardMessage -Message ("[SKIP] Zip already present, skipped: {0}" -f $DestinationFile) -Level 'INF'
             return
         }
         if ($FilePolicy -eq 'OverwriteIfExists') {
             Remove-Item -LiteralPath $DestinationFile -Force
-            _Write-StandardMessage -Message ("Removed existing zip (overwrite policy): {0}" -f $DestinationFile)
+            _Write-StandardMessage -Message ("[OVERWRITE] Removed existing zip (overwrite policy): {0}" -f $DestinationFile) -Level 'INF'
         }
     }
 
     # Compress directory contents (not the root directory node).
     $SourceContentPattern = Join-Path -Path $SourceFullPath -ChildPath '*'
+
+    $oldProgressPreference = $ProgressPreference
     try {
+        # Temporarily suppress progress bar from Compress-Archive.
+        $ProgressPreference = 'SilentlyContinue'
+
+        _Write-StandardMessage -Message (
+            "[STATUS] Starting compression from '{0}' to '{1}' (Level={2}, Policy={3})." -f
+            $SourceFullPath, $DestinationFile, $CompressionLevel, $FilePolicy
+        ) -Level 'INF'
+
         Compress-Archive -Path $SourceContentPattern -DestinationPath $DestinationFile -CompressionLevel $CompressionLevel
     } catch {
         $ErrorMessage = $_.Exception.Message
+        _Write-StandardMessage -Message ("[ERR] Failed to create archive: {0}" -f $ErrorMessage) -Level 'ERR'
         throw ("Failed to create archive. {0}" -f $ErrorMessage)
+    } finally {
+        # Restore previous progress preference.
+        $ProgressPreference = $oldProgressPreference
     }
 
-    _Write-StandardMessage -Message ("Created zip: {0}" -f $DestinationFile)
+    _Write-StandardMessage -Message ("[OK] Compression finished, created zip: {0}" -f $DestinationFile) -Level 'INF'
 }
 
 

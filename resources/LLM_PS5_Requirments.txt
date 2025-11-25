@@ -26,23 +26,23 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
    - USE try/catch only where it adds value; rethrow with concise, actionable messages.
 
 8) OUTPUT & LOGGING
-   - EMIT Write- or _Write-StandardMessage ONLY for key actions (created X, added/removed Y, enabled/disabled Z, updated trust). Keep minimal and consistent.
+   - EMIT Write- or _Write-StandardMessage ONLY for key actions (created X, added/removed Y, enabled/disabled Z, updated trust).
    - Format the Write function implement a inline helper function for it suggested format.
-   - The _Write-StandardMessage is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise, it should be implmented as is.
-    function _Write-StandardMessage {
+   - The first call inside the main function should emit some title like write- e.g. --- What the function is about etc. --- in this case no tags required.
+   - For logging / user-facing messages, prefer _Write-StandardMessage when it is available.
+   - If _Write-StandardMessage is defined in the function (or available in scope), all log-style messages (status, progress, summary, warnings, errors that are not thrown) MUST go through _Write-StandardMessage.
+   - Do NOT use other Write-* cmdlets for logging in that function.
+   - If _Write-StandardMessage is not available, use Write-Host for key actions. Do NOT use Write-Output, Write-Verbose, Write-Information, or Write-Error for logging
+   - All write message functions should have string tag at the begining showing the operation e.g [PROGRESS],[STATUS],[OK],[VALUE],[CHECK],[SOURCE],[TRUST],[CREATE],[SKIP],[SUMMARY] just examples freely choose. e.g local:_Write-StandardMessage -Message "[Tag] ..."
+   - The _Write-StandardMessage is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise, it should be implmented as is,including no formatting changes. 
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
-        # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
-        [CmdletBinding()]
         param(
-            [Parameter(Mandatory=$true)][string]$Message,
+            [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
         )
-
-        if ($null -eq $Message) {
-            $Message = [string]::Empty
-        }
-
+        if ($null -eq $Message) { $Message = [string]::Empty }
         $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
         if(-not $PSBoundParameters.ContainsKey('MinLevel')){
             $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
@@ -54,7 +54,7 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
         $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
         if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
         if($sev -lt $gate){return}
-        $ts=[DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $ts=[DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
         $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
         if($stack){
             # 1: prefer first non-underscore function not defined in the helper's own file
@@ -107,7 +107,6 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
         $fore=$cfg.Fore
         $back=$cfg.Back
         $isInteractive = [System.Environment]::UserInteractive
-
         if($isInteractive -and ($fore -or $back)){
             Write-Host -NoNewline $prefix
             if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
@@ -122,13 +121,13 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
     }
 
    Examples:
-   _Write-StandardMessage -Message "Loaded Replace-FilePlaceholders function."
+   _Write-StandardMessage -Message "[STATUS] Loaded Replace-FilePlaceholders function."
 
    try {
       throw "Test error"
    }
    catch {
-      _Write-StandardMessage -Message "$($_.PSMessageDetails)" -Level ERR  # Format $_. output properly  
+      _Write-StandardMessage -Message "[ERROR] $($_.PSMessageDetails)" -Level ERR  # Format $_. output properly  
    }
 
 9) IDEMPOTENCY
@@ -151,8 +150,9 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
     - Do not make changes that a not requested, if you spot a previous error write a statement about it in the end.
 
 14) INLINE HELPERS (SAFE MODE)
-    - SCOPE: Inline (nested) helpers defined with function MUST be created in the local scope: function _Name { ... }.
-    - NAMING: Use a distinct prefix to avoid collisions, e.g. _ (example: function _Norm-List { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param(...params...) ...code... }). PSUseApprovedVerbs needs to be between funcname and param.
+    - SCOPE: Inline (nested) helpers defined with function MUST be created in the local scope: function _Name { ... }. (see INLINE HELPERS NAMING)
+    - NAMING: Use a distinct prefix to avoid collisions, e.g. _ (example: #ultrashortfunctiondescription function local:_Norm-List { [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] param(...params...) ...code... }). PSUseApprovedVerbs needs to be between funcname and param.
+    - COMMON PROBLEMS: Do not forget that inline helper should not have a <# .SYNOPSIS #> block only one comment about the function, as shown in the example before.
     - COMMON PROBLEMS: Don't forget [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")] in inline helper functions.
     - NO OUTPUT: Helpers MUST NOT write to the pipeline. If needed, return values explicitly and keep them inside the outer function.
     - QUIET LOGGING: Helpers MUST NOT use Write-Output, Write-Error, Write-Verbose, or Write-Information. Use Write-Host only or implement _Write-StandardMessage in function for key actions.
@@ -171,6 +171,9 @@ GENERAL POWERSHELL REQUIREMENTS (APPLY TO ALL FUNCTIONS)
 
 17) RETURN VALUES OF FUNCTIONS
    - Whenever a function is meant to return multiple elements as one definitive value (a single array, not a stream), end it with ,@(...) - or, if you want a typed array, with ,([type[]]@(...))
+
+18) LINE CONTINUATION
+   - For all PowerShell you generate, never use the backtick (`) for line continuation. Keep each command on a single line, or use other techniques like splatting or separate statements, but do not insert backticks for line breaks.
 
 DEFINITE: A function is "DONE" only if it meets ALL requirements above.
 

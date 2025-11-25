@@ -67,7 +67,7 @@ Join-Text -InputObject @('x', '', 'y') -LogLevel INF
 
     # Inline helper for minimal, structured console messages.
     # NOTE: This helper is explicitly allowed to deviate from some rules per your spec.
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         [CmdletBinding()]
         param(
@@ -96,7 +96,7 @@ Join-Text -InputObject @('x', '', 'y') -LogLevel INF
         $gate = $sevMap[$min]
         if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) { $lvl = $min ; $sev = $gate }
         if ($sev -lt $gate) { return }
-        $ts = ([DateTime]::UtcNow).ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $ts = [DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
         $stack      = Get-PSCallStack
         $helperName = $MyInvocation.MyCommand.Name
         $orgFunc    = $null

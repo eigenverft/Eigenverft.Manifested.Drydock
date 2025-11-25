@@ -29,11 +29,12 @@ $remoteResourcesOk = Test-RemoteResourcesAvailable -Quiet
 if ($remoteResourcesOk)
 {
     # Install the required modules to run this script, Eigenverft.Manifested.Drydock needs to be Powershell 5.1 and Powershell 7+ compatible
-    Install-Module -Name 'Eigenverft.Manifested.Drydock' -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber -AllowPrerelease -ErrorAction Stop
+    Update-ModuleIfNeeded -ModuleName 'Eigenverft.Manifested.Drydock'
+    #Install-Module -Name 'Eigenverft.Manifested.Drydock' -Repository "PSGallery" -Scope CurrentUser -Force -AllowClobber -AllowPrerelease -ErrorAction Stop
 }
 
 # Verify the module is available, if not found exit the script with error
-Test-ModuleAvailable -Name 'Eigenverft.Manifested.Drydock' -IncludePrerelease -ExitIfNotFound -Quiet
+$null = Test-ModuleAvailable -Name 'Eigenverft.Manifested.Drydock' -IncludePrerelease -ExitIfNotFound -Quiet
 
 # Required for updating PowerShellGet and PackageManagement providers in local PowerShell 5.x environments
 Initialize-PowerShellMiniBootstrap
@@ -44,21 +45,17 @@ Test-PsGalleryPublishPrereqsOffline -ExitOnFailure
 # Clean up previous versions of the module to avoid conflicts in local PowerShell environments
 Uninstall-PreviousModuleVersions -ModuleName 'Eigenverft.Manifested.Drydock'
 
-# Import optional integration script if it exists
-Import-Script -File @("$PSScriptRoot\cicd.integration.ps1") -NormalizeSeparators
-Write-IntegrationMsg -Message "This function is defined in the optional integration script. That should be integrated into this main module script."
-
 # In the case the secrets are not passed as parameters, try to get them from the secrets file, local development or CI/CD environment
 # TBD https://learn.microsoft.com/de-de/powershell/utility-modules/secretmanagement/overview?view=ps-modules
 $PsGalleryApiKey = Get-ConfigValue -Check $PsGalleryApiKey -FilePath (Join-Path $PSScriptRoot 'cicd.secrets.json') -Property 'PsGalleryApiKey'
 Test-VariableValue -Variable { $PsGalleryApiKey } -ExitIfNullOrEmpty -HideValue
 
 # Verify required commands are available
-if ($cmd = Test-CommandAvailable -Command "git") { Write-Host "Test-CommandAvailable: $($cmd.Name) $($cmd.Version) found at $($cmd.Source)" } else { Write-Error "git not found"; exit 1 }
-if ($cmd = Test-CommandAvailable -Command "dotnet") { Write-Host "Test-CommandAvailable: $($cmd.Name) $($cmd.Version) found at $($cmd.Source)" } else { Write-Error "dotnet not found"; exit 1 }
+$null = Test-CommandAvailable -Command "dotnet" -ExitIfNotFound
+$null = Test-CommandAvailable -Command "git" -ExitIfNotFound
 
 # Enable the .NET tools specified in the manifest file
-Enable-TempDotnetTools -ManifestFile "$PSScriptRoot\.config\dotnet-tools\dotnet-tools.json" -NoReturn
+# Enable-TempDotnetTools -ManifestFile "$PSScriptRoot\.config\dotnet-tools\dotnet-tools.json" -NoReturn
 
 # Preload environment information
 $runEnvironment = Get-RunEnvironment
@@ -103,12 +100,12 @@ Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPre
 Write-Host "===> Testing module manifest at: $($manifestFile.FullName)" -ForegroundColor Cyan
 Test-ModuleManifest -Path $($manifestFile.FullName)
 
+Publish-Module -Path $($manifestFile.DirectoryName) -Repository "$LocalPowershellGalleryName"
+
 if ($remoteResourcesOk)
 {
     Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$PsGalleryApiKey"
 }
-
-Publish-Module -Path $($manifestFile.DirectoryName) -Repository "$LocalPowershellGalleryName"
 
 if ($remoteResourcesOk)
 {

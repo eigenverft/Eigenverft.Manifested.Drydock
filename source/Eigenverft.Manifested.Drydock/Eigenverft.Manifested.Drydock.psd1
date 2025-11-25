@@ -73,6 +73,7 @@ FunctionsToExport = @(
 
     # ...Compression.ps1
     'Compress-Directory',
+    'Add-FileToZipArchive',
 
     # ...Convert.ps1
     'Convert-FilePlaceholders',
@@ -125,6 +126,7 @@ FunctionsToExport = @(
     'Resolve-ModulePath',
     'Copy-FilesRecursively',
     'Join-FileText',
+    'Sync-DirectoryTreeLockSafe',
 
     # ...Logging.ps1
     'Write-ConsoleLog',

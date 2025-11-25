@@ -359,7 +359,6 @@ namespace Eigenverft.Tools
 }
 "@
 
-
 if (-not ("Eigenverft.Tools.SafeProcessRunner" -as [type])) {
     if (Test-Path Variable:processHelperSource) {
         if ($processHelperSource) {
@@ -466,14 +465,16 @@ function Invoke-ProcessTyped {
         [string]$ReturnType = 'Text'
     )
 
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
         [CmdletBinding()]
         param(
-            [Parameter(Mandatory=$true)][ValidateNotNull()][string]$Message,
+            [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
         )
+        if ($null -eq $Message) { $Message = [string]::Empty }
         $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
         if(-not $PSBoundParameters.ContainsKey('MinLevel')){
             $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
@@ -485,9 +486,36 @@ function Invoke-ProcessTyped {
         $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
         if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
         if($sev -lt $gate){return}
-        $ts=[DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
-        $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $caller=$null
-        if($stack){for($i=0;$i -lt $stack.Count;$i++){if($stack[$i].FunctionName -ne $helperName){$caller=if($stack.Count -gt ($i+1)){$stack[$i+1]}else{$stack[$i]};break}}}
+        $ts=[DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
+        $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
+        if($stack){
+            # 1: prefer first non-underscore function not defined in the helper's own file
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+            }
+            # 2: fallback to first non-underscore function (any file)
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')){$caller=$f;break}
+                }
+            }
+            # 3: fallback to first non-helper frame not from helper's own file
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                    if($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+                }
+            }
+            # 4: final fallback to first non-helper frame
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName){$caller=$f;break}
+                }
+            }
+        }
         if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
         $lineNumber=$null ; 
         $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
@@ -507,10 +535,11 @@ function Invoke-ProcessTyped {
         if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
         $prefix="[$ts "
         $suffix="] [$file] $Message"
-        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back='DarkRed'}}[$lvl]
+        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='Red';Back='DarkRed'}}[$lvl]
         $fore=$cfg.Fore
         $back=$cfg.Back
-        if($fore -or $back){
+        $isInteractive = [System.Environment]::UserInteractive
+        if($isInteractive -and ($fore -or $back)){
             Write-Host -NoNewline $prefix
             if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
             elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
@@ -519,6 +548,7 @@ function Invoke-ProcessTyped {
         } else {
             Write-Host "$prefix$lvl$suffix"
         }
+
         if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
     }
 
@@ -717,7 +747,7 @@ function Invoke-ProcessTyped {
 
     $resolvedExecutable = Get-Command -Name $Executable -ErrorAction SilentlyContinue
     if ($null -eq $resolvedExecutable) {
-        _Write-StandardMessage -Message "Executable '$Executable' was not found. Install it, add it to PATH, or specify a valid full path." -Level ERR
+        _Write-StandardMessage -Message "[ERROR] Executable '$Executable' not found. Install it, add it to PATH, or specify a valid full path." -Level ERR
         return $null
     }
 
@@ -739,8 +769,8 @@ function Invoke-ProcessTyped {
     $displayArgs          = _InvokeExecMaskArgs -ArgsToMask $finalArgs -SensitiveValues $HideValues
     $normalizedReturnType = $ReturnType.ToLowerInvariant()
 
-    _Write-StandardMessage -Message ("Before Command : (Executable: {0}, Args Count: {1})" -f $resolvedName, $finalArgs.Count) -Level DBG
-    _Write-StandardMessage -Message ("Full Command   : & ""{0}"" {1}" -f $resolvedExecutable.Path, ($displayArgs -join ' ')) -Level INF
+    _Write-StandardMessage -Message ("[PLAN] Executable: {0}, arguments: {1} item(s)." -f $resolvedName, $finalArgs.Count) -Level DBG
+    _Write-StandardMessage -Message ("[EXEC] & ""{0}"" {1}" -f $resolvedExecutable.Path, ($displayArgs -join ' ')) -Level INF
 
     $stopwatch = $null
     if ($MeasureTime) {
@@ -800,11 +830,11 @@ function Invoke-ProcessTyped {
 
     if (-not $isAllowed) {
         if ($CaptureOutput -and $null -ne $result) {
-            _Write-StandardMessage -Message "Captured Output (non-success exit code): $exitCode" -Level WRN
+            _Write-StandardMessage -Message "[OUTPUT] Disallowed exit code $exitCode; dumping captured output." -Level WRN
             foreach ($line in $result) {
                 if (-not [string]::IsNullOrEmpty($line))
                 {
-                    _Write-StandardMessage -Message ([string]$line) -Level INF
+                    _Write-StandardMessage -Message "[OUTPUT] $([string]$line)" -Level INF
                 }
             }
         }
@@ -815,20 +845,20 @@ function Invoke-ProcessTyped {
         }
 
         if ($exitCode -eq 0) {
-            $errorMessage = ("Command '{0} {1}' returned exit code 0, which is disallowed. {2} Translated to custom error code {3}." -f $resolvedName, ($displayArgs -join ' '), $extraErrorMessage, $customErrorCode)
+            $errorMessage = ("[EXIT] Command '{0} {1}' returned exit code 0, which is disallowed. {2} Translated to custom error code {3}." -f $resolvedName, ($displayArgs -join ' '), $extraErrorMessage, $customErrorCode)
             _Write-StandardMessage -Message ($errorMessage + $elapsedSuffix) -Level ERR
             exit $customErrorCode
         }
         else {
-            $errorMessage = ("Command '{0} {1}' returned disallowed exit code {2}. Exiting script with exit code {2}." -f $resolvedName, ($displayArgs -join ' '), $exitCode)
+            $errorMessage = ("[EXIT] Command '{0} {1}' returned disallowed exit code {2}. Exiting script with exit code {2}." -f $resolvedName, ($displayArgs -join ' '), $exitCode)
             _Write-StandardMessage -Message ($errorMessage + $elapsedSuffix) -Level ERR
             exit $exitCode
         }
     }
 
-    $afterMessage = 'After Command'
+    $afterMessage = '[DONE] Command completed.'
     if ($MeasureTime -and $null -ne $stopwatch) {
-        $afterMessage = "After Command  : (Execution time: $($stopwatch.Elapsed))"
+        $afterMessage = "[DONE] Command completed (Execution time: $($stopwatch.Elapsed))"
     }
     _Write-StandardMessage -Message $afterMessage -Level DBG
 

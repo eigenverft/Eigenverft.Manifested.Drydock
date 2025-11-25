@@ -24,7 +24,7 @@ function Test-VariableValue {
     .EXAMPLE
     $currentBranch = "develop"
     Test-VariableValue -Variable { $currentBranch }
-    # Output: Variable Name: currentBranch, Value: develop
+    # Output: Test-VariableValue: currentBranch, Value: develop
 
     .EXAMPLE
     $currentBranch = ""
@@ -34,13 +34,13 @@ function Test-VariableValue {
     .EXAMPLE
     $myHash = @{ Key1 = "Value1"; Key2 = "Value2" }
     Test-VariableValue -Variable { $myHash }
-    # Output: Variable Name: myHash, Value: {"Key1":"Value1","Key2":"Value2"}
+    # Output: Test-VariableValue: myHash, Value: {"Key1":"Value1","Key2":"Value2"}
 
     .NOTES
     The script block must contain a simple variable reference for the AST extraction to work correctly.
     #>
     [CmdletBinding()]
-    [alias("tvv")]
+    [Alias("tvv")]
     param (
         [Parameter(Mandatory = $true)]
         [ScriptBlock]$Variable,
@@ -50,13 +50,218 @@ function Test-VariableValue {
         [switch]$ExitIfNullOrEmpty
     )
 
+    function local:_Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [AllowEmptyString()]
+            [string]$Message,
+
+            [Parameter()]
+            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
+            [string]$Level = 'INF',
+
+            [Parameter()]
+            [ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')]
+            [string]$MinLevel
+        )
+
+        if ($null -eq $Message) {
+            $Message = [string]::Empty
+        }
+
+        $sevMap = @{
+            TRC = 0
+            DBG = 1
+            INF = 2
+            WRN = 3
+            ERR = 4
+            FTL = 5
+        }
+
+        if (-not $PSBoundParameters.ContainsKey('MinLevel')) {
+            $gv = Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+            $MinLevel = if ($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)) {
+                [string]$gv.Value
+            }
+            else {
+                'INF'
+            }
+        }
+
+        $lvl = $Level.ToUpperInvariant()
+        $min = $MinLevel.ToUpperInvariant()
+
+        $sev = $sevMap[$lvl]
+        if ($null -eq $sev) {
+            $lvl = 'INF'
+            $sev = $sevMap['INF']
+        }
+
+        $gate = $sevMap[$min]
+        if ($null -eq $gate) {
+            $min = 'INF'
+            $gate = $sevMap['INF']
+        }
+
+        if ($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4) {
+            $lvl = $min
+            $sev = $gate
+        }
+
+        if ($sev -lt $gate) {
+            return
+        }
+
+        $ts = [DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
+
+        $stack        = Get-PSCallStack
+        $helperName   = $MyInvocation.MyCommand.Name
+        $helperScript = $MyInvocation.MyCommand.ScriptBlock.File
+        $caller       = $null
+
+        if ($stack) {
+            # 1: prefer first non-underscore function not defined in the helper's own file
+            for ($i = 0; $i -lt $stack.Count; $i++) {
+                $f  = $stack[$i]
+                $fn = $f.FunctionName
+                $sn = $f.ScriptName
+                if ($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)) {
+                    $caller = $f
+                    break
+                }
+            }
+            # 2: fallback to first non-underscore function (any file)
+            if (-not $caller) {
+                for ($i = 0; $i -lt $stack.Count; $i++) {
+                    $f  = $stack[$i]
+                    $fn = $f.FunctionName
+                    if ($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')) {
+                        $caller = $f
+                        break
+                    }
+                }
+            }
+            # 3: fallback to first non-helper frame not from helper's own file
+            if (-not $caller) {
+                for ($i = 0; $i -lt $stack.Count; $i++) {
+                    $f  = $stack[$i]
+                    $fn = $f.FunctionName
+                    $sn = $f.ScriptName
+                    if ($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)) {
+                        $caller = $f
+                        break
+                    }
+                }
+            }
+            # 4: final fallback to first non-helper frame
+            if (-not $caller) {
+                for ($i = 0; $i -lt $stack.Count; $i++) {
+                    $f  = $stack[$i]
+                    $fn = $f.FunctionName
+                    if ($fn -and $fn -ne $helperName) {
+                        $caller = $f
+                        break
+                    }
+                }
+            }
+        }
+
+        if (-not $caller) {
+            $caller = [pscustomobject]@{
+                ScriptName   = $PSCommandPath
+                FunctionName = $null
+            }
+        }
+
+        $lineNumber = $null
+
+        $p = $caller.PSObject.Properties['ScriptLineNumber']
+        if ($p -and $p.Value) {
+            $lineNumber = [string]$p.Value
+        }
+
+        if (-not $lineNumber) {
+            $p = $caller.PSObject.Properties['Position']
+            if ($p -and $p.Value) {
+                $sp = $p.Value.PSObject.Properties['StartLineNumber']
+                if ($sp -and $sp.Value) {
+                    $lineNumber = [string]$sp.Value
+                }
+            }
+        }
+
+        if (-not $lineNumber) {
+            $p = $caller.PSObject.Properties['Location']
+            if ($p -and $p.Value) {
+                $m = [regex]::Match([string]$p.Value, ':(\d+)\s+char:', 'IgnoreCase')
+                if ($m.Success -and $m.Groups.Count -gt 1) {
+                    $lineNumber = $m.Groups[1].Value
+                }
+            }
+        }
+
+        $file = if ($caller.ScriptName) { Split-Path -Leaf $caller.ScriptName } else { 'cmd' }
+
+        if ($file -ne 'console' -and $lineNumber) {
+            $file = '{0}:{1}' -f $file, $lineNumber
+        }
+
+        $prefix = "[$ts "
+        $suffix = "] [$file] $Message"
+
+        $cfg = @{
+            TRC = @{ Fore = 'DarkGray'; Back = $null     }
+            DBG = @{ Fore = 'Cyan';     Back = $null     }
+            INF = @{ Fore = 'Green';    Back = $null     }
+            WRN = @{ Fore = 'Yellow';   Back = $null     }
+            ERR = @{ Fore = 'Red';      Back = $null     }
+            FTL = @{ Fore = 'Red';      Back = 'DarkRed' }
+        }[$lvl]
+
+        $fore = $cfg.Fore
+        $back = $cfg.Back
+
+        $isInteractive = [System.Environment]::UserInteractive
+
+        if ($isInteractive -and ($fore -or $back)) {
+            Write-Host -NoNewline $prefix
+
+            if ($fore -and $back) {
+                Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back
+            }
+            elseif ($fore) {
+                Write-Host -NoNewline $lvl -ForegroundColor $fore
+            }
+            elseif ($back) {
+                Write-Host -NoNewline $lvl -BackgroundColor $back
+            }
+
+            Write-Host $suffix
+        }
+        else {
+            Write-Host "$prefix$lvl$suffix"
+        }
+
+        if ($sev -ge 4 -and $ErrorActionPreference -eq 'Stop') {
+            throw ("ConsoleLog.{0}: {1}" -f $lvl, $Message)
+        }
+    }
+
     # Extract variable name from the script block's AST.
     $ast = $Variable.Ast
-    $varAst = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)
+    $varAst = $ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.VariableExpressionAst]
+    }, $true)
+
     if (-not $varAst) {
-        Write-Error "The script block must contain a simple variable reference."
+        _Write-StandardMessage -Message "[ERROR] The script block must contain a simple variable reference." -Level 'ERR'
         return
     }
+
     $varName = $varAst.VariablePath.UserPath
 
     # Evaluate the script block to get the variable's value.
@@ -65,15 +270,15 @@ function Test-VariableValue {
     # Check if the value is null or empty and exit if required.
     if ($ExitIfNullOrEmpty) {
         if ($null -eq $value) {
-            Write-Error "Test-VariableValue: '$varName' is null."
+            _Write-StandardMessage -Message "[ERROR] Test-VariableValue: '$varName' is null." -Level 'ERR'
             exit 1
         }
         if (($value -is [string]) -and [string]::IsNullOrEmpty($value)) {
-            Write-Error "Test-VariableValue: '$varName' is an empty string."
+            _Write-StandardMessage -Message "[ERROR] Test-VariableValue: '$varName' is an empty string." -Level 'ERR'
             exit 1
         }
         if ($value -is [hashtable] -and ($value.Count -eq 0)) {
-            Write-Error "Test-VariableValue: '$varName' is an empty hashtable."
+            _Write-StandardMessage -Message "[ERROR] Test-VariableValue: '$varName' is an empty hashtable." -Level 'ERR'
             exit 1
         }
     }
@@ -92,7 +297,8 @@ function Test-VariableValue {
         }
     }
 
-    Write-Output "Test-VariableValue: $varName, Value: $displayValue"
+    $outMsg = "[OK] Test-VariableValue: $varName, Value: $displayValue"
+    _Write-StandardMessage -Message $outMsg -Level 'INF'
 }
 
 function Test-CommandAvailable {
@@ -158,10 +364,98 @@ Reviewer note: Prefer -ExitIfNotFound for CI/bootstrap; use -ThrowIfNotFound whe
         [int]$ExitCode = 127
     )
 
+    function local:_Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
+        )
+        if ($null -eq $Message) { $Message = [string]::Empty }
+        $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
+        if(-not $PSBoundParameters.ContainsKey('MinLevel')){
+            $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+            $MinLevel=if($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)){[string]$gv.Value}else{'INF'}
+        }
+        $lvl=$Level.ToUpperInvariant()
+        $min=$MinLevel.ToUpperInvariant()
+        $sev=$sevMap[$lvl];if($null -eq $sev){$lvl='INF';$sev=$sevMap['INF']}
+        $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
+        if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
+        if($sev -lt $gate){return}
+        $ts=[DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
+        $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
+        if($stack){
+            # 1: prefer first non-underscore function not defined in the helper's own file
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+            }
+            # 2: fallback to first non-underscore function (any file)
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')){$caller=$f;break}
+                }
+            }
+            # 3: fallback to first non-helper frame not from helper's own file
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                    if($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+                }
+            }
+            # 4: final fallback to first non-helper frame
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName){$caller=$f;break}
+                }
+            }
+        }
+        if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
+        $lineNumber=$null ; 
+        $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Position']
+            if($p -and $p.Value){
+                $sp=$p.Value.PSObject.Properties['StartLineNumber'];if($sp -and $sp.Value){$lineNumber=[string]$sp.Value}
+            }
+        }
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Location']
+            if($p -and $p.Value){
+                $m=[regex]::Match([string]$p.Value,':(\d+)\s+char:','IgnoreCase');if($m.Success -and $m.Groups.Count -gt 1){$lineNumber=$m.Groups[1].Value}
+            }
+        }
+        $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
+        if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
+        $prefix="[$ts "
+        $suffix="] [$file] $Message"
+        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='Red';Back='DarkRed'}}[$lvl]
+        $fore=$cfg.Fore
+        $back=$cfg.Back
+        $isInteractive = [System.Environment]::UserInteractive
+        if($isInteractive -and ($fore -or $back)){
+            Write-Host -NoNewline $prefix
+            if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
+            elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
+            elseif($back){Write-Host -NoNewline $lvl -BackgroundColor $back}
+            Write-Host $suffix
+        } else {
+            Write-Host "$prefix$lvl$suffix"
+        }
+
+        if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
+    }
+
     # Resolve candidates (PS5-safe).
     try {
         $resolved = Get-Command -Name $Command -ErrorAction Stop
-    } catch {
+    }
+    catch {
         $resolved = $null
     }
 
@@ -173,15 +467,44 @@ Reviewer note: Prefer -ExitIfNotFound for CI/bootstrap; use -ThrowIfNotFound whe
     # Select the first match (typical for PATH executables).
     $first = $resolved | Select-Object -First 1
     if ($null -ne $first) {
+        # Log brief details about the resolved command.
+        $src = $null
+        if ($first.Source) {
+            $src = $first.Source
+        }
+        elseif ($first.Definition) {
+            $src = $first.Definition
+        }
+        else {
+            $src = '<unknown>'
+        }
+
+        $ver = $null
+        if ($first.Version) {
+            $ver = $first.Version.ToString()
+        }
+        elseif ($first.FileVersionInfo -and $first.FileVersionInfo.ProductVersion) {
+            $ver = $first.FileVersionInfo.ProductVersion
+        }
+        else {
+            $ver = '<n/a>'
+        }
+
+        _Write-StandardMessage -Message ("[OK] {0} {1} found at {2}" -f $first.Name, $ver, $src) -Level 'INF'
+
         return $first
     }
 
     # Not found: enforce chosen fail-fast behavior.
     if ($ThrowIfNotFound) {
+        $msg = "[ERROR] Required command '$Command' was not found in PATH (Type=$Type)."
+        _Write-StandardMessage -Message $msg -Level 'ERR'
         throw "Required command '$Command' was not found in PATH (Type=$Type)."
     }
+
     if ($ExitIfNotFound) {
-        Write-Error "Required command '$Command' was not found in PATH (Type=$Type). Exiting with code $ExitCode."
+        $msg = "[ERROR] Required command '$Command' was not found in PATH (Type=$Type). Exiting with code $ExitCode."
+        _Write-StandardMessage -Message $msg -Level 'ERR'
         exit $ExitCode
     }
 
@@ -320,20 +643,20 @@ function Test-ModuleAvailable {
 function Test-PsGalleryPublishPrereqsOffline {
 <#
 .SYNOPSIS
-Local diagnostics for PowerShell Gallery publish prerequisites.
+Runs offline checks for PowerShell Gallery publish prerequisites.
 
 .DESCRIPTION
-Runs only local, non-network checks to verify whether the current host is prepared to publish modules
-using Publish-Module against the PowerShell Gallery.
+Runs only local, non-network checks to verify whether the current environment is prepared to publish modules
+to the PowerShell Gallery using Publish-Module.
 
 Checks performed:
 - On Windows PowerShell 5.x (Desktop edition), verifies that TLS 1.2 is enabled in SecurityProtocol.
 - Confirms that the NuGet package provider (version 2.8.5.201 or later) is available.
 - Confirms that PackageManagement and PowerShellGet modules are present and importable.
-- Confirms that the PSGallery repository is registered and exposes publish-related locations.
+- Confirms that the PSGallery repository is registered and exposes publish-related endpoints.
 
 The function:
-- Writes structured, human-readable status lines for each check via an inline _Write-StandardMessage helper.
+- Writes structured, human-readable status lines for each check via an internal _Write-StandardMessage helper.
 - Writes a final summary line.
 - Produces no pipeline output.
 
@@ -370,15 +693,20 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
         [Parameter()][switch]$ExitOnFailure
     )
 
-    function _Write-StandardMessage {
+    function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
         [CmdletBinding()]
         param(
-            [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$Message,
+            [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
         )
+
+        if ($null -eq $Message) {
+            $Message = [string]::Empty
+        }
+
         $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
         if(-not $PSBoundParameters.ContainsKey('MinLevel')){
             $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
@@ -390,7 +718,7 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
         $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
         if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
         if($sev -lt $gate){return}
-        $ts=[DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+        $ts=[DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
         $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
         if($stack){
             # 1: prefer first non-underscore function not defined in the helper's own file
@@ -439,10 +767,12 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
         if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
         $prefix="[$ts "
         $suffix="] [$file] $Message"
-        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back='DarkRed'}}[$lvl]
+        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='Red';Back='DarkRed'}}[$lvl]
         $fore=$cfg.Fore
         $back=$cfg.Back
-        if($fore -or $back){
+        $isInteractive = [System.Environment]::UserInteractive
+
+        if($isInteractive -and ($fore -or $back)){
             Write-Host -NoNewline $prefix
             if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
             elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
@@ -451,10 +781,9 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
         } else {
             Write-Host "$prefix$lvl$suffix"
         }
+
         if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
     }
-
-
 
     function _New-StatusRecord {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
@@ -513,48 +842,48 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
 
     # 1) TLS 1.2 (Windows PowerShell Desktop only).
     $tlsOk = $true
-    $tlsDetail = 'Not applicable on current edition'
+    $tlsDetail = 'Not applicable for this PowerShell edition.'
     if ($isDesktopEdition) {
         try {
             $currentProtocol = [Net.ServicePointManager]::SecurityProtocol
             $hasTls12 = (($currentProtocol -band [Net.SecurityProtocolType]::Tls12) -ne 0)
             if ($hasTls12) {
                 $tlsOk = $true
-                $tlsDetail = 'TLS 1.2 enabled in SecurityProtocol'
+                $tlsDetail = 'TLS 1.2 enabled in SecurityProtocol settings.'
             }
             else {
                 $tlsOk = $false
-                $tlsDetail = 'TLS 1.2 not enabled in SecurityProtocol'
+                $tlsDetail = 'TLS 1.2 not enabled in SecurityProtocol settings.'
             }
         }
         catch {
             $tlsOk = $false
-            $tlsDetail = 'Unable to read SecurityProtocol for TLS 1.2 verification'
+            $tlsDetail = 'Unable to read SecurityProtocol to verify TLS 1.2.'
         }
     }
 
-    $tlsRecord = _New-StatusRecord -Name 'TLS (Desktop only)' -Ok:$tlsOk -Detail:$tlsDetail
+    $tlsRecord = _New-StatusRecord -Name 'TLS 1.2 (Windows Desktop only)' -Ok:$tlsOk -Detail:$tlsDetail
     $overallOk = _Apply-LocalStatus -Record $tlsRecord -FailureList $failures -CurrentOverallOk $overallOk
 
     # 2) NuGet package provider (version >= 2.8.5.201).
     $nugetOk = $false
-    $nugetDetail = 'NuGet provider not found'
+    $nugetDetail = 'NuGet provider not found.'
     try {
         $nugetProvider = Get-PackageProvider -Name 'NuGet' -ErrorAction SilentlyContinue
         if ($null -ne $nugetProvider) {
             $requiredNuGetVersion = [version]'2.8.5.201'
             if ($nugetProvider.Version -ge $requiredNuGetVersion) {
                 $nugetOk = $true
-                $nugetDetail = ('Found NuGet provider version {0}' -f $nugetProvider.Version)
+                $nugetDetail = ('NuGet provider found (version {0}).' -f $nugetProvider.Version)
             }
             else {
-                $nugetDetail = ('Found NuGet provider version {0} (need {1} or later)' -f $nugetProvider.Version, $requiredNuGetVersion)
+                $nugetDetail = ('NuGet provider found (version {0}); requires {1} or later.' -f $nugetProvider.Version, $requiredNuGetVersion)
             }
         }
     }
     catch {
         $nugetOk = $false
-        $nugetDetail = 'Error while querying NuGet provider'
+        $nugetDetail = 'Error while querying NuGet provider.'
     }
 
     $nugetRecord = _New-StatusRecord -Name 'NuGet provider' -Ok:$nugetOk -Detail:$nugetDetail
@@ -562,7 +891,7 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
 
     # 3) PackageManagement module present and importable.
     $pmOk = $false
-    $pmDetail = 'PackageManagement module not found'
+    $pmDetail = 'PackageManagement module not found.'
     try {
         $pmModule = Get-Module -ListAvailable -Name 'PackageManagement' |
             Sort-Object -Property Version -Descending |
@@ -572,17 +901,17 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
             try {
                 Import-Module -Name 'PackageManagement' -MinimumVersion $pmModule.Version -Force -ErrorAction Stop | Out-Null
                 $pmOk = $true
-                $pmDetail = ('Found PackageManagement module version {0}' -f $pmModule.Version)
+                $pmDetail = ('PackageManagement module found (version {0}).' -f $pmModule.Version)
             }
             catch {
                 $pmOk = $false
-                $pmDetail = ('Found PackageManagement module version {0} but failed to import: {1}' -f $pmModule.Version, $_.Exception.Message)
+                $pmDetail = ('PackageManagement module found (version {0}), but import failed: {1}' -f $pmModule.Version, $_.Exception.Message)
             }
         }
     }
     catch {
         $pmOk = $false
-        $pmDetail = 'Error while locating PackageManagement module'
+        $pmDetail = 'Error while locating PackageManagement module.'
     }
 
     $pmRecord = _New-StatusRecord -Name 'PackageManagement module' -Ok:$pmOk -Detail:$pmDetail
@@ -590,7 +919,7 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
 
     # 4) PowerShellGet module present and importable.
     $psgOk = $false
-    $psgDetail = 'PowerShellGet module not found'
+    $psgDetail = 'PowerShellGet module not found.'
     try {
         $psgModule = Get-Module -ListAvailable -Name 'PowerShellGet' |
             Sort-Object -Property Version -Descending |
@@ -600,17 +929,17 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
             try {
                 Import-Module -Name 'PowerShellGet' -MinimumVersion $psgModule.Version -Force -ErrorAction Stop | Out-Null
                 $psgOk = $true
-                $psgDetail = ('Found PowerShellGet module version {0}' -f $psgModule.Version)
+                $psgDetail = ('PowerShellGet module found (version {0}).' -f $psgModule.Version)
             }
             catch {
                 $psgOk = $false
-                $psgDetail = ('Found PowerShellGet module version {0} but failed to import: {1}' -f $psgModule.Version, $_.Exception.Message)
+                $psgDetail = ('PowerShellGet module found (version {0}), but import failed: {1}' -f $psgModule.Version, $_.Exception.Message)
             }
         }
     }
     catch {
         $psgOk = $false
-        $psgDetail = 'Error while locating PowerShellGet module'
+        $psgDetail = 'Error while locating PowerShellGet module.'
     }
 
     $psgRecord = _New-StatusRecord -Name 'PowerShellGet module' -Ok:$psgOk -Detail:$psgDetail
@@ -618,14 +947,14 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
 
     # 5) PSGallery repository registration and publish endpoints (metadata-only, offline).
     $repoOk = $false
-    $repoDetail = 'PSGallery repository not registered'
+    $repoDetail = 'PSGallery repository not registered.'
     $pubOk = $false
-    $pubDetail = 'Publish endpoints not available from registered PSGallery repository'
+    $pubDetail = 'Publish endpoints not exposed by the registered PSGallery repository.'
     try {
         $psGalleryRepo = Get-PSRepository -Name 'PSGallery' -ErrorAction SilentlyContinue
         if ($null -ne $psGalleryRepo) {
             $repoOk = $true
-            $repoDetail = 'PSGallery repository registered'
+            $repoDetail = 'PSGallery repository registered.'
 
             $hasPublishLocation = (($null -ne $psGalleryRepo.PublishLocation) -and
                                    ($null -ne $psGalleryRepo.ScriptPublishLocation))
@@ -640,15 +969,15 @@ Runs all checks and terminates the current PowerShell host with exit code 1 if a
 
             if ($hasPublishLocation -and $hasV2PackagePath) {
                 $pubOk = $true
-                $pubDetail = 'Publish endpoints present in PSGallery repository metadata'
+                $pubDetail = 'Publish endpoints defined in PSGallery repository metadata.'
             }
         }
     }
     catch {
         $repoOk = $false
-        $repoDetail = 'Error while querying PSGallery repository registration'
+        $repoDetail = 'Error while querying PSGallery repository registration.'
         $pubOk = $false
-        $pubDetail = 'Unable to confirm publish endpoints due to repository query error'
+        $pubDetail = 'Unable to confirm publish endpoints due to PSGallery repository query error.'
     }
 
     $repoRecord = _New-StatusRecord -Name 'PSGallery repository' -Ok:$repoOk -Detail:$repoDetail

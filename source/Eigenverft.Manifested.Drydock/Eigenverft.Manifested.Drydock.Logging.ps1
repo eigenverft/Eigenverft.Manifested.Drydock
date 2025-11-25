@@ -28,6 +28,7 @@ function Write-ConsoleLog {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string]$Message,
 
         [Parameter()]
@@ -91,7 +92,7 @@ function Write-ConsoleLog {
         return
     }
 
-    $ts = [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss:fff')
+    $ts = [DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
 
     # Caller resolution: first frame that is not this function.
     $helperName = $MyInvocation.MyCommand.Name
@@ -191,4 +192,3 @@ function Write-ConsoleLog {
         throw ("ConsoleLog.{0}: {1}" -f $lvl, $Message)
     }
 }
-

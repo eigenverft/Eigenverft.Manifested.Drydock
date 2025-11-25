@@ -178,7 +178,10 @@ FunctionsToExport = @(
     'Convert-DateTimeTo64SecVersionComponents',
     'Convert-64SecVersionComponentsToDateTime',
     'Convert-DateTimeTo64SecPowershellVersion',
-    'Convert-64SecPowershellVersionToDateTime'
+    'Convert-64SecPowershellVersionToDateTime',
+
+    # ...WebRequest.ps1
+    'Invoke-WebRequestEx'
     )
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.

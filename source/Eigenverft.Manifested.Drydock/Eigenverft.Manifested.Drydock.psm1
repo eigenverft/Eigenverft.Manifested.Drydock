@@ -19,3 +19,5 @@
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Dotnet.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Process.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.ps1"
+. "$PSScriptRoot\Eigenverft.Manifested.Drydock.WebRequest.ps1"
+

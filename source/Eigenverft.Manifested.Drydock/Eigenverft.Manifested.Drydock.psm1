@@ -2,6 +2,8 @@
     Eigenverft.Manifested.Drydock root module
 #>
 
+
+. "$PSScriptRoot\Eigenverft.Manifested.Drydock.Certificates.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Compression.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Convert.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.IO.ps1"

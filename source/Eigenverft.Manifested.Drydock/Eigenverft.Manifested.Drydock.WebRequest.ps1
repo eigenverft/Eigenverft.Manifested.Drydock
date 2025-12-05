@@ -260,7 +260,12 @@ function Invoke-WebRequestEx {
                 throw ("The remote server returned an empty response stream for '{0}'." -f $AttemptUri)
             }
 
-            $fileStream = [System.IO.File]::Open($AttemptOutFile, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+            $fileStream = [System.IO.File]::Open(
+                $AttemptOutFile,
+                [System.IO.FileMode]::Create,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::None
+            )
 
             $bufferSize = 4MB
             $buffer = New-Object byte[] $bufferSize
@@ -280,6 +285,7 @@ function Invoke-WebRequestEx {
                 }
             }
             else {
+                # Unknown length: log roughly every 50 MB
                 $progressThresholdBytes = 52428800
             }
 
@@ -301,14 +307,41 @@ function Invoke-WebRequestEx {
                 if ($totalBytes -ge $nextProgressBytes) {
                     if ($contentLength -gt 0) {
                         $percent = [Math]::Round(($totalBytes * 100.0) / $contentLength, 1)
-                        _Write-StandardMessage -Message ("[PROGRESS] Downloaded {0} of {1} bytes ({2} percent) for '{3}'." -f $totalBytes, $contentLength, $percent, $AttemptUri) -Level INF
+                        _Write-StandardMessage -Message (
+                            "[PROGRESS] Downloaded {0} of {1} bytes ({2} percent) for '{3}'." -f $totalBytes, $contentLength, $percent, $AttemptUri
+                        ) -Level INF
                     }
                     else {
                         $megaBytes = [Math]::Round($totalBytes / 1048576.0, 1)
-                        _Write-StandardMessage -Message ("[PROGRESS] Downloaded approximately {0} MB from '{1}'." -f $megaBytes, $AttemptUri) -Level INF
+                        _Write-StandardMessage -Message (
+                            "[PROGRESS] Downloaded approximately {0} MB from '{1}'." -f $megaBytes, $AttemptUri
+                        ) -Level INF
                     }
 
                     $nextProgressBytes += $progressThresholdBytes
+                }
+            }
+
+            # Final progress line:
+            # - If total size is known: always log a clean 100 percent.
+            # - If total size is unknown: log a final "download complete" with total MB.
+            if ($totalBytes -gt 0) {
+                if ($contentLength -gt 0) {
+                    $finalDownloaded = $totalBytes
+                    if ($finalDownloaded -gt $contentLength) {
+                        $finalDownloaded = $contentLength
+                    }
+
+                    $finalPercent = 100
+                    _Write-StandardMessage -Message (
+                        "[PROGRESS] Downloaded {0} of {1} bytes ({2} percent) for '{3}'." -f $finalDownloaded, $contentLength, $finalPercent, $AttemptUri
+                    ) -Level INF
+                }
+                else {
+                    $finalMb = [Math]::Round($totalBytes / 1048576.0, 1)
+                    _Write-StandardMessage -Message (
+                        "[PROGRESS] Download complete, total {0} MB from '{1}'." -f $finalMb, $AttemptUri
+                    ) -Level INF
                 }
             }
 
@@ -332,6 +365,7 @@ function Invoke-WebRequestEx {
             }
         }
     }
+
 
     # Title-style message, no tag as per your spec
     _Write-StandardMessage -Message "--- Invoke-WebRequestEx streaming download operation ---" -Level INF
@@ -373,3 +407,302 @@ function Invoke-WebRequestEx {
         }
     }
 }
+
+function Get-GitRepoFileMetadata {
+    <#
+    .SYNOPSIS
+        Retrieves commit metadata for files in a Git repository and optionally constructs download URLs.
+
+    .DESCRIPTION
+        This function accepts a repository URL, branch name, and an optional download endpoint.
+        It performs a partial clone (metadata only) to list files at the HEAD commit, retrieves each
+        file's latest commit timestamp and message, and—if specified—generates a direct file
+        download URL by injecting the endpoint segment.
+
+    .PARAMETER RepoUrl
+        The HTTP(S) URL of the remote Git repository (e.g., "https://huggingface.co/microsoft/phi-4").
+
+    .PARAMETER BranchName
+        The branch to inspect (e.g., "main").
+
+    .PARAMETER DownloadEndpoint
+        (Optional) The URL path segment to insert before the branch name for download links
+        (e.g., 'resolve' or 'raw/refs/heads'). If omitted or empty, DownloadUrl for each file
+        will be an empty string.
+
+    .PARAMETER Filter
+        (Optional) An array of wildcard patterns. Any file whose path matches *any* of these
+        patterns will be **excluded** from the result set.
+        Wildcards follow PowerShell’s `-like` semantics; for example:
+        `-Filter 'onnx/*','filename*root.json'`
+
+    .EXAMPLE
+        # Exclude all files in the 'onnx' directory and any JSON ending in 'root.json'
+        $info = Get-GitRepoFileMetadata `
+            -RepoUrl "https://huggingface.co/microsoft/phi-4" `
+            -BranchName "main" `
+            -Filter 'onnx/*','*root.json'
+
+    .OUTPUTS
+        PSCustomObject with properties:
+        - RepoUrl (string)
+        - BranchName (string)
+        - DownloadEndpoint (string, optional)
+        - Files (hashtable of PSCustomObject with Filename, Timestamp, Comment, DownloadUrl)
+    #>
+    [CmdletBinding()]
+    [alias('ggrfm')]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$RepoUrl,
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$BranchName,
+
+        [Parameter()]
+        [string]$DownloadEndpoint,
+
+        [Parameter()]
+        [string[]]$Filter
+    )
+
+    # Prepare partial clone directory
+    $tempDir = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ([Guid]::NewGuid().ToString())
+    New-Item -ItemType Directory -Path $tempDir | Out-Null
+
+    try {
+        git clone --filter=blob:none --no-checkout -b $BranchName $RepoUrl $tempDir | Out-Null
+        Push-Location $tempDir
+
+        # List all files
+        $files = git ls-tree -r HEAD --name-only | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+
+        # If a filter was provided, drop any matching path
+        if ($PSBoundParameters.ContainsKey('Filter') -and $Filter) {
+            $files = $files | Where-Object {
+                $path = $_
+                # exclude if ANY pattern matches
+                -not ($Filter | ForEach-Object { $path -like $_ } | Where-Object { $_ })
+            }
+        }
+
+        $fileData = @{}
+
+        foreach ($file in $files) {
+            # Get last commit date and message for this file
+            $commit = git log -1 --pretty=format:"%ad|%s" --date=iso-strict -- $file
+            if ($commit) {
+                $parts = $commit -split '\|',2
+                try { $ts  = [DateTimeOffset]::Parse($parts[0]).UtcDateTime } catch { $ts = $null }
+                $msg = if ($parts.Length -gt 1) { $parts[1] } else { '' }
+            } else {
+                $ts  = $null
+                $msg = ''
+            }
+
+            # Build download URL if endpoint given
+            if ($PSBoundParameters.ContainsKey('DownloadEndpoint') -and $DownloadEndpoint) {
+                $endpoint = $DownloadEndpoint.Trim('/')
+                $base     = $RepoUrl.TrimEnd('/')
+                $url      = "${base}/${endpoint}/${BranchName}/${file}"
+            } else {
+                $url = ''
+            }
+
+            $fileData[$file] = [PSCustomObject]@{
+                Filename    = $file
+                Timestamp   = $ts
+                Comment     = $msg
+                DownloadUrl = $url
+            }
+        }
+
+        # Construct and return the result object
+        $result = [ordered]@{
+            RepoUrl    = $RepoUrl
+            BranchName = $BranchName
+            Files      = $fileData
+        }
+        if ($PSBoundParameters.ContainsKey('DownloadEndpoint') -and $DownloadEndpoint) {
+            $result.DownloadEndpoint = $DownloadEndpoint
+        }
+
+        return [PSCustomObject]$result
+    }
+    catch {
+        Write-Error "Error retrieving metadata: $_"
+    }
+    finally {
+        Pop-Location
+        Remove-Item -Path $tempDir -Recurse -Force
+    }
+}
+
+function Sync-GitRepoFiles {
+    <#
+    .SYNOPSIS
+        Mirrors files from a GitRepoFileMetadata object to a local folder based on DownloadUrl, showing progress.
+
+    .DESCRIPTION
+        Takes metadata from Get-GitRepoFileMetadata and a destination root. It first removes any files
+        in the local target that are not present in the metadata (cleanup), then classifies files as:
+        "matched" (timestamps equal), "missing" (not present) or "stale" (timestamp mismatch), logs a summary,
+        processes downloads in order (missing first, then stale), and finally reports completion.
+
+    .PARAMETER Metadata
+        PSCustomObject returned by Get-GitRepoFileMetadata.
+
+    .PARAMETER DestinationRoot
+        The root directory under which to sync files (e.g., "C:\Downloads").
+
+    .OUTPUTS
+        None. Writes progress and summary to the host.
+    #>
+    [CmdletBinding()]
+    [alias('sgrf')]
+    param(
+        [Parameter(Mandatory)][ValidateNotNull()][PSCustomObject]$Metadata,
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$DestinationRoot
+    )
+
+    Write-Host "Starting sync for: $($Metadata.RepoUrl)"
+    $uri = [Uri]$Metadata.RepoUrl
+    $repoPath = $uri.AbsolutePath.Trim('/')
+    $targetDir = Join-Path $DestinationRoot $repoPath
+    if (-not (Test-Path $targetDir)) {
+        New-Item -Path $targetDir -ItemType Directory -Force | Out-Null
+    }
+    Write-Host "Destination: $targetDir`n"
+
+    # Initial cleanup: remove any files not in metadata
+    Write-Host "Performing initial cleanup of extraneous files..."
+    $expectedPaths = $Metadata.Files.Keys | ForEach-Object { Join-Path $targetDir $_ }
+    Get-ChildItem -Path $targetDir -Recurse -File | ForEach-Object {
+        if ($expectedPaths -notcontains $_.FullName) {
+            Write-Host "Removing extra file: $($_.FullName)"
+            Remove-Item -Path $_.FullName -Force
+        }
+    }
+    Write-Host "Initial cleanup complete.`n"
+
+    # Classification phase
+    $missing = New-Object System.Collections.Generic.List[string]
+    $stale   = New-Object System.Collections.Generic.List[string]
+    $matched = New-Object System.Collections.Generic.List[string]
+
+    foreach ($kv in $Metadata.Files.GetEnumerator()) {
+        $fileName = $kv.Key; $info = $kv.Value
+        if ([string]::IsNullOrEmpty($info.DownloadUrl)) {
+            Write-Host "Skipping (no URL): $fileName"
+            continue
+        }
+        $localPath = Join-Path $targetDir $fileName
+        if (-not (Test-Path $localPath)) {
+            $missing.Add($fileName)
+        } else {
+            $localTime = (Get-Item $localPath).LastWriteTimeUtc
+            if ($localTime -eq $info.Timestamp) {
+                $matched.Add($fileName)
+            } else {
+                $stale.Add($fileName)
+            }
+        }
+    }
+
+    # Summary
+    Write-Host "Summary: $($matched.Count) up-to-date, $($missing.Count) missing, $($stale.Count) stale files.`n"
+
+    # Download missing files first
+    foreach ($fileName in $missing) {
+        $info = $Metadata.Files[$fileName]
+        $localPath = Join-Path $targetDir $fileName
+        $destDir = Split-Path $localPath -Parent
+        if (-not (Test-Path $destDir)) { New-Item -Path $destDir -ItemType Directory -Force | Out-Null }
+        Write-Host "File not present, will download: $fileName"
+        Invoke-WebRequestEx -Uri $info.DownloadUrl -OutFile $localPath -UseBasicParsing
+        [System.IO.File]::SetLastWriteTimeUtc($localPath, $info.Timestamp)
+        Write-Host "Downloaded and timestamp set: $fileName`n"
+    }
+
+    # Then re-download stale files
+    foreach ($fileName in $stale) {
+        $info = $Metadata.Files[$fileName]
+        $localPath = Join-Path $targetDir $fileName
+        Write-Host "Out-of-date (timestamp mismatch), will re-download: $fileName"
+        Invoke-WebRequestEx -Uri $info.DownloadUrl -OutFile $localPath -UseBasicParsing
+        [System.IO.File]::SetLastWriteTimeUtc($localPath, $info.Timestamp)
+        Write-Host "Downloaded and timestamp set: $fileName`n"
+    }
+
+    # Finally, report matched files
+    foreach ($fileName in $matched) {
+        Write-Host "Timestamps match, skipping: $fileName"
+    }
+
+    Write-Host "Sync complete for: $($Metadata.RepoUrl)"
+}
+
+function Mirror-GitRepoWithDownloadContent {
+    <#
+    .SYNOPSIS
+        Retrieves metadata and mirrors a Git repository with download content in one step.
+
+    .DESCRIPTION
+        Combines Get-GitRepoFileMetadata and Sync-GitRepoFiles into a single command.
+        Accepts an optional -Filter parameter to exclude files by wildcard patterns.
+
+    .PARAMETER RepoUrl
+        The URL of the remote Git repository.
+
+    .PARAMETER BranchName
+        The branch to sync (e.g., "main").
+
+    .PARAMETER DownloadEndpoint
+        The endpoint for download URLs (e.g., 'resolve').
+
+    .PARAMETER DestinationRoot
+        The local root folder to mirror content into (e.g., "C:\temp\test").
+
+    .PARAMETER Filter
+        (Optional) An array of wildcard patterns to exclude from metadata retrieval.
+        Forwarded to Get-GitRepoFileMetadata’s -Filter parameter.
+
+    .EXAMPLE
+        # Mirror everything except 'onnx/*' and '*root.json'
+        Mirror-GitRepoWithDownloadContent `
+          -RepoUrl "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct" `
+          -BranchName "main" `
+          -DownloadEndpoint "resolve" `
+          -DestinationRoot "C:\temp\test" `
+          -Filter 'onnx/*','runs/*'
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+    [CmdletBinding()]
+    [alias('mirror-grwdc')]
+    param(
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$RepoUrl,
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$BranchName,
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$DownloadEndpoint,
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$DestinationRoot,
+        [Parameter()][string[]]$Filter
+    )
+
+    # Build parameter splat for metadata retrieval
+    $metaParams = @{
+        RepoUrl        = $RepoUrl
+        BranchName     = $BranchName
+        DownloadEndpoint = $DownloadEndpoint
+    }
+    if ($PSBoundParameters.ContainsKey('Filter')) {
+        $metaParams.Filter = $Filter
+    }
+
+    # Retrieve metadata (with optional filtering) and sync files
+    $metadata = Get-GitRepoFileMetadata @metaParams
+    Sync-GitRepoFiles -Metadata $metadata -DestinationRoot $DestinationRoot
+}
+
+
+#Mirror-GitRepoWithDownloadContent -RepoUrl 'https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B' -BranchName 'main' -DownloadEndpoint 'resolve' -DestinationRoot 'C:\Artificial_Intelligence' -Filter 'onnx/*','runs/*','metal/*','original/*'

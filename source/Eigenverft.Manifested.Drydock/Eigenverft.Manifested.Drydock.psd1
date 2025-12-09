@@ -99,8 +99,8 @@ FunctionsToExport = @(
     'Export-PackageLicenseTexts',
 
     # ...DriveMapping.ps1
-    'Set-CleanNetworkDrive',
-    'Remove-NetworkDrive',
+    'New-NetworkDriveMapping',
+    'Remove-NetworkDriveMapping',
 
     # ...Execution.ps1
     'Invoke-Exec',

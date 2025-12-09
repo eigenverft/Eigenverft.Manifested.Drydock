@@ -19,6 +19,7 @@
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Git.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.GitHub.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Dotnet.ps1"
+. "$PSScriptRoot\Eigenverft.Manifested.Drydock.DriveMapping.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Process.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.WebRequest.ps1"

@@ -98,6 +98,10 @@ FunctionsToExport = @(
     'New-ThirdPartyNotice',
     'Export-PackageLicenseTexts',
 
+    # ...DriveMapping.ps1
+    'Set-CleanNetworkDrive',
+    'Remove-NetworkDrive',
+
     # ...Execution.ps1
     'Invoke-Exec',
     'Invoke-ProcessTyped',

@@ -289,6 +289,7 @@ function Test-VariableValue {
 
     if ($WarnIfNullOrEmpty -and $isNullOrEmpty) {
         _Write-StandardMessage -Message "[WARN] Test-VariableValue: '$varName' is null or empty." -Level 'WRN'
+        return
     }
 
 

@@ -49,7 +49,7 @@ function Test-VariableValue {
         
         [switch]$ExitIfNullOrEmpty,
 
-        [switch]$WarnNullOrEmpty
+        [switch]$WarnIfNullOrEmpty
     )
 
     function local:_Write-StandardMessage {
@@ -287,9 +287,8 @@ function Test-VariableValue {
         exit 1
     }
 
-    if ($WarnNullOrEmpty -and $isNullOrEmpty) {
+    if ($WarnIfNullOrEmpty -and $isNullOrEmpty) {
         _Write-StandardMessage -Message "[WARN] Test-VariableValue: '$varName' is null or empty." -Level 'WRN'
-        exit 1
     }
 
 

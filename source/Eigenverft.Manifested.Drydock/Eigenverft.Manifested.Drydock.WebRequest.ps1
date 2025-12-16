@@ -379,6 +379,37 @@ function Invoke-WebRequestEx {
         }
     }
 
+    # --- TLS: Ensure TLS 1.2 is enabled (additive; do not clear other explicit flags) ---
+    # Note: In PS 5.1 / .NET Framework this affects WebRequest/ServicePoint-based traffic in this process.
+    try {
+        $tls12 = [Net.SecurityProtocolType]::Tls12
+
+        # Only add TLS 1.2 if it isn't already present.
+        if (([Net.ServicePointManager]::SecurityProtocol -band $tls12) -ne $tls12) {
+            [Net.ServicePointManager]::SecurityProtocol = `
+                ([Net.ServicePointManager]::SecurityProtocol -bor $tls12)
+        }
+    }
+    catch {
+        _Write-StandardMessage -Message ("[ERR] TLS set failed: {0}" -f $_.Exception.Message) -Level ERR
+    }
+
+    # --- Proxy: Ensure system proxy is used; ensure default credentials are applied ---
+    # Note: This sets process-wide defaults for WebRequest-based networking.
+    try {
+        # Always refresh the default proxy from the system configuration (WPAD/PAC/WinINET).
+        [System.Net.WebRequest]::DefaultWebProxy = [System.Net.WebRequest]::GetSystemWebProxy()
+
+        $proxy = [System.Net.WebRequest]::DefaultWebProxy
+        if ($proxy) {
+            # Use integrated (domain) credentials for corporate proxy authentication.
+            $proxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials
+        }
+    }
+    catch {
+        _Write-StandardMessage -Message ("[ERR] Proxy set failed: {0}" -f $_.Exception.Message) -Level ERR
+    }
+
     $maxAttempts = 3
     $attemptIndex = 0
     $lastError = $null

@@ -101,7 +101,10 @@ function Invoke-WebRequestEx {
         [byte[]] $Body,
 
         [Parameter()]
-        [switch] $Force
+        [switch] $Force,
+
+        [Parameter()]
+        [switch] $AllowSelfSigned
     )
 
     function local:_Write-StandardMessage {
@@ -410,6 +413,10 @@ function Invoke-WebRequestEx {
         _Write-StandardMessage -Message ("[ERR] Proxy set failed: {0}" -f $_.Exception.Message) -Level ERR
     }
 
+    if ($AllowSelfSigned) {
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+    }
+
     $maxAttempts = 3
     $attemptIndex = 0
     $lastError = $null
@@ -438,6 +445,7 @@ function Invoke-WebRequestEx {
         }
     }
 }
+
 
 function Get-GitRepoFileMetadata {
     <#

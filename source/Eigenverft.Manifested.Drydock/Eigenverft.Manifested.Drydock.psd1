@@ -248,7 +248,7 @@ PrivateData = @{
         IconUri = 'https://raw.githubusercontent.com/eigenverft/Eigenverft.Manifested.Drydock/refs/heads/main/resources/eigenverft-logo-v7-harbor-square_128_128.png'
 
         # ReleaseNotes of this module
-        ReleaseNotes = ''
+        ReleaseNotes = 'Aligned CICD workflow and bootstrapper with Sandbox, updated README shield badges, and added repo-local Codex workflow skills.'
 
         # Prerelease string of this module
         Prerelease = 'dev'

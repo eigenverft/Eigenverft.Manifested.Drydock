@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repo Branch Into Main Sync"
+  short_description: "Sync a branch and bring it onto main"
+  default_prompt: "Use $repo-sync-branch-into-main to verify the current branch is fully synced with remote, switch to the detected mainline branch, refresh mainline from remote, and merge the branch into main locally."

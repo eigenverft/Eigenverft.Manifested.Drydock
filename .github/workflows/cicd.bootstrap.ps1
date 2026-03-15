@@ -77,13 +77,19 @@ System.Boolean
 function Test-GitHubConnectivity {
 <#
 .SYNOPSIS
-    Fast connectivity test to GitHub API with HEAD→GET fallback.
+    Tests connectivity to the GitHub REST API by issuing a documented GET request.
 
 .DESCRIPTION
-    Attempts a HEAD request to https://api.github.com/rate_limit.
-    If the server returns 405 (Method Not Allowed), retries with GET.
-    Considers HTTP 200–399 as reachable. Writes status and returns $true/$false.
-    Enforces TLS 1.2 on Windows PowerShell 5.1. Sets required User-Agent and Accept headers.
+    Sends a GET request to https://api.github.com/rate_limit.
+    This avoids the unreliable HEAD probe behavior previously used against the same endpoint.
+
+    The function:
+    - Enforces TLS 1.2 for Windows PowerShell 5.1 for the duration of the call.
+    - Sends the required User-Agent header.
+    - Sends Accept: application/vnd.github+json.
+    - Sends X-GitHub-Api-Version: 2022-11-28.
+    - Treats HTTP 200-399 as reachable.
+    - Logs clear diagnostics for API-level failures and transport-level failures.
 
 .EXAMPLE
     Test-GitHubConnectivity
@@ -92,74 +98,98 @@ function Test-GitHubConnectivity {
     System.Boolean
 #>
     [CmdletBinding()]
+    [OutputType([bool])]
     param()
 
     $url = 'https://api.github.com/rate_limit'
     $timeoutMs = 5000
 
-    # Ensure TLS 1.2 on PS5.1 without permanently altering session settings.
+    # Preserve the caller's TLS configuration and add TLS 1.2 for this probe.
     $origTls = [System.Net.ServicePointManager]::SecurityProtocol
+
     try {
-        # Add Tls12 flag if missing (bitwise OR avoids clobbering existing flags).
         [System.Net.ServicePointManager]::SecurityProtocol = $origTls -bor [System.Net.SecurityProtocolType]::Tls12
 
-        function Invoke-WebCheck {
-            param([string]$Method)
+        try {
+            # Use the documented GitHub REST endpoint instead of HEAD probing.
+            $req = [System.Net.HttpWebRequest]::CreateHttp($url)
+            $req.Method = 'GET'
+            $req.Timeout = $timeoutMs
+            $req.ReadWriteTimeout = $timeoutMs
+            $req.AllowAutoRedirect = $true
+            $req.UserAgent = 'WindowsPowerShell/5.1 GitHubConnectivityCheck'
+            $req.Accept = 'application/vnd.github+json'
+            $req.AutomaticDecompression = [System.Net.DecompressionMethods]::GZip -bor [System.Net.DecompressionMethods]::Deflate
+            $req.Headers['X-GitHub-Api-Version'] = '2022-11-28'
+
+            # Keep proxy behavior aligned with system defaults; do not inject proxy credentials here.
+            $res = [System.Net.HttpWebResponse]$req.GetResponse()
 
             try {
-                $req = [System.Net.HttpWebRequest]::Create($url)
-                $req.Method            = $Method
-                $req.Timeout           = $timeoutMs
-                $req.ReadWriteTimeout  = $timeoutMs
-                $req.AllowAutoRedirect = $true
-                $req.UserAgent         = 'WindowsPowerShell/5.1 GitHubConnectivityCheck'
-                $req.Accept            = 'application/vnd.github+json'
-
-                # NOTE: Use system proxy defaults; no credential munging here.
-                $res = $req.GetResponse()
                 $status = [int]$res.StatusCode
-                $res.Close()
 
                 if ($status -ge 200 -and $status -lt 400) {
-                    Write-ConsoleLog -Level INF -Message "GitHub reachable via $Method (HTTP $status)."
+                    Write-ConsoleLog -Level INF -Message "GitHub API reachable via GET /rate_limit (HTTP $status)."
                     return $true
-                } else {
-                    Write-ConsoleLog -Level WRN -Message "Error: GitHub returned HTTP $status on $Method."
-                    return $false
                 }
-            } catch [System.Net.WebException] {
-                $wex = $_.Exception
-                $resp = $wex.Response
-                if ($resp -and $resp -is [System.Net.HttpWebResponse]) {
-                    $status = [int]$resp.StatusCode
-                    $resp.Close()
-                    if ($status -eq 405 -and $Method -eq 'HEAD') {
-                        # Signal fallback to GET
-                        return $null
-                    }
-                    Write-ConsoleLog -Level WRN -Message "Error: GitHub $Method failed (HTTP $status): $($wex.Message)"
-                    return $false
-                } else {
-                    Write-ConsoleLog -Level WRN -Message "Error: GitHub $Method failed: $($wex.Message)"
-                    return $false
-                }
-            } catch {
-                Write-ConsoleLog -Level WRN -Message "Error: GitHub $Method failed: $($_.Exception.Message)"
+
+                Write-ConsoleLog -Level WRN -Message "Error: GitHub API returned unexpected HTTP $status on GET /rate_limit."
                 return $false
             }
+            finally {
+                if ($null -ne $res) {
+                    $res.Close()
+                }
+            }
         }
+        catch [System.Net.WebException] {
+            $wex = $_.Exception
+            $resp = $wex.Response
 
-        # Try HEAD first; if 405, fall back to GET.
-        $headResult = Invoke-WebCheck -Method 'HEAD'
-        if ($headResult -eq $true) { return $true }
-        if ($null -eq $headResult) {
-            $getResult = Invoke-WebCheck -Method 'GET'
-            return [bool]$getResult
+            if ($resp -and $resp -is [System.Net.HttpWebResponse]) {
+                try {
+                    $status = [int]$resp.StatusCode
+
+                    switch ($status) {
+                        401 {
+                            Write-ConsoleLog -Level WRN -Message "Error: GitHub API is reachable, but GET /rate_limit returned HTTP 401 (unauthorized)."
+                            break
+                        }
+                        403 {
+                            Write-ConsoleLog -Level WRN -Message "Error: GitHub API is reachable, but GET /rate_limit returned HTTP 403 (forbidden or rate-limited)."
+                            break
+                        }
+                        404 {
+                            Write-ConsoleLog -Level WRN -Message "Error: GitHub API GET /rate_limit returned HTTP 404. This is unexpected for the documented endpoint and can indicate proxy interception, content filtering, or an upstream rewrite."
+                            break
+                        }
+                        429 {
+                            Write-ConsoleLog -Level WRN -Message "Error: GitHub API is reachable, but GET /rate_limit returned HTTP 429 (too many requests)."
+                            break
+                        }
+                        default {
+                            Write-ConsoleLog -Level WRN -Message "Error: GitHub API GET /rate_limit failed (HTTP $status): $($wex.Message)"
+                            break
+                        }
+                    }
+
+                    return $false
+                }
+                finally {
+                    $resp.Close()
+                }
+            }
+
+            Write-ConsoleLog -Level WRN -Message "Error: GitHub API GET /rate_limit failed: $($wex.Message)"
+            return $false
         }
-        return $false
+        catch {
+            Write-ConsoleLog -Level WRN -Message "Error: GitHub API probe failed: $($_.Exception.Message)"
+            return $false
+        }
     }
     finally {
-        # Restore original TLS settings.
+        # Restore the caller's original TLS settings.
         [System.Net.ServicePointManager]::SecurityProtocol = $origTls
     }
 }

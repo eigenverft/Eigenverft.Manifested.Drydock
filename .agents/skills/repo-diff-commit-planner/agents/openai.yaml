@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repo Diff Commit Executor"
+  short_description: "Group repository diffs and execute logical commits"
+  default_prompt: "Use $repo-diff-commit-planner to analyze repository differences, group related changes into logical commits, and execute safe staging and commit steps for all commit-ready groups."

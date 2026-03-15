@@ -12,7 +12,7 @@
 RootModule = 'Eigenverft.Manifested.Drydock.psm1'
 
 # Version number of this module.
-ModuleVersion = '0.20256.49856'
+ModuleVersion = '1.20261.34099'
 
 # Supported PSEditions
 CompatiblePSEditions = @('Desktop','Core')
@@ -51,7 +51,7 @@ PowerShellVersion = '5.1'
 # ProcessorArchitecture = ''
 
 # Modules that must be imported into the global environment prior to importing this module
-# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '0.20256.49856'; })
+# RequiredModules = @(@{ModuleName = 'OtherModule'; ModuleVersion = '1.20261.34099'; })
 
 # Assemblies that must be loaded prior to importing this module
 # RequiredAssemblies = @()
@@ -70,6 +70,9 @@ PowerShellVersion = '5.1'
 
 # Functions to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no functions to export.
 FunctionsToExport = @(
+
+    # Certificates.ps1
+    'Compress-Directory',
 
     # ...Compression.ps1
     'Compress-Directory',
@@ -94,6 +97,10 @@ FunctionsToExport = @(
     'New-DotnetOutdatedReport',
     'New-ThirdPartyNotice',
     'Export-PackageLicenseTexts',
+
+    # ...DriveMapping.ps1
+    'New-NetworkDriveMapping',
+    'Remove-NetworkDriveMapping',
 
     # ...Execution.ps1
     'Invoke-Exec',
@@ -178,7 +185,10 @@ FunctionsToExport = @(
     'Convert-DateTimeTo64SecVersionComponents',
     'Convert-64SecVersionComponentsToDateTime',
     'Convert-DateTimeTo64SecPowershellVersion',
-    'Convert-64SecPowershellVersionToDateTime'
+    'Convert-64SecPowershellVersionToDateTime',
+
+    # ...WebRequest.ps1
+    'Invoke-WebRequestEx'
     )
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
@@ -238,10 +248,10 @@ PrivateData = @{
         IconUri = 'https://raw.githubusercontent.com/eigenverft/Eigenverft.Manifested.Drydock/refs/heads/main/resources/eigenverft-logo-v7-harbor-square_128_128.png'
 
         # ReleaseNotes of this module
-        ReleaseNotes = ''
+        ReleaseNotes = 'Aligned CICD workflow and bootstrapper with Sandbox, updated README shield badges, and added repo-local Codex workflow skills.'
 
         # Prerelease string of this module
-        Prerelease = ''
+        Prerelease = 'dev'
 
         # Flag to indicate whether the module requires explicit user acceptance for install/update/save
         # RequireLicenseAcceptance = $false

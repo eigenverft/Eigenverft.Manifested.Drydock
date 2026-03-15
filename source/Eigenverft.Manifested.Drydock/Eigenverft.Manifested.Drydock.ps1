@@ -242,6 +242,17 @@ Drydock -Commands
         [string]$Scope = 'CurrentUser'
     )
 
+    # Always: enforce TLS + system proxy defaults up-front (covers any later web-backed operations).
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { Write-Verbose ("TLS set failed: {0}" -f $_.Exception.Message) }
+    try {
+        [System.Net.WebRequest]::DefaultWebProxy = [System.Net.WebRequest]::GetSystemWebProxy()
+        if ([System.Net.WebRequest]::DefaultWebProxy) {
+            [System.Net.WebRequest]::DefaultWebProxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials
+        }
+    } catch {
+        Write-Verbose ("Proxy set failed: {0}" -f $_.Exception.Message)
+    }
+
     # Reviewer note: Keep identifiers centralized; avoids magic strings and typos.
     $ModuleName = 'Eigenverft.Manifested.Drydock'
     $Repository = 'PSGallery'
@@ -292,7 +303,6 @@ Drydock -Commands
                 return
             }
 
-            # Functions only (you already have $funcs)
             $rows = foreach ($f in $funcs) {
                 $n = $f.Name.Replace("'", "''")   # robust quoting for odd names
                 [pscustomobject]@{
@@ -305,7 +315,7 @@ Drydock -Commands
             return
         }
 
-        'UpdateSet' { 
+        'UpdateSet' {
             # Build Install-Module args.
             $params = @{
                 Name         = $ModuleName

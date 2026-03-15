@@ -7,7 +7,7 @@ name: cicd.yml
 on:
   push:
     paths:
-      - 'source/**'
+      - 'source/Eigenverft.Manifested.Drydock/**'
     branches:
       - 'master'
       - 'main'
@@ -35,6 +35,10 @@ jobs:
     if: (github.event_name == 'workflow_dispatch') || (github.event_name == 'repository_dispatch') || (github.event_name == 'push')
  
     runs-on: windows-latest
+
+    permissions:
+      contents: write
+      packages: write
     
     env:
       GH_TOKEN: ${{ github.token }}
@@ -52,6 +56,6 @@ jobs:
       run: pwsh --version
 
     - name: Workflow Build/Deploy
-      run: .github/workflows/cicd.ps1 -PsGalleryApiKey "${{ secrets.POWERSHELL_GALLERY }}"
+      run: .github/workflows/cicd.ps1 -PsGalleryApiKey "${{ secrets.PsGalleryApiKey }}" -NuGetGitHubPush "${{ github.token }}"
       shell: pwsh
       

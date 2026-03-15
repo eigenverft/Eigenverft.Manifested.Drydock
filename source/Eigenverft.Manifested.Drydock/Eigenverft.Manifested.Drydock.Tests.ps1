@@ -47,7 +47,9 @@ function Test-VariableValue {
         
         [switch]$HideValue,
         
-        [switch]$ExitIfNullOrEmpty
+        [switch]$ExitIfNullOrEmpty,
+
+        [switch]$WarnIfNullOrEmpty
     )
 
     function local:_Write-StandardMessage {
@@ -267,21 +269,29 @@ function Test-VariableValue {
     # Evaluate the script block to get the variable's value.
     $value = & $Variable
 
-    # Check if the value is null or empty and exit if required.
-    if ($ExitIfNullOrEmpty) {
-        if ($null -eq $value) {
-            _Write-StandardMessage -Message "[ERROR] Test-VariableValue: '$varName' is null." -Level 'ERR'
-            exit 1
-        }
-        if (($value -is [string]) -and [string]::IsNullOrEmpty($value)) {
-            _Write-StandardMessage -Message "[ERROR] Test-VariableValue: '$varName' is an empty string." -Level 'ERR'
-            exit 1
-        }
-        if ($value -is [hashtable] -and ($value.Count -eq 0)) {
-            _Write-StandardMessage -Message "[ERROR] Test-VariableValue: '$varName' is an empty hashtable." -Level 'ERR'
-            exit 1
-        }
+    $isNullOrEmpty = $false
+
+    if ($null -eq $value) {
+        $isNullOrEmpty = $true
     }
+    if (($value -is [string]) -and [string]::IsNullOrEmpty($value)) {
+        $isNullOrEmpty = $true
+    }
+    if ($value -is [hashtable] -and ($value.Count -eq 0)) {
+        $isNullOrEmpty = $true
+    }
+
+
+    if ($ExitIfNullOrEmpty -and $isNullOrEmpty) {
+        _Write-StandardMessage -Message "[ERROR] Test-VariableValue: '$varName' is null or empty." -Level 'ERR'
+        exit 1
+    }
+
+    if ($WarnIfNullOrEmpty -and $isNullOrEmpty) {
+        _Write-StandardMessage -Message "[WARN] Test-VariableValue: '$varName' is null or empty." -Level 'WRN'
+        return
+    }
+
 
     # Prepare the display value.
     if ($HideValue) {

@@ -9,7 +9,8 @@
     'PSAvoidUsingPositionalParameters',
     'PSUseOutputTypeCorrectly',
     'PSAvoidTrailingWhitespace',
-    'PSReviewUnusedParameter'
+    'PSReviewUnusedParameter',
+    'PSAvoidusingplaintextforpassword'
     )
   Rules = @{
     PSUseCompatibleSyntax = @{

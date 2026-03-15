@@ -1,8 +1,6 @@
 # Eigenverft.Manifested.Drydock
 
-[![PowerShell Gallery Version](https://img.shields.io/powershellgallery/v/Eigenverft.Manifested.Drydock?label=PSGallery&logo=powershell)](https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock)
-[![PowerShell Gallery Platform Support](https://img.shields.io/powershellgallery/p/Eigenverft.Manifested.Drydock?logo=windows)](https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock)
-[![License](https://img.shields.io/github/license/eigenverft/Eigenverft.Manifested.Drydock?logo=mit)](LICENSE)
+[![PowerShell Gallery Version](https://img.shields.io/powershellgallery/v/Eigenverft.Manifested.Drydock?label=PSGallery&logo=powershell)](https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock) [![PowerShell Gallery Downloads](https://img.shields.io/powershellgallery/dt/Eigenverft.Manifested.Drydock?label=Downloads&logo=powershell)](https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock) [![PowerShell Support](https://img.shields.io/badge/PowerShell-5.1%2B%20Desktop%2FCore-5391FE?logo=powershell&logoColor=white)](source/Eigenverft.Manifested.Drydock/Eigenverft.Manifested.Drydock.psd1) [![Build Status](https://img.shields.io/github/actions/workflow/status/eigenverft/Eigenverft.Manifested.Drydock/cicd.yml?branch=main&label=build)](https://github.com/eigenverft/Eigenverft.Manifested.Drydock/actions/workflows/cicd.yml) [![License](https://img.shields.io/github/license/eigenverft/Eigenverft.Manifested.Drydock?logo=mit)](LICENSE)
 
 PowerShell helper functions for the Eigenverft Manifested Drydock, optimized for lightning-fast iteration and reliable local + CI/CD workflows.
 

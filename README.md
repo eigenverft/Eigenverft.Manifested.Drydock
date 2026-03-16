@@ -35,10 +35,10 @@ No admin rights needed, sets up PowerShellGet and PackageManagement for CurrentU
 
 ```batch
 # From Command Prompt:
-powershell -NoProfile -ExecutionPolicy Unrestricted -Command "& { irm -Uri https://tinyurl.com/DrydockInit | iex }"
+powershell -NoProfile -ExecutionPolicy Unrestricted -Command "& { irm -Uri https://raw.githubusercontent.com/eigenverft/Eigenverft.Manifested.Drydock/refs/heads/main/install/DrydockInit.ps1 | iex }"
 
 # From PowerShell 5.1:
-Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope Process ; irm -Uri https://tinyurl.com/DrydockInit | iex
+Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope Process ; irm -Uri https://raw.githubusercontent.com/eigenverft/Eigenverft.Manifested.Drydock/refs/heads/main/install/DrydockInit.ps1 | iex
 ```
 
 ---

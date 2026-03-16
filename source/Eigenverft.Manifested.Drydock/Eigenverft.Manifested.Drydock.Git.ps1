@@ -76,10 +76,10 @@ function Get-GitCurrentBranch {
         # If HEAD is returned, we're in a detached state.
         if ($branch -eq 'HEAD') {
             # Try to get branch names that contain the current commit.
-            $branches = git branch --contains HEAD 2>$null | ForEach-Object {
+            $branches = @(git branch --contains HEAD 2>$null | ForEach-Object {
                 # Remove any asterisks or leading/trailing whitespace.
                 $_.Replace('*','').Trim()
-            } | Where-Object { $_ -ne '' }
+            } | Where-Object { $_ -ne '' -and $_ -notmatch '^\(HEAD detached' })
 
             if ($branches.Count -gt 0) {
                 # Return the first branch found
@@ -133,9 +133,9 @@ function Get-GitCurrentBranchRoot {
         # Check for detached HEAD state.
         if ($branch -eq 'HEAD') {
             # Retrieve branches containing the current commit.
-            $branches = git branch --contains HEAD 2>$null | ForEach-Object {
+            $branches = @(git branch --contains HEAD 2>$null | ForEach-Object {
                 $_.Replace('*','').Trim()
-            } | Where-Object { $_ -ne '' }
+            } | Where-Object { $_ -ne '' -and $_ -notmatch '^\(HEAD detached' })
 
             if ($branches.Count -gt 0) {
                 $branch = $branches[0]

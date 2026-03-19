@@ -164,30 +164,32 @@ function Get-GitCurrentBranchRoot {
 function Get-GitRepositoryName {
     <#
     .SYNOPSIS
-        Gibt den Namen des Git-Repositories anhand der Remote-URL zurück.
+        Returns the Git repository name based on the remote URL.
 
     .DESCRIPTION
-        Diese Funktion ruft über 'git config --get remote.origin.url' die Remote-URL des Repositories ab.
-        Anschließend wird der Repository-Name aus der URL extrahiert, indem der letzte Teil der URL (nach dem letzten "/" oder ":")
-        entnommen und eine eventuell vorhandene ".git"-Endung entfernt wird.
-        Sollte keine Remote-URL vorhanden sein, wird ein Fehler ausgegeben.
+        This function retrieves the repository remote URL by calling
+        'git config --get remote.origin.url'.
+        It then extracts the repository name from the URL by taking the last
+        segment after the final "/" or ":" and removing a trailing ".git"
+        suffix when present.
+        If no remote URL is available, the function writes an error.
 
     .PARAMETER None
-        Diese Funktion benötigt keine Parameter.
+        This function does not require any parameters.
 
     .EXAMPLE
         PS C:\Projects\MyRepo> Get-GitRepositoryName
         MyRepo
 
     .NOTES
-        Stelle sicher, dass Git installiert ist und in deinem Systempfad verfügbar ist.
+        Ensure Git is installed and available in the system PATH.
     #>
     [CmdletBinding()]
     [alias("ggrn")]
     param()
 
     try {
-        # Remote-URL des Repositories abrufen
+        # Retrieve the repository remote URL.
         $remoteUrl = git config --get remote.origin.url 2>$null
 
         if (-not $remoteUrl) {
@@ -197,56 +199,55 @@ function Get-GitRepositoryName {
 
         $remoteUrl = $remoteUrl.Trim()
 
-        # Entferne eine eventuell vorhandene ".git"-Endung
+        # Remove a trailing ".git" suffix when present.
         if ($remoteUrl -match "\.git$") {
             $remoteUrl = $remoteUrl.Substring(0, $remoteUrl.Length - 4)
         }
 
-        # Unterscheidung zwischen URL-Formaten (HTTPS/SSH)
+        # Handle both HTTPS and SSH URL formats.
         if ($remoteUrl.Contains('/')) {
             $parts = $remoteUrl.Split('/')
         }
         else {
-            # SSH-Format: z.B. git@github.com:User/Repo
+            # SSH format, for example: git@github.com:User/Repo
             $parts = $remoteUrl.Split(':')
         }
 
-        # Letztes Element als Repository-Name extrahieren
+        # Extract the final segment as the repository name.
         $repoName = $parts[-1]
         return $repoName
     }
     catch {
-        Write-Error "Fehler beim Abrufen des Repository-Namens: $_"
+        Write-Error "Error retrieving the repository name: $_"
     }
 }
 
 function Get-GitRemoteUrl {
     <#
     .SYNOPSIS
-        Gibt den Namen des Git-Repositories anhand der Remote-URL zurück.
+        Returns the Git repository remote URL.
 
     .DESCRIPTION
-        Diese Funktion ruft über 'git config --get remote.origin.url' die Remote-URL des Repositories ab.
-        Anschließend wird der Repository-Name aus der URL extrahiert, indem der letzte Teil der URL (nach dem letzten "/" oder ":")
-        entnommen und eine eventuell vorhandene ".git"-Endung entfernt wird.
-        Sollte keine Remote-URL vorhanden sein, wird ein Fehler ausgegeben.
+        This function retrieves the repository remote URL by calling
+        'git config --get remote.origin.url' and returns it as a trimmed string.
+        If no remote URL is available, the function writes an error.
 
     .PARAMETER None
-        Diese Funktion benötigt keine Parameter.
+        This function does not require any parameters.
 
     .EXAMPLE
-        PS C:\Projects\MyRepo> Get-GitRepositoryName
-        MyRepo
+        PS C:\Projects\MyRepo> Get-GitRemoteUrl
+        https://github.com/contoso/MyRepo.git
 
     .NOTES
-        Stelle sicher, dass Git installiert ist und in deinem Systempfad verfügbar ist.
+        Ensure Git is installed and available in the system PATH.
     #>
     [CmdletBinding()]
     [alias("gru")]
     param()
 
     try {
-        # Remote-URL des Repositories abrufen
+        # Retrieve the repository remote URL.
         $remoteUrl = git config --get remote.origin.url 2>$null
 
         if (-not $remoteUrl) {
@@ -259,7 +260,7 @@ function Get-GitRemoteUrl {
         return $remoteUrl
     }
     catch {
-        Write-Error "Fehler beim Abrufen des Repository-Namens: $_"
+        Write-Error "Error retrieving the repository remote URL: $_"
     }
 }
 

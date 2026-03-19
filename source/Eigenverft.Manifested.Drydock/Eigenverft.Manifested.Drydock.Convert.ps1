@@ -314,7 +314,7 @@ Convert-FilePlaceholders -InputFile './in.tpl' -OutputFile './out.txt' -Replacem
 function Convert-TemplateFilePlaceholders {
 <#
 .SYNOPSIS
-Transforms a template file by replacing {{Placeholders}} with provided values and writes the result to an output file.
+Transforms a template file by replacing {{Placeholders}} and either writes to an explicit output path or derives one from -TemplateFile.
 
 .DESCRIPTION
 Reads all text from an input file, replaces placeholders of the form {{Name}} using values from a hashtable,

@@ -1,6 +1,4 @@
 function Test-VariableValue {
-    # Suppress the use of unapproved verb in function name
-    [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
     <#
     .SYNOPSIS
     Ensures a variable meets conditions and displays its details.
@@ -39,6 +37,8 @@ function Test-VariableValue {
     .NOTES
     The script block must contain a simple variable reference for the AST extraction to work correctly.
     #>
+    # Suppress the use of unapproved verb in function name
+    [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
     [CmdletBinding()]
     [Alias("tvv")]
     param (

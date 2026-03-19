@@ -752,7 +752,7 @@ via Save-Package into Root\Nuget. Copies the local NuGet provider DLLs into Root
 bootstrap the provider. Always emits "Install-ModulesFromRepoFolder.ps1" in the root folder, which contains the
 installer function plus a ready-to-run invocation that targets the folder it resides in.
 
-.REQUIREMENTS
+Requirements:
 Machine A (online, where you run this Save function):
 - Windows PowerShell 5.1.
 - Working internet access to https://www.powershellgallery.com/api/v2 .
@@ -792,7 +792,7 @@ One or more module names to stage.
 .EXAMPLE
 PS> Export-OfflineModuleBundle -Folder C:\temp\export -Name @('PowerShellGet','PackageManagement','Pester','PSScriptAnalyzer','Eigenverft.Manifested.Drydock')
 
-.TROUBLESHOOTING
+.NOTES
 - On Machine B, if the script reports missing NuGet provider, verify the "Provider" folder exists and contains NuGet*.dll.
 - If Install-Module errors with repository issues, confirm the "Nuget" folder exists and holds the .nupkg files.
 - If execution is blocked, set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass for the current session.
@@ -954,7 +954,7 @@ function Install-ModulesFromRepoFolder {
 .SYNOPSIS
 Install modules from Root\Nuget using a temporary PSRepository; bootstrap NuGet provider from Root\Provider. (PS 5.1)
 
-.REQUIREMENTS
+.NOTES
 - Windows PowerShell 5.1.
 - Root folder contains:
   - Provider\ with NuGet*.dll for offline bootstrap (if provider is missing).
@@ -1164,7 +1164,7 @@ Uninstall-PreviousModuleVersions -ModuleName Eigenverft.Manifested.Drydock
 .OUTPUTS
 pscustomobject (only when -PassThru is specified)
 
-.REQUIREMENTS
+Requirements:
 - PowerShell: Windows PowerShell 5.1 or later (PowerShell 7+ also supported).
 - PowerShellGet available: Get-InstalledModule, Uninstall-Module, Import-PowerShellDataFile.
 - Messaging via Write-Host only.
@@ -1172,7 +1172,7 @@ pscustomobject (only when -PassThru is specified)
 - No parameter splatting. No filesystem deletion fallback. Only Uninstall-Module is used for removal.
 - MUST HAVE: ASCII-only for the help and function code (no Unicode characters)
 
-.NOTES
+Additional notes:
 Reliability and limits (judgment):
 - With valid manifests, removals and final import are highly reliable. Short versions (for example 0.1) and four-part versions are handled correctly.
 - On older PowerShellGet without -AllowPrerelease, prerelease removals tied to a stable with the same numeric core can fail; failures are reported and the system remains unchanged.

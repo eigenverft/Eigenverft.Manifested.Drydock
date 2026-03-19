@@ -27,7 +27,7 @@ Author = 'Eigenverft'
 CompanyName = ''
 
 # Copyright statement for this module
-Copyright = 'Copyright (c) 2025 Eigenverft'
+Copyright = 'Copyright (c) 2026 Eigenverft'
 
 # Description of the functionality provided by this module
 Description = 'A comprehensive PowerShell module providing automation and deployment tools for the Eigenverft Manifested Drydock environment. Features include Git operations, .NET project handling, process management, scheduled tasks, logging, and IO operations. Optimized for lightning-fast iteration with built-in auto-versioning and seamless local/CI/CD workflow integration. Supports both PowerShell Desktop and Core editions, ensuring consistent behavior across development and deployment environments. For CI/CD examples, see https://github.com/eigenverft/Eigenverft.Manifested.Drydock/blob/main/.github/workflows/cicd.ps1.'
@@ -72,7 +72,9 @@ PowerShellVersion = '5.1'
 FunctionsToExport = @(
 
     # Certificates.ps1
-    'Compress-Directory',
+    'New-DomainCsr',
+    'New-CertPfxFromChain',
+    'Test-CertPfx',
 
     # ...Compression.ps1
     'Compress-Directory',
@@ -81,7 +83,7 @@ FunctionsToExport = @(
     # ...Convert.ps1
     'Convert-FilePlaceholders',
     'Convert-TemplateFilePlaceholders',
-    'Convert-StringToBaseObject'
+    'Convert-StringToBaseObject',
 
     # ...Deployments.ps1
     'Convert-BranchToDeploymentInfo',
@@ -110,7 +112,7 @@ FunctionsToExport = @(
     'Get-DotNetFrameworkInfo',
     'Get-DotNetFrameworkLatestByFamily',
     'Get-DotNetFrameworkFamilyCapabilities',
-    'Get-DotNetFrameworkCapabilityByTarget'
+    'Get-DotNetFrameworkCapabilityByTarget',
 
     # ...Git.ps1
     'Get-GitTopLevelDirectory',
@@ -121,7 +123,7 @@ FunctionsToExport = @(
     'Invoke-GitAddCommitPush',
 
     # ...GitHub.ps1
-    'Get-GitHubLatestRelease'
+    'Get-GitHubLatestRelease',
 
     # ...IO.ps1
     'Find-FilesByPattern',
@@ -139,7 +141,7 @@ FunctionsToExport = @(
     'Write-ConsoleLog',
 
     # ...Powershell.ps1
-    'Test-InstallationScopeCapability'
+    'Test-InstallationScopeCapability',
     'Set-PSGalleryTrust',
     'Initialize-NugetPackageProvider',
     'Initialize-PowerShellGet',
@@ -236,7 +238,7 @@ PrivateData = @{
     PSData = @{
 
         # Tags applied to this module. These help with module discovery in online galleries.
-        Tags = 'Eigenverft', 'Manifested', "Drydock", 'Powershell'
+        Tags = 'Eigenverft', 'Manifested', 'Drydock', 'Powershell'
 
         # A URL to the license for this module.
         LicenseUri = 'https://github.com/eigenverft/Eigenverft.Manifested.Drydock/blob/main/LICENSE'

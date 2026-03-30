@@ -1,4 +1,0 @@
-interface:
-  display_name: "SoftSkillManager"
-  short_description: "Create skill files directly from lightweight specs"
-  default_prompt: "Use $skill-manager-light to create or update skill files directly from a user description with lightweight checklists and quality checks."

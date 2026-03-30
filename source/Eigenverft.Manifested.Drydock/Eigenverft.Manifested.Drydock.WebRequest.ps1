@@ -1,451 +1,1381 @@
+function Write-StandardMessage {
+    [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+    param(
+        [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
+        [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
+        [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
+    )
+    if ($null -eq $Message) { $Message = [string]::Empty }
+    $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
+    if(-not $PSBoundParameters.ContainsKey('MinLevel')){
+        $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+        $MinLevel=if($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)){[string]$gv.Value}else{'INF'}
+    }
+    $lvl=$Level.ToUpperInvariant()
+    $min=$MinLevel.ToUpperInvariant()
+    $sev=$sevMap[$lvl];if($null -eq $sev){$lvl='INF';$sev=$sevMap['INF']}
+    $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
+    if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
+    if($sev -lt $gate){return}
+    $ts=[DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss')
+    $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
+    if($stack){
+        # 1: prefer first non-underscore function not defined in the helper's own file
+        for($i=0;$i -lt $stack.Count;$i++){
+            $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+            if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+        }
+        # 2: fallback to first non-underscore function (any file)
+        if(-not $caller){
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName
+                if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')){$caller=$f;break}
+            }
+        }
+        # 3: fallback to first non-helper frame not from helper's own file
+        if(-not $caller){
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                if($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+            }
+        }
+        # 4: final fallback to first non-helper frame
+        if(-not $caller){
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName
+                if($fn -and $fn -ne $helperName){$caller=$f;break}
+            }
+        }
+    }
+    if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
+    $lineNumber=$null ; 
+    $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
+    if(-not $lineNumber){
+        $p=$caller.PSObject.Properties['Position']
+        if($p -and $p.Value){
+            $sp=$p.Value.PSObject.Properties['StartLineNumber'];if($sp -and $sp.Value){$lineNumber=[string]$sp.Value}
+        }
+    }
+    if(-not $lineNumber){
+        $p=$caller.PSObject.Properties['Location']
+        if($p -and $p.Value){
+            $m=[regex]::Match([string]$p.Value,':(\d+)\s+char:','IgnoreCase');if($m.Success -and $m.Groups.Count -gt 1){$lineNumber=$m.Groups[1].Value}
+        }
+    }
+    $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
+    if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
+    $prefix="[$ts "
+    #$suffix="] [$file] $Message"
+    $suffix="] $Message"
+    $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='Red';Back='DarkRed'}}[$lvl]
+    $fore=$cfg.Fore
+    $back=$cfg.Back
+    $isInteractive = [System.Environment]::UserInteractive
+    if($isInteractive -and ($fore -or $back)){
+        Write-Host -NoNewline $prefix
+        if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
+        elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
+        elseif($back){Write-Host -NoNewline $lvl -BackgroundColor $back}
+        Write-Host $suffix
+    } else {
+        Write-Host "$prefix$lvl$suffix"
+    }
+
+    if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
+}
+
 function Invoke-WebRequestEx {
 <#
 .SYNOPSIS
-    Quickly download a URI to a file by streaming in large buffers via .NET, avoiding PowerShell's 2GB memory limit.
+    Invokes a web request with retries, proxy/TLS handling, and optional streaming downloads.
 
 .DESCRIPTION
-    Invoke-WebRequestEx is a streaming-focused alternative to Invoke-WebRequest for large downloads on
-    Windows PowerShell 5/5.1 and PowerShell 7+ (Windows, macOS, Linux).
+    Wraps Invoke-WebRequest for Windows PowerShell 5.1 and adds:
+    - TLS 1.2 enablement
+    - OutFile parent directory creation
+    - Proxy auto-discovery when the caller did not specify proxy settings
+    - Retry handling for all HTTP methods
+    - Optional total retry budget
+    - Optional streaming download path for compatible GET + OutFile scenarios
+    - Automatic resume for compatible streaming downloads unless disabled
+    - Optional certificate validation bypass for development environments
+    - Optional automatic upgrade to UseDefaultCredentials after an unauthenticated 401 response when WWW-Authenticate is present
+      and the target resolves as intranet-like via dotless host, loopback, or private/link-local addressing
 
-    It uses the .NET WebRequest API and streams the HTTP response directly to disk in fixed-size chunks,
-    avoiding large in-memory buffers. This makes it suitable for multi-gigabyte downloads that would
-    otherwise hit PowerShell's historical 2GB memory limit on older hosts.
-
-    The function performs up to three download attempts with a 5 second wait between failures.
-    Progress is reported via low-noise log messages: approximately every 10 percent for known content
-    length, or every 50 MB when the total size is unknown.
+    Compatibility is prioritized. Native Invoke-WebRequest remains the default
+    engine. The streaming engine is only used when the request looks like a
+    simple download and no compatibility-sensitive parameters are present.
 
 .PARAMETER Uri
-    The HTTP or HTTPS URL to download.
+    The request URI.
 
-.PARAMETER OutFile
-    The full path where the content will be saved. The file is overwritten if it already exists.
+.PARAMETER RetryCount
+    The maximum number of attempts for the request. Applies to all methods.
 
-.PARAMETER Method
-    HTTP method to use (GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH). Defaults to GET.
+.PARAMETER RetryDelayMilliseconds
+    The delay between retry attempts in milliseconds.
 
-.PARAMETER Headers
-    Hashtable of HTTP headers to include in the request.
+.PARAMETER TotalTimeoutSec
+    Optional total retry budget in seconds. Zero disables the total retry
+    budget and leaves timeout behavior to individual attempts.
 
-.PARAMETER TimeoutSec
-    Timeout for the request in seconds. If zero or omitted, default .NET timeouts are used.
+.PARAMETER BufferSizeBytes
+    The streaming download buffer size in bytes.
 
-.PARAMETER Credential
-    PSCredential for authenticated requests. Uses .NET WebRequest credentials handling.
+.PARAMETER ProgressIntervalPercent
+    The streaming progress interval for known content length.
 
-.PARAMETER UseBasicParsing
-    Switch reserved for compatibility with older Invoke-WebRequest usage. Parsed but not used.
+.PARAMETER ProgressIntervalBytes
+    The streaming progress interval for unknown content length.
 
-.PARAMETER Body
-    Byte array to send as the request body for POST/PUT/PATCH requests.
+.PARAMETER UseStreamingDownload
+    Prefer the streaming download engine when the request is compatible with it.
 
-.PARAMETER Force
-    Reserved switch for future use. Has no effect in the current implementation.
+.PARAMETER DisableResumeStreamingDownload
+    Disables automatic resume for the streaming download path.
 
-.EXAMPLE
-    Invoke-WebRequestEx -Uri 'https://example.com/large.zip' -OutFile 'C:\Temp\large.zip'
+.PARAMETER DeletePartialStreamingDownloadOnFailure
+    Deletes the partially downloaded output file when the streaming download
+    path ends in a terminal failure.
 
-    Downloads a large ZIP file and streams it directly to disk on Windows PowerShell 5.1 or PowerShell 7+.
+.PARAMETER SkipCertificateCheck
+    Skips TLS server certificate validation for this request. Intended for
+    development or lab scenarios only.
 
-.EXAMPLE
-    Invoke-WebRequestEx -Uri 'https://example.com/api/data' -OutFile './data.bin' -Headers @{
-        'Authorization' = 'Bearer 123'
-        'Accept'        = 'application/octet-stream'
-    }
+.PARAMETER DisableAutoUseDefaultCredentials
+    Disables the automatic retry with UseDefaultCredentials when the initial
+    unauthenticated request receives a 401 response with a WWW-Authenticate
+    challenge and the target resolves as intranet-like.
 
-    Downloads binary API data with custom headers to a file in the current directory on any supported platform.
-
-.EXAMPLE
-    $payload = [System.Text.Encoding]::UTF8.GetBytes('{ "query": "value" }')
-    Invoke-WebRequestEx -Uri 'https://example.com/api/export' -Method 'POST' -Body $payload -OutFile './export.json'
-
-    Sends a JSON payload as a POST request and streams the response content to disk.
+.PARAMETER AllowSelfSigned
+    Legacy alias for SkipCertificateCheck.
 
 .EXAMPLE
-    $cred = Get-Credential
-    Invoke-WebRequestEx -Uri 'https://intranet.example.com/file.iso' -OutFile 'C:\Temp\file.iso' -TimeoutSec 600 -Credential $cred
+    Invoke-WebRequestEx -Uri 'https://example.org'
 
-    Downloads a large ISO from an authenticated intranet endpoint with an explicit timeout.
+.EXAMPLE
+    Invoke-WebRequestEx -Uri 'https://example.org/file.iso' -OutFile 'C:\Temp\file.iso'
 
-.NOTES
-    - Compatible with Windows PowerShell 5/5.1 and PowerShell 7+ on Windows, macOS, and Linux.
-    - Intended for HTTP and HTTPS URIs.
-    - The target file is always overwritten; repeated runs converge to the same on-disk result if the remote resource is unchanged.
-    - Maximum of 3 attempts, 5 seconds delay between attempts on failure.
+.EXAMPLE
+    Invoke-WebRequestEx -Uri 'https://example.org/api' -Method Post -Body '{ "a": 1 }' -RetryCount 3
+
+.EXAMPLE
+    Invoke-WebRequestEx -Uri 'https://devbox.local/file.zip' -OutFile 'C:\Temp\file.zip' -SkipCertificateCheck
 #>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory=$true, Position=0)]
-        [string] $Uri,
-
-        [Parameter(Mandatory=$true, Position=1)]
-        [string] $OutFile,
+    [CmdletBinding(PositionalBinding = $false)]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [Alias('Url')]
+        [uri]$Uri,
 
         [Parameter()]
-        [ValidateSet('GET','POST','PUT','DELETE','HEAD','OPTIONS','PATCH')]
-        [string] $Method = 'GET',
+        [switch]$UseBasicParsing,
 
         [Parameter()]
-        [hashtable] $Headers,
+        [object]$WebSession,
 
         [Parameter()]
-        [int] $TimeoutSec = 0,
+        [string]$SessionVariable,
 
         [Parameter()]
-        [System.Management.Automation.PSCredential] $Credential,
+        [System.Management.Automation.PSCredential]$Credential,
 
         [Parameter()]
-        [switch] $UseBasicParsing,
+        [switch]$UseDefaultCredentials,
 
         [Parameter()]
-        [byte[]] $Body,
+        [string]$CertificateThumbprint,
 
         [Parameter()]
-        [switch] $Force,
+        [System.Security.Cryptography.X509Certificates.X509Certificate]$Certificate,
 
         [Parameter()]
-        [switch] $AllowSelfSigned
+        [string]$UserAgent,
+
+        [Parameter()]
+        [switch]$DisableKeepAlive,
+
+        [Parameter()]
+        [int]$TimeoutSec,
+
+        [Parameter()]
+        [System.Collections.IDictionary]$Headers,
+
+        [Parameter()]
+        [int]$MaximumRedirection,
+
+        [Parameter()]
+        [ValidateSet('Default','Get','Head','Post','Put','Delete','Trace','Options','Merge','Patch')]
+        [string]$Method,
+
+        [Parameter()]
+        [uri]$Proxy,
+
+        [Parameter()]
+        [System.Management.Automation.PSCredential]$ProxyCredential,
+
+        [Parameter()]
+        [switch]$ProxyUseDefaultCredentials,
+
+        [Parameter()]
+        [object]$Body,
+
+        [Parameter()]
+        [string]$ContentType,
+
+        [Parameter()]
+        [string]$TransferEncoding,
+
+        [Parameter()]
+        [string]$InFile,
+
+        [Parameter()]
+        [string]$OutFile,
+
+        [Parameter()]
+        [switch]$PassThru,
+
+        [Parameter()]
+        [Alias('AllowSelfSigned')]
+        [switch]$SkipCertificateCheck,
+
+        [Parameter()]
+        [switch]$DisableAutoUseDefaultCredentials,
+
+        [Parameter()]
+        [ValidateRange(1, 100)]
+        [int]$RetryCount = 3,
+
+        [Parameter()]
+        [ValidateRange(0, 86400000)]
+        [int]$RetryDelayMilliseconds = 1000,
+
+        [Parameter()]
+        [ValidateRange(0, 2147483647)]
+        [int]$TotalTimeoutSec = 0,
+
+        [Parameter()]
+        [ValidateRange(1024, 268435456)]
+        [Alias('BufferSize')]
+        [int]$BufferSizeBytes = 4194304,
+
+        [Parameter()]
+        [ValidateRange(1, 100)]
+        [int]$ProgressIntervalPercent = 10,
+
+        [Parameter()]
+        [ValidateRange(1048576, 9223372036854775807)]
+        [long]$ProgressIntervalBytes = 52428800,
+
+        [Parameter()]
+        [Alias('DeleteStreamingFragmentsOnFailure')]
+        [switch]$DeletePartialStreamingDownloadOnFailure,
+
+        [Parameter()]
+        [switch]$UseStreamingDownload,
+
+        [Parameter()]
+        [switch]$DisableResumeStreamingDownload
     )
 
-    function local:_Write-StandardMessage {
-        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+    function local:_UriDisplayShortener {
         param(
-            [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
-            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
-            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
+            [Parameter(Mandatory = $true)]
+            [uri]$TargetUri
         )
-        if ($null -eq $Message) { $Message = [string]::Empty }
-        $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
-        if(-not $PSBoundParameters.ContainsKey('MinLevel')){
-            $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
-            $MinLevel=if($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)){[string]$gv.Value}else{'INF'}
-        }
-        $lvl=$Level.ToUpperInvariant()
-        $min=$MinLevel.ToUpperInvariant()
-        $sev=$sevMap[$lvl];if($null -eq $sev){$lvl='INF';$sev=$sevMap['INF']}
-        $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
-        if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
-        if($sev -lt $gate){return}
-        $ts=[DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
-        $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
-        if($stack){
-            # 1: prefer first non-underscore function not defined in the helper's own file
-            for($i=0;$i -lt $stack.Count;$i++){
-                $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
-                if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
-            }
-            # 2: fallback to first non-underscore function (any file)
-            if(-not $caller){
-                for($i=0;$i -lt $stack.Count;$i++){
-                    $f=$stack[$i];$fn=$f.FunctionName
-                    if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')){$caller=$f;break}
-                }
-            }
-            # 3: fallback to first non-helper frame not from helper's own file
-            if(-not $caller){
-                for($i=0;$i -lt $stack.Count;$i++){
-                    $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
-                    if($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
-                }
-            }
-            # 4: final fallback to first non-helper frame
-            if(-not $caller){
-                for($i=0;$i -lt $stack.Count;$i++){
-                    $f=$stack[$i];$fn=$f.FunctionName
-                    if($fn -and $fn -ne $helperName){$caller=$f;break}
-                }
-            }
-        }
-        if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
-        $lineNumber=$null ; 
-        $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
-        if(-not $lineNumber){
-            $p=$caller.PSObject.Properties['Position']
-            if($p -and $p.Value){
-                $sp=$p.Value.PSObject.Properties['StartLineNumber'];if($sp -and $sp.Value){$lineNumber=[string]$sp.Value}
-            }
-        }
-        if(-not $lineNumber){
-            $p=$caller.PSObject.Properties['Location']
-            if($p -and $p.Value){
-                $m=[regex]::Match([string]$p.Value,':(\d+)\s+char:','IgnoreCase');if($m.Success -and $m.Groups.Count -gt 1){$lineNumber=$m.Groups[1].Value}
-            }
-        }
-        $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
-        if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
-        $prefix="[$ts "
-        $suffix="] [$file] $Message"
-        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='Red';Back='DarkRed'}}[$lvl]
-        $fore=$cfg.Fore
-        $back=$cfg.Back
-        $isInteractive = [System.Environment]::UserInteractive
-        if($isInteractive -and ($fore -or $back)){
-            Write-Host -NoNewline $prefix
-            if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
-            elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
-            elseif($back){Write-Host -NoNewline $lvl -BackgroundColor $back}
-            Write-Host $suffix
-        } else {
-            Write-Host "$prefix$lvl$suffix"
+
+        $originalText = [string]$TargetUri
+        if ([string]::IsNullOrWhiteSpace($originalText)) {
+            return $originalText
         }
 
-        if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
+        try {
+            $hostDisplay = $TargetUri.Host
+            $absolutePath = $TargetUri.AbsolutePath
+
+            $querySuffix = if (-not [string]::IsNullOrEmpty($TargetUri.Query)) { '?...' } else { '' }
+            $fragmentSuffix = if (-not [string]::IsNullOrEmpty($TargetUri.Fragment)) { '#...' } else { '' }
+
+            if ([string]::IsNullOrEmpty($absolutePath) -or $absolutePath -eq '/') {
+                return ($hostDisplay + '/' + $querySuffix + $fragmentSuffix)
+            }
+
+            $segments = @($absolutePath -split '/' | Where-Object { $_ -ne '' })
+
+            if ($segments.Count -le 1) {
+                return ($hostDisplay + $absolutePath + $querySuffix + $fragmentSuffix)
+            }
+
+            if ($absolutePath.EndsWith('/')) {
+                return ($hostDisplay + '/.../' + $querySuffix + $fragmentSuffix)
+            }
+
+            $lastSegment = $segments[$segments.Count - 1]
+            return ($hostDisplay + '/.../' + $lastSegment + $querySuffix + $fragmentSuffix)
+        }
+        catch {
+            return $originalText
+        }
     }
 
-    # Core single-attempt download with limited progress
-    function local:_Invoke-WebRequestExSingleAttempt {
-        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+    function local:_GetResponseFromErrorRecord {
         param(
-            [Parameter(Mandatory=$true)][string] $AttemptUri,
-            [Parameter(Mandatory=$true)][string] $AttemptOutFile,
-            [Parameter(Mandatory=$true)][string] $AttemptMethod,
-            [Parameter()][hashtable] $AttemptHeaders,
-            [Parameter()][int] $AttemptTimeoutSec,
-            [Parameter()][System.Management.Automation.PSCredential] $AttemptCredential,
-            [Parameter()][byte[]] $AttemptBody
+            [Parameter(Mandatory = $true)]
+            [System.Management.Automation.ErrorRecord]$ErrorRecord
         )
 
-        $request = [System.Net.WebRequest]::Create($AttemptUri)
-        if ($null -eq $request) {
-            _Write-StandardMessage -Message ("[ERR] Failed to create WebRequest for '{0}'." -f $AttemptUri) -Level ERR
-            throw ("Failed to create WebRequest for '{0}'." -f $AttemptUri)
+        foreach ($candidate in @($ErrorRecord.Exception, $ErrorRecord.Exception.InnerException)) {
+            if ($null -eq $candidate) { continue }
+
+            $responseProperty = $candidate.PSObject.Properties['Response']
+            if ($responseProperty -and $null -ne $responseProperty.Value) {
+                return $responseProperty.Value
+            }
         }
 
-        $request.Method = $AttemptMethod
+        return $null
+    }
 
-        if ($AttemptTimeoutSec -gt 0) {
-            $request.Timeout = $AttemptTimeoutSec * 1000
+    function local:_GetHttpStatusCodeFromErrorRecord {
+        param(
+            [Parameter(Mandatory = $true)]
+            [System.Management.Automation.ErrorRecord]$ErrorRecord
+        )
+
+        $response = _GetResponseFromErrorRecord -ErrorRecord $ErrorRecord
+        if ($null -ne $response) {
             try {
-                $request.ReadWriteTimeout = $AttemptTimeoutSec * 1000
+                if ($null -ne $response.StatusCode) {
+                    return [int]$response.StatusCode
+                }
             }
             catch {
-                _Write-StandardMessage -Message ("[WRN] ReadWriteTimeout not supported for '{0}'. Using default read/write timeout." -f $AttemptUri) -Level WRN
             }
         }
 
-        if ($AttemptCredential) {
-            $request.Credentials = $AttemptCredential
-        }
+        foreach ($candidate in @($ErrorRecord.Exception, $ErrorRecord.Exception.InnerException)) {
+            if ($null -eq $candidate) { continue }
 
-        if ($AttemptHeaders) {
-            foreach ($headerKey in $AttemptHeaders.Keys) {
-                $headerValue = $AttemptHeaders[$headerKey]
-                $request.Headers.Add($headerKey, $headerValue)
-            }
-        }
-
-        if ($AttemptBody -and $AttemptMethod -in @('POST', 'PUT', 'PATCH')) {
-            $request.ContentLength = $AttemptBody.Length
-            $requestStream = $null
-            try {
-                $requestStream = $request.GetRequestStream()
-                $requestStream.Write($AttemptBody, 0, $AttemptBody.Length)
-            }
-            finally {
-                if ($null -ne $requestStream) {
-                    $requestStream.Dispose()
+            $statusCodeProperty = $candidate.PSObject.Properties['StatusCode']
+            if ($statusCodeProperty -and $null -ne $statusCodeProperty.Value) {
+                try {
+                    return [int]$statusCodeProperty.Value
+                }
+                catch {
                 }
             }
         }
 
-        $response = $null
-        $responseStream = $null
-        $fileStream = $null
+        return $null
+    }
 
-        try {
-            _Write-StandardMessage -Message ("[STATUS] Sending {0} request to '{1}'." -f $AttemptMethod, $AttemptUri) -Level INF
+    function local:_GetWwwAuthenticateValuesFromErrorRecord {
+        param(
+            [Parameter(Mandatory = $true)]
+            [System.Management.Automation.ErrorRecord]$ErrorRecord
+        )
 
-            $response = $request.GetResponse()
-            $responseStream = $response.GetResponseStream()
+        $values = New-Object System.Collections.Generic.List[string]
+        $response = _GetResponseFromErrorRecord -ErrorRecord $ErrorRecord
 
-            if ($null -eq $responseStream) {
-                _Write-StandardMessage -Message ("[ERR] Response stream was null for '{0}'." -f $AttemptUri) -Level ERR
-                throw ("The remote server returned an empty response stream for '{0}'." -f $AttemptUri)
+        if ($null -ne $response) {
+            try {
+                $headers = $response.Headers
+
+                if ($null -ne $headers) {
+                    $directValue = $headers['WWW-Authenticate']
+                    if (-not [string]::IsNullOrWhiteSpace([string]$directValue)) {
+                        $values.Add([string]$directValue)
+                    }
+
+                    $wwwAuthenticateProperty = $headers.PSObject.Properties['WwwAuthenticate']
+                    if ($wwwAuthenticateProperty -and $null -ne $wwwAuthenticateProperty.Value) {
+                        foreach ($headerValue in @($wwwAuthenticateProperty.Value)) {
+                            if ($null -eq $headerValue) { continue }
+
+                            $headerText = [string]$headerValue
+                            if (-not [string]::IsNullOrWhiteSpace($headerText)) {
+                                $values.Add($headerText)
+                            }
+                        }
+                    }
+                }
+            }
+            catch {
+            }
+        }
+
+        $seen = @{}
+        $result = New-Object System.Collections.Generic.List[string]
+
+        foreach ($value in $values) {
+            if (-not $seen.ContainsKey($value)) {
+                $seen[$value] = $true
+                $result.Add($value)
+            }
+        }
+
+        return ,$result.ToArray()
+    }
+
+    function local:_TestIsPrivateOrIntranetAddress {
+        param(
+            [Parameter(Mandatory = $true)]
+            [System.Net.IPAddress]$Address
+        )
+
+        if ([System.Net.IPAddress]::IsLoopback($Address)) {
+            return $true
+        }
+
+        if ($Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) {
+            if ($Address.IsIPv4MappedToIPv6) {
+                try {
+                    return _TestIsPrivateOrIntranetAddress -Address $Address.MapToIPv4()
+                }
+                catch {
+                    return $false
+                }
             }
 
-            $fileStream = [System.IO.File]::Open(
-                $AttemptOutFile,
-                [System.IO.FileMode]::Create,
-                [System.IO.FileAccess]::Write,
-                [System.IO.FileShare]::None
-            )
+            $bytes = $Address.GetAddressBytes()
+            if ($bytes.Length -ge 2) {
+                if (($bytes[0] -band 0xFE) -eq 0xFC) {
+                    return $true
+                }
 
-            $bufferSize = 4MB
-            $buffer = New-Object byte[] $bufferSize
-            $totalBytes = 0L
-            $contentLength = -1L
-
-            $contentLengthProperty = $response.PSObject.Properties['ContentLength']
-            if ($contentLengthProperty -and $null -ne $contentLengthProperty.Value) {
-                $contentLength = [long]$contentLengthProperty.Value
+                if ($bytes[0] -eq 0xFE -and ($bytes[1] -band 0xC0) -eq 0x80) {
+                    return $true
+                }
             }
 
-            $progressThresholdBytes = 0L
-            if ($contentLength -gt 0) {
-                $progressThresholdBytes = [long][Math]::Floor($contentLength / 10)
-                if ($progressThresholdBytes -lt 1048576) {
-                    $progressThresholdBytes = 1048576
+            return $false
+        }
+
+        if ($Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+            $bytes = $Address.GetAddressBytes()
+
+            if ($bytes[0] -eq 10) { return $true }
+            if ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and $bytes[1] -le 31) { return $true }
+            if ($bytes[0] -eq 192 -and $bytes[1] -eq 168) { return $true }
+            if ($bytes[0] -eq 169 -and $bytes[1] -eq 254) { return $true }
+            if ($bytes[0] -eq 127) { return $true }
+
+            return $false
+        }
+
+        return $false
+    }
+
+    function local:_GetAutoUseDefaultCredentialsGuardInfo {
+        param(
+            [Parameter(Mandatory = $true)]
+            [uri]$TargetUri
+        )
+
+        $signals = New-Object System.Collections.Generic.List[string]
+        $resolvedAddresses = New-Object System.Collections.Generic.List[string]
+
+        $hostname = if (-not [string]::IsNullOrWhiteSpace($TargetUri.DnsSafeHost)) {
+            $TargetUri.DnsSafeHost
+        }
+        else {
+            $TargetUri.Host
+        }
+
+        if ($TargetUri.IsLoopback) {
+            $signals.Add("The URI is loopback.")
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($hostname)) {
+            $hostAddress = $null
+
+            if ([System.Net.IPAddress]::TryParse($hostname, [ref]$hostAddress)) {
+                $resolvedAddresses.Add($hostAddress.IPAddressToString)
+
+                if (_TestIsPrivateOrIntranetAddress -Address $hostAddress) {
+                    $signals.Add("The host is a private, link-local, or loopback IP address ('$($hostAddress.IPAddressToString)').")
                 }
             }
             else {
-                # Unknown length: log roughly every 50 MB
-                $progressThresholdBytes = 52428800
-            }
-
-            if ($progressThresholdBytes -le 0) {
-                $progressThresholdBytes = 1048576
-            }
-
-            $nextProgressBytes = $progressThresholdBytes
-
-            while ($true) {
-                $bytesRead = $responseStream.Read($buffer, 0, $bufferSize)
-                if ($bytesRead -le 0) {
-                    break
+                if ($hostname.IndexOf('.') -lt 0) {
+                    $signals.Add("The host '$hostname' is dotless and intranet-like.")
                 }
 
-                $fileStream.Write($buffer, 0, $bytesRead)
-                $totalBytes += [long]$bytesRead
+                try {
+                    $addresses = [System.Net.Dns]::GetHostAddresses($hostname)
 
-                if ($totalBytes -ge $nextProgressBytes) {
-                    if ($contentLength -gt 0) {
-                        $percent = [Math]::Round(($totalBytes * 100.0) / $contentLength, 1)
-                        _Write-StandardMessage -Message (
-                            "[PROGRESS] Downloaded {0} of {1} bytes ({2} percent) for '{3}'." -f $totalBytes, $contentLength, $percent, $AttemptUri
-                        ) -Level INF
+                    foreach ($address in $addresses) {
+                        $addressText = $address.IPAddressToString
+
+                        if (-not $resolvedAddresses.Contains($addressText)) {
+                            $resolvedAddresses.Add($addressText)
+                        }
+
+                        if (_TestIsPrivateOrIntranetAddress -Address $address) {
+                            $signals.Add("DNS resolved '$hostname' to private, link-local, or loopback address '$addressText'.")
+                            break
+                        }
                     }
-                    else {
-                        $megaBytes = [Math]::Round($totalBytes / 1048576.0, 1)
-                        _Write-StandardMessage -Message (
-                            "[PROGRESS] Downloaded approximately {0} MB from '{1}'." -f $megaBytes, $AttemptUri
-                        ) -Level INF
-                    }
-
-                    $nextProgressBytes += $progressThresholdBytes
+                }
+                catch {
                 }
             }
+        }
 
-            # Final progress line:
-            # - If total size is known: always log a clean 100 percent.
-            # - If total size is unknown: log a final "download complete" with total MB.
-            if ($totalBytes -gt 0) {
-                if ($contentLength -gt 0) {
-                    $finalDownloaded = $totalBytes
-                    if ($finalDownloaded -gt $contentLength) {
-                        $finalDownloaded = $contentLength
-                    }
+        return [pscustomobject]@{
+            IsIntranetLike    = ($signals.Count -gt 0)
+            Signals           = @($signals.ToArray())
+            ResolvedAddresses = @($resolvedAddresses.ToArray())
+        }
+    }
 
-                    $finalPercent = 100
-                    _Write-StandardMessage -Message (
-                        "[PROGRESS] Downloaded {0} of {1} bytes ({2} percent) for '{3}'." -f $finalDownloaded, $contentLength, $finalPercent, $AttemptUri
-                    ) -Level INF
-                }
-                else {
-                    $finalMb = [Math]::Round($totalBytes / 1048576.0, 1)
-                    _Write-StandardMessage -Message (
-                        "[PROGRESS] Download complete, total {0} MB from '{1}'." -f $finalMb, $AttemptUri
-                    ) -Level INF
+    function local:_GetDownloadLocalState {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Path
+        )
+
+        try {
+            $fileInfo = New-Object System.IO.FileInfo($Path)
+            if ($fileInfo.Exists) {
+                return [pscustomobject]@{
+                    Exists = $true
+                    Length = [int64]$fileInfo.Length
                 }
             }
-
-            _Write-StandardMessage -Message ("[OK] Downloaded {0} bytes from '{1}' to '{2}'." -f $totalBytes, $AttemptUri, $AttemptOutFile) -Level INF
         }
         catch {
-            _Write-StandardMessage -Message ("[WRN] Single attempt failed for '{0}' to '{1}': {2}" -f $AttemptUri, $AttemptOutFile, $_.Exception.Message) -Level WRN
+        }
+
+        return [pscustomobject]@{
+            Exists = $false
+            Length = 0L
+        }
+    }
+
+    function local:_GetDownloadResponseInfo {
+        param(
+            [Parameter(Mandatory = $true)]
+            [System.Net.HttpWebResponse]$Response
+        )
+
+        $headers = $null
+        $statusCode = $null
+        $contentLength = $null
+        $acceptRanges = $null
+        $etag = $null
+        $lastModified = $null
+        $contentRange = $null
+        $contentRangeStart = $null
+        $contentRangeTotalLength = $null
+
+        try {
+            $headers = $Response.Headers
+        }
+        catch {
+        }
+
+        try {
+            if ($null -ne $Response.StatusCode) {
+                $statusCode = [int]$Response.StatusCode
+            }
+        }
+        catch {
+        }
+
+        try {
+            if ($Response.ContentLength -ge 0) {
+                $contentLength = [int64]$Response.ContentLength
+            }
+        }
+        catch {
+        }
+
+        if ($null -ne $headers) {
+            try { $acceptRanges = [string]$headers['Accept-Ranges'] } catch {}
+            try { $etag = [string]$headers['ETag'] } catch {}
+            try { $contentRange = [string]$headers['Content-Range'] } catch {}
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($contentRange)) {
+            $match = [regex]::Match($contentRange, '^\s*bytes\s+(\d+)-(\d+)/(\d+|\*)\s*$', 'IgnoreCase')
+            if ($match.Success) {
+                $contentRangeStart = [int64]$match.Groups[1].Value
+                if ($match.Groups[3].Value -ne '*') {
+                    $contentRangeTotalLength = [int64]$match.Groups[3].Value
+                }
+            }
+            else {
+                $match = [regex]::Match($contentRange, '^\s*bytes\s+\*/(\d+|\*)\s*$', 'IgnoreCase')
+                if ($match.Success -and $match.Groups[1].Value -ne '*') {
+                    $contentRangeTotalLength = [int64]$match.Groups[1].Value
+                }
+            }
+        }
+
+        try {
+            $lastModified = $Response.LastModified
+        }
+        catch {
+        }
+
+        return [pscustomobject]@{
+            StatusCode              = $statusCode
+            ContentLength           = $contentLength
+            AcceptRanges            = $acceptRanges
+            ETag                    = $etag
+            LastModified            = $lastModified
+            ContentRange            = $contentRange
+            ContentRangeStart       = $contentRangeStart
+            ContentRangeTotalLength = $contentRangeTotalLength
+        }
+    }
+
+    function local:_OpenDownloadFileStream {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Path,
+
+            [Parameter()]
+            [System.IO.FileMode]$FileMode = [System.IO.FileMode]::Create
+        )
+
+        return [System.IO.File]::Open(
+            $Path,
+            $FileMode,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+    }
+
+    $uriDisplay = _UriDisplayShortener -TargetUri $Uri
+
+    Write-StandardMessage -Message ("[STATUS] Initializing Invoke-WebRequestEx for '{0}'." -f $uriDisplay) -Level INF
+
+    $effectiveMethod = if ($PSBoundParameters.ContainsKey('Method') -and $null -ne $Method) {
+        $Method.ToString().ToUpperInvariant()
+    }
+    else {
+        'GET'
+    }
+
+    $runningOnPwsh = $PSVersionTable.PSEdition -eq 'Core'
+    $nativeSupportsSkipCertificateCheck = $runningOnPwsh -and $PSVersionTable.PSVersion -ge [version]'7.0'
+
+    $explicitCredentialSupplied = $PSBoundParameters.ContainsKey('Credential') -and $null -ne $Credential
+    $explicitUseDefaultCredentialsSupplied = $PSBoundParameters.ContainsKey('UseDefaultCredentials')
+    $autoUseDefaultCredentialsAllowed =
+        (-not $DisableAutoUseDefaultCredentials) -and
+        (-not $explicitCredentialSupplied) -and
+        (-not $explicitUseDefaultCredentialsSupplied)
+
+    $autoUpgradedToDefaultCredentials = $false
+    $autoUseDefaultCredentialsGuardInfo = $null
+    $autoUseDefaultCredentialsGuardInfoResolved = $false
+
+    $callParams = @{}
+    foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+        switch ($entry.Key) {
+            'SkipCertificateCheck' {
+                if ($nativeSupportsSkipCertificateCheck) {
+                    $callParams[$entry.Key] = $entry.Value
+                }
+                continue
+            }
+            'DisableAutoUseDefaultCredentials' { continue }
+            'RetryCount' { continue }
+            'RetryDelayMilliseconds' { continue }
+            'TotalTimeoutSec' { continue }
+            'BufferSizeBytes' { continue }
+            'ProgressIntervalPercent' { continue }
+            'ProgressIntervalBytes' { continue }
+            'DeletePartialStreamingDownloadOnFailure' { continue }
+            'DeleteStreamingFragmentsOnFailure' { continue }
+            'UseStreamingDownload' { continue }
+            'DisableResumeStreamingDownload' { continue }
+            default { $callParams[$entry.Key] = $entry.Value }
+        }
+    }
+
+    try {
+        $tls12 = [System.Net.SecurityProtocolType]::Tls12
+        $currentProtocols = [System.Net.ServicePointManager]::SecurityProtocol
+
+        if (($currentProtocols -band $tls12) -ne $tls12) {
+            [System.Net.ServicePointManager]::SecurityProtocol = $currentProtocols -bor $tls12
+            Write-StandardMessage -Message "[STATUS] Added TLS 1.2 to the current process security protocol flags." -Level INF
+        }
+    }
+    catch {
+        Write-StandardMessage -Message ("[WRN] Failed to ensure TLS 1.2: {0}" -f $_.Exception.Message) -Level WRN
+    }
+
+    if ($PSBoundParameters.ContainsKey('OutFile')) {
+        try {
+            $directory = [System.IO.Path]::GetDirectoryName($OutFile)
+
+            if (-not [string]::IsNullOrWhiteSpace($directory)) {
+                if (-not [System.IO.Directory]::Exists($directory)) {
+                    [void][System.IO.Directory]::CreateDirectory($directory)
+                    Write-StandardMessage -Message ("[STATUS] Created output directory '{0}'." -f $directory) -Level INF
+                }
+            }
+        }
+        catch {
+            Write-StandardMessage -Message ("[ERR] Failed to prepare output directory for '{0}': {1}" -f $OutFile, $_.Exception.Message) -Level ERR
             throw
         }
-        finally {
-            if ($null -ne $responseStream) {
-                $responseStream.Dispose()
-            }
-
-            if ($null -ne $fileStream) {
-                $fileStream.Dispose()
-            }
-
-            if ($null -ne $response) {
-                $response.Close()
-            }
-        }
     }
 
+    $callerHandledProxy =
+        $PSBoundParameters.ContainsKey('Proxy') -or
+        $PSBoundParameters.ContainsKey('ProxyCredential') -or
+        $PSBoundParameters.ContainsKey('ProxyUseDefaultCredentials')
 
-    # Title-style message, no tag as per your spec
-    _Write-StandardMessage -Message "--- Invoke-WebRequestEx streaming download operation ---" -Level INF
-
-    # Validate the output directory once, prior to attempts
-    $outDirectory = [System.IO.Path]::GetDirectoryName($OutFile)
-    if ($null -ne $outDirectory -and $outDirectory.Length -gt 0) {
-        if (-not [System.IO.Directory]::Exists($outDirectory)) {
-            _Write-StandardMessage -Message ("[ERR] Target directory '{0}' does not exist." -f $outDirectory) -Level ERR
-            throw ("Target directory '{0}' does not exist. Create it before calling Invoke-WebRequestEx." -f $outDirectory)
-        }
-    }
-
-    # --- TLS: Ensure TLS 1.2 is enabled (additive; do not clear other explicit flags) ---
-    # Note: In PS 5.1 / .NET Framework this affects WebRequest/ServicePoint-based traffic in this process.
-    try {
-        $tls12 = [Net.SecurityProtocolType]::Tls12
-
-        # Only add TLS 1.2 if it isn't already present.
-        if (([Net.ServicePointManager]::SecurityProtocol -band $tls12) -ne $tls12) {
-            [Net.ServicePointManager]::SecurityProtocol = `
-                ([Net.ServicePointManager]::SecurityProtocol -bor $tls12)
-        }
-    }
-    catch {
-        _Write-StandardMessage -Message ("[ERR] TLS set failed: {0}" -f $_.Exception.Message) -Level ERR
-    }
-
-    # --- Proxy: Ensure system proxy is used; ensure default credentials are applied ---
-    # Note: This sets process-wide defaults for WebRequest-based networking.
-    try {
-        # Always refresh the default proxy from the system configuration (WPAD/PAC/WinINET).
-        [System.Net.WebRequest]::DefaultWebProxy = [System.Net.WebRequest]::GetSystemWebProxy()
-
-        $proxy = [System.Net.WebRequest]::DefaultWebProxy
-        if ($proxy) {
-            # Use integrated (domain) credentials for corporate proxy authentication.
-            $proxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials
-        }
-    }
-    catch {
-        _Write-StandardMessage -Message ("[ERR] Proxy set failed: {0}" -f $_.Exception.Message) -Level ERR
-    }
-
-    if ($AllowSelfSigned) {
-        [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-    }
-
-    $maxAttempts = 3
-    $attemptIndex = 0
-    $lastError = $null
-
-    while ($attemptIndex -lt $maxAttempts) {
-        $attemptIndex += 1
+    if (-not $callerHandledProxy) {
         try {
-            _Write-StandardMessage -Message ("[STATUS] Starting attempt {0} of {1} for '{2}'." -f $attemptIndex, $maxAttempts, $Uri) -Level INF
+            $systemProxy = [System.Net.WebRequest]::GetSystemWebProxy()
+            $systemProxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
 
-            _Invoke-WebRequestExSingleAttempt -AttemptUri $Uri -AttemptOutFile $OutFile -AttemptMethod $Method -AttemptHeaders $Headers -AttemptTimeoutSec $TimeoutSec -AttemptCredential $Credential -AttemptBody $Body
+            if (-not $systemProxy.IsBypassed($Uri)) {
+                $proxyUri = $systemProxy.GetProxy($Uri)
 
-            _Write-StandardMessage -Message ("[OK] Download completed successfully on attempt {0} for '{1}'." -f $attemptIndex, $Uri) -Level INF
-            $lastError = $null
-            break
-        }
-        catch {
-            $lastError = $_
-            if ($attemptIndex -lt $maxAttempts) {
-                _Write-StandardMessage -Message ("[RETRY] Attempt {0} of {1} failed for '{2}' to '{3}': {4}. Retrying in 5 seconds." -f $attemptIndex, $maxAttempts, $Uri, $OutFile, $lastError.Exception.Message) -Level WRN
-                Start-Sleep -Seconds 5
+                if ($null -ne $proxyUri -and $proxyUri.AbsoluteUri -ne $Uri.AbsoluteUri) {
+                    $callParams['Proxy'] = $proxyUri
+                    $callParams['ProxyUseDefaultCredentials'] = $true
+                    Write-StandardMessage -Message ("[STATUS] Using auto-discovered proxy '{0}' for '{1}'." -f $proxyUri.AbsoluteUri, $uriDisplay) -Level INF
+                }
+                else {
+                    Write-StandardMessage -Message ("[STATUS] System proxy configuration resolved no distinct proxy for '{0}'." -f $uriDisplay) -Level INF
+                }
             }
             else {
-                _Write-StandardMessage -Message ("[ERR] All {0} attempts failed for '{1}' to '{2}'." -f $maxAttempts, $Uri, $OutFile) -Level ERR
-                throw ("Download failed for '{0}' to '{1}' after {2} attempts: {3}" -f $Uri, $OutFile, $maxAttempts, $lastError.Exception.Message)
+                Write-StandardMessage -Message ("[STATUS] System proxy bypass is active for '{0}'." -f $uriDisplay) -Level INF
+            }
+        }
+        catch {
+            Write-StandardMessage -Message ("[WRN] Failed to auto-discover proxy for '{0}': {1}" -f $uriDisplay, $_.Exception.Message) -Level WRN
+        }
+    }
+    else {
+        Write-StandardMessage -Message ("[STATUS] Caller supplied proxy-related parameters for '{0}'. Auto-discovery is skipped." -f $uriDisplay) -Level INF
+    }
+
+    $useStreamingEngine = $false
+    $streamingCompatible = $false
+
+    $isDownloadShape =
+        $PSBoundParameters.ContainsKey('OutFile') -and
+        $effectiveMethod -eq 'GET'
+
+    if ($UseStreamingDownload -or $isDownloadShape) {
+        $streamingCompatible = $true
+
+        if (-not $PSBoundParameters.ContainsKey('OutFile')) { $streamingCompatible = $false }
+        if ($effectiveMethod -ne 'GET') { $streamingCompatible = $false }
+
+        $incompatibleParameters = @(
+            'PassThru',
+            'WebSession',
+            'SessionVariable',
+            'InFile',
+            'Body',
+            'ContentType',
+            'TransferEncoding',
+            'CertificateThumbprint',
+            'Certificate'
+        )
+
+        foreach ($parameterName in $incompatibleParameters) {
+            if ($PSBoundParameters.ContainsKey($parameterName)) {
+                $streamingCompatible = $false
+                break
+            }
+        }
+
+        if ($streamingCompatible -and $Headers) {
+            foreach ($headerKey in $Headers.Keys) {
+                $headerName = [string]$headerKey
+                if ($headerName -match '^(?i:Cookie|Date|Range)$') {
+                    $streamingCompatible = $false
+                    break
+                }
+            }
+        }
+
+        if ($streamingCompatible) {
+            $useStreamingEngine = $true
+        }
+        elseif ($UseStreamingDownload) {
+            Write-StandardMessage -Message ("[WRN] Streaming download was requested, but the current parameter combination is not safely compatible. Falling back to native Invoke-WebRequest for '{0}'." -f $uriDisplay) -Level WRN
+        }
+    }
+
+    if ($nativeSupportsSkipCertificateCheck -and $SkipCertificateCheck) {
+        $useStreamingEngine = $false
+        Write-StandardMessage -Message ("[STATUS] PowerShell {0} will pass -SkipCertificateCheck directly to native Invoke-WebRequest. Streaming path is disabled for '{1}'." -f $PSVersionTable.PSVersion, $uriDisplay) -Level INF
+    }
+
+    if ($useStreamingEngine) {
+        Write-StandardMessage -Message ("[STATUS] Using the streaming download path for '{0}'." -f $uriDisplay) -Level INF
+    }
+    else {
+        Write-StandardMessage -Message ("[STATUS] Using the native Invoke-WebRequest path for '{0}'." -f $uriDisplay) -Level INF
+    }
+
+    $downloadTargetExistedBeforeInvocation = $false
+    if ($useStreamingEngine -and -not [string]::IsNullOrWhiteSpace($OutFile)) {
+        $downloadTargetStateAtInvocation = _GetDownloadLocalState -Path $OutFile
+        $downloadTargetExistedBeforeInvocation = [bool]$downloadTargetStateAtInvocation.Exists
+    }
+
+    $previousCertificateValidationCallback = $null
+    $skipCertificateCheckEnabled = $false
+
+    try {
+        if ($SkipCertificateCheck -and -not $nativeSupportsSkipCertificateCheck) {
+            Write-StandardMessage -Message ("[STATUS] Enabling temporary certificate validation bypass for '{0}'." -f $uriDisplay) -Level INF
+
+            if (-not ('CertificateValidationHelper' -as [type])) {
+                Add-Type -TypeDefinition @'
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+
+public static class CertificateValidationHelper
+{
+    public static bool AcceptAll(
+        object sender,
+        X509Certificate certificate,
+        X509Chain chain,
+        SslPolicyErrors sslPolicyErrors)
+    {
+        return true;
+    }
+}
+'@
+            }
+
+            $bindingFlags =
+                [System.Reflection.BindingFlags]::Public -bor
+                [System.Reflection.BindingFlags]::Static
+
+            $methodInfo = [CertificateValidationHelper].GetMethod('AcceptAll', $bindingFlags)
+
+            if ($null -eq $methodInfo) {
+                throw "Failed to resolve CertificateValidationHelper.AcceptAll."
+            }
+
+            $acceptAllCallback = [System.Net.Security.RemoteCertificateValidationCallback](
+                [System.Delegate]::CreateDelegate(
+                    [System.Net.Security.RemoteCertificateValidationCallback],
+                    $methodInfo
+                )
+            )
+
+            $previousCertificateValidationCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $acceptAllCallback
+            $skipCertificateCheckEnabled = $true
+        }
+
+        $retryStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+        for ($attemptIndex = 1; $attemptIndex -le $RetryCount; $attemptIndex++) {
+            $requestUseDefaultCredentials =
+                ($autoUpgradedToDefaultCredentials) -or
+                ($explicitUseDefaultCredentialsSupplied -and [bool]$UseDefaultCredentials)
+
+            if (-not $requestUseDefaultCredentials -and $callParams.ContainsKey('UseDefaultCredentials') -and -not $explicitUseDefaultCredentialsSupplied) {
+                [void]$callParams.Remove('UseDefaultCredentials')
+            }
+
+            if ($requestUseDefaultCredentials -and -not $useStreamingEngine) {
+                $callParams['UseDefaultCredentials'] = $true
+            }
+
+            if ($attemptIndex -gt 1) {
+                Write-StandardMessage -Message ("[STATUS] Starting attempt {0} of {1} for {2} {3}." -f $attemptIndex, $RetryCount, $effectiveMethod, $uriDisplay) -Level INF
+            }
+
+            while ($true) {
+                $downloadState = $null
+
+                try {
+                    if ($useStreamingEngine) {
+                        $request = $null
+                        $response = $null
+                        $responseStream = $null
+                        $fileStream = $null
+
+                        $downloadState = [pscustomobject]@{
+                            FileExistedBeforeAttempt   = $false
+                            ExistingFileLength         = 0L
+                            StartingOffset             = 0L
+                            ResumeRequested            = $false
+                            ResumeApplied              = $false
+                            BytesDownloadedThisAttempt = 0L
+                            TotalBytesOnDisk           = 0L
+                            ResponseStatusCode         = $null
+                            RemoteContentLength        = $null
+                            RemoteAcceptRanges         = $null
+                            RemoteETag                 = $null
+                            RemoteLastModified         = $null
+                            RemoteContentRange         = $null
+                            RemoteContentRangeStart    = $null
+                            RemoteTotalLength          = $null
+                        }
+
+                        try {
+                            $localDownloadState = _GetDownloadLocalState -Path $OutFile
+                            $downloadState.FileExistedBeforeAttempt = [bool]$localDownloadState.Exists
+                            $downloadState.ExistingFileLength = [int64]$localDownloadState.Length
+
+                            if (-not $DisableResumeStreamingDownload -and $downloadState.FileExistedBeforeAttempt -and $downloadState.ExistingFileLength -gt 0) {
+                                $downloadState.ResumeRequested = $true
+                                $downloadState.StartingOffset = $downloadState.ExistingFileLength
+                                $downloadState.TotalBytesOnDisk = $downloadState.StartingOffset
+
+                                Write-StandardMessage -Message ("[STATUS] Resuming streaming download for '{0}' from byte {1}." -f $uriDisplay, $downloadState.StartingOffset) -Level INF
+                            }
+                            else {
+                                $downloadState.StartingOffset = 0L
+                                $downloadState.TotalBytesOnDisk = 0L
+                            }
+
+                            $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($Uri)
+                            if ($null -eq $request) {
+                                throw ("Failed to create HttpWebRequest for '{0}'." -f $uriDisplay)
+                            }
+
+                            $request.Method = 'GET'
+
+                            if ($downloadState.ResumeRequested) {
+                                $request.AutomaticDecompression = [System.Net.DecompressionMethods]::None
+                            }
+                            else {
+                                $request.AutomaticDecompression =
+                                    [System.Net.DecompressionMethods]::GZip -bor
+                                    [System.Net.DecompressionMethods]::Deflate
+                            }
+
+                            if ($DisableKeepAlive) {
+                                $request.KeepAlive = $false
+                            }
+
+                            if ($PSBoundParameters.ContainsKey('MaximumRedirection')) {
+                                if ($MaximumRedirection -le 0) {
+                                    $request.AllowAutoRedirect = $false
+                                }
+                                else {
+                                    $request.AllowAutoRedirect = $true
+                                    $request.MaximumAutomaticRedirections = $MaximumRedirection
+                                }
+                            }
+
+                            if ($TimeoutSec -gt 0) {
+                                $timeoutMilliseconds = $TimeoutSec * 1000
+                                $request.Timeout = $timeoutMilliseconds
+                                $request.ReadWriteTimeout = $timeoutMilliseconds
+                            }
+
+                            if ($explicitCredentialSupplied) {
+                                $request.Credentials = $Credential
+                            }
+                            elseif ($requestUseDefaultCredentials) {
+                                $request.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+                            }
+
+                            if ($callParams.ContainsKey('Proxy') -and $null -ne $callParams['Proxy']) {
+                                $webProxy = New-Object System.Net.WebProxy(([uri]$callParams['Proxy']).AbsoluteUri, $true)
+
+                                if ($PSBoundParameters.ContainsKey('ProxyCredential') -and $null -ne $ProxyCredential) {
+                                    $webProxy.Credentials = $ProxyCredential
+                                }
+                                elseif ($callParams.ContainsKey('ProxyUseDefaultCredentials') -and [bool]$callParams['ProxyUseDefaultCredentials']) {
+                                    $webProxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+                                }
+
+                                $request.Proxy = $webProxy
+                            }
+
+                            if ($PSBoundParameters.ContainsKey('UserAgent') -and -not [string]::IsNullOrWhiteSpace($UserAgent)) {
+                                $request.UserAgent = $UserAgent
+                            }
+
+                            if ($Headers) {
+                                foreach ($headerKey in $Headers.Keys) {
+                                    $headerName = [string]$headerKey
+                                    $headerValue = [string]$Headers[$headerKey]
+
+                                    switch -Regex ($headerName) {
+                                        '^(?i:Accept)$' {
+                                            $request.Accept = $headerValue
+                                            continue
+                                        }
+                                        '^(?i:Connection)$' {
+                                            if ($headerValue -match '^(?i:close)$') {
+                                                $request.KeepAlive = $false
+                                            }
+                                            else {
+                                                $request.Connection = $headerValue
+                                            }
+                                            continue
+                                        }
+                                        '^(?i:Content-Type)$' {
+                                            $request.ContentType = $headerValue
+                                            continue
+                                        }
+                                        '^(?i:Expect)$' {
+                                            $request.Expect = $headerValue
+                                            continue
+                                        }
+                                        '^(?i:Host)$' {
+                                            $request.Host = $headerValue
+                                            continue
+                                        }
+                                        '^(?i:If-Modified-Since)$' {
+                                            $request.IfModifiedSince = [DateTime]::Parse($headerValue, [System.Globalization.CultureInfo]::InvariantCulture)
+                                            continue
+                                        }
+                                        '^(?i:Referer)$' {
+                                            $request.Referer = $headerValue
+                                            continue
+                                        }
+                                        '^(?i:Transfer-Encoding)$' {
+                                            $request.SendChunked = $true
+                                            $request.TransferEncoding = $headerValue
+                                            continue
+                                        }
+                                        '^(?i:User-Agent)$' {
+                                            if ([string]::IsNullOrWhiteSpace($request.UserAgent)) {
+                                                $request.UserAgent = $headerValue
+                                            }
+                                            continue
+                                        }
+                                        default {
+                                            $request.Headers[$headerName] = $headerValue
+                                            continue
+                                        }
+                                    }
+                                }
+                            }
+
+                            if ($downloadState.ResumeRequested) {
+                                $request.AddRange([long]$downloadState.StartingOffset)
+                            }
+
+                            Write-StandardMessage -Message ("[STATUS] Sending streaming GET request to '{0}'." -f $uriDisplay) -Level INF
+
+                            $response = [System.Net.HttpWebResponse]$request.GetResponse()
+                            $responseStream = $response.GetResponseStream()
+
+                            if ($null -eq $responseStream) {
+                                throw ("The remote server returned an empty response stream for '{0}'." -f $uriDisplay)
+                            }
+
+                            $downloadResponseInfo = _GetDownloadResponseInfo -Response $response
+                            $downloadState.ResponseStatusCode = $downloadResponseInfo.StatusCode
+                            $downloadState.RemoteContentLength = $downloadResponseInfo.ContentLength
+                            $downloadState.RemoteAcceptRanges = $downloadResponseInfo.AcceptRanges
+                            $downloadState.RemoteETag = $downloadResponseInfo.ETag
+                            $downloadState.RemoteLastModified = $downloadResponseInfo.LastModified
+                            $downloadState.RemoteContentRange = $downloadResponseInfo.ContentRange
+                            $downloadState.RemoteContentRangeStart = $downloadResponseInfo.ContentRangeStart
+                            $downloadState.RemoteTotalLength = $downloadResponseInfo.ContentRangeTotalLength
+
+                            if ($downloadState.ResumeRequested) {
+                                if ($downloadState.ResponseStatusCode -eq 206) {
+                                    if ($null -eq $downloadState.RemoteContentRangeStart -or $downloadState.RemoteContentRangeStart -ne $downloadState.StartingOffset) {
+                                        throw ("The server returned a partial response for '{0}', but the content range did not match the requested resume offset {1}." -f $uriDisplay, $downloadState.StartingOffset)
+                                    }
+
+                                    $downloadState.ResumeApplied = $true
+                                    Write-StandardMessage -Message ("[STATUS] Resume accepted by the server for '{0}' at byte {1}." -f $uriDisplay, $downloadState.StartingOffset) -Level INF
+                                }
+                                elseif ($downloadState.ResponseStatusCode -eq 200) {
+                                    Write-StandardMessage -Message ("[WRN] The server ignored the resume range for '{0}'. Restarting the download from byte 0." -f $uriDisplay) -Level WRN
+                                    $downloadState.StartingOffset = 0L
+                                    $downloadState.TotalBytesOnDisk = 0L
+                                    $downloadState.ResumeApplied = $false
+                                }
+                                else {
+                                    throw ("The server returned unexpected HTTP status {0} for resumed download '{1}'." -f $downloadState.ResponseStatusCode, $uriDisplay)
+                                }
+                            }
+
+                            if ($downloadState.ResumeApplied) {
+                                $fileStream = _OpenDownloadFileStream -Path $OutFile -FileMode ([System.IO.FileMode]::Append)
+                            }
+                            else {
+                                $fileStream = _OpenDownloadFileStream -Path $OutFile -FileMode ([System.IO.FileMode]::Create)
+                            }
+
+                            $buffer = New-Object byte[] $BufferSizeBytes
+                            $lastReportedPercent = $null
+
+                            if ($null -ne $downloadState.RemoteTotalLength) {
+                                $contentLength = [long]$downloadState.RemoteTotalLength
+                            }
+                            elseif ($downloadState.ResumeApplied -and $null -ne $downloadState.RemoteContentLength) {
+                                $contentLength = [long]($downloadState.StartingOffset + $downloadState.RemoteContentLength)
+                            }
+                            elseif ($null -ne $downloadState.RemoteContentLength) {
+                                $contentLength = [long]$downloadState.RemoteContentLength
+                            }
+                            else {
+                                $contentLength = -1L
+                            }
+
+                            $displayThresholdBytes = 1048576L
+                            $useMegabyteDisplay = $contentLength -gt $displayThresholdBytes
+
+                            if ($contentLength -gt 0) {
+                                $progressThresholdBytes = [long][Math]::Floor($contentLength * ($ProgressIntervalPercent / 100.0))
+                                if ($progressThresholdBytes -lt 1048576) {
+                                    $progressThresholdBytes = 1048576
+                                }
+                            }
+                            else {
+                                $progressThresholdBytes = $ProgressIntervalBytes
+                            }
+
+                            if ($progressThresholdBytes -le 0) {
+                                $progressThresholdBytes = 1048576
+                            }
+
+                            $nextProgressBytes = $downloadState.StartingOffset + $progressThresholdBytes
+
+                            while ($true) {
+                                $bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)
+                                if ($bytesRead -le 0) {
+                                    break
+                                }
+
+                                $fileStream.Write($buffer, 0, $bytesRead)
+                                $downloadState.BytesDownloadedThisAttempt += [long]$bytesRead
+                                $downloadState.TotalBytesOnDisk = $downloadState.StartingOffset + $downloadState.BytesDownloadedThisAttempt
+
+                                if ($downloadState.TotalBytesOnDisk -ge $nextProgressBytes) {
+                                    if ($contentLength -gt 0) {
+                                        $percent = [int][Math]::Floor(($downloadState.TotalBytesOnDisk * 100.0) / $contentLength)
+                                        if ($ProgressIntervalPercent -gt 1) {
+                                            $percent = [int]([Math]::Floor($percent / [double]$ProgressIntervalPercent) * $ProgressIntervalPercent)
+                                        }
+                                        if ($percent -lt $ProgressIntervalPercent) {
+                                            $percent = $ProgressIntervalPercent
+                                        }
+                                        if ($percent -gt 100) {
+                                            $percent = 100
+                                        }
+
+                                        $lastReportedPercent = $percent
+
+                                        if ($useMegabyteDisplay) {
+                                            $downloadedMbText    = ([int64][Math]::Round($downloadState.TotalBytesOnDisk / 1048576.0, 0)).ToString()
+                                            $contentLengthMbText = ([int64][Math]::Round($contentLength / 1048576.0, 0)).ToString()
+                                            $percentText         = $percent.ToString().PadLeft(3)
+
+                                            $downloadedMbText = $downloadedMbText.PadLeft($contentLengthMbText.Length)
+
+                                            Write-StandardMessage -Message ("[DL] {0} MB of {1} MB ({2} %) for '{3}'." -f $downloadedMbText, $contentLengthMbText, $percentText, $uriDisplay) -Level INF
+                                        }
+                                        else {
+                                            $percentText = $percent.ToString().PadLeft(3)
+
+                                            Write-StandardMessage -Message ("[DL] {0} of {1} bytes ({2} %) for '{3}'." -f $downloadState.TotalBytesOnDisk, $contentLength, $percentText, $uriDisplay) -Level INF
+                                        }
+                                    }
+                                    else {
+                                        $megaBytesText = ([int64][Math]::Round($downloadState.TotalBytesOnDisk / 1048576.0, 0)).ToString()
+
+                                        Write-StandardMessage -Message ("[DL] ~{0} MB from '{1}'." -f $megaBytesText, $uriDisplay) -Level INF
+                                    }
+
+                                    $nextProgressBytes += $progressThresholdBytes
+                                }
+                            }
+
+                            if ($contentLength -gt 0) {
+                                if ($lastReportedPercent -ne 100) {
+                                    if ($useMegabyteDisplay) {
+                                        $totalMbText         = ([int64][Math]::Round($downloadState.TotalBytesOnDisk / 1048576.0, 0)).ToString()
+                                        $contentLengthMbText = ([int64][Math]::Round($contentLength / 1048576.0, 0)).ToString()
+
+                                        $totalMbText = $totalMbText.PadLeft($contentLengthMbText.Length)
+
+                                        Write-StandardMessage -Message ("[DL] {0} MB of {1} MB (100 %) for '{2}'." -f $totalMbText, $contentLengthMbText, $uriDisplay) -Level INF
+                                    }
+                                    else {
+                                        Write-StandardMessage -Message ("[DL] {0} of {1} bytes (100 %) for '{2}'." -f $downloadState.TotalBytesOnDisk, $contentLength, $uriDisplay) -Level INF
+                                    }
+                                }
+                            }
+                            else {
+                                $finalMbText = ([int64][Math]::Round($downloadState.TotalBytesOnDisk / 1048576.0, 0)).ToString()
+                                Write-StandardMessage -Message ("[DL] Complete, total {0} MB from '{1}'." -f $finalMbText, $uriDisplay) -Level INF
+                            }
+
+                            Write-StandardMessage -Message ("[OK] Wrote {0} bytes from '{1}' to '{2}' on attempt {3} of {4}. File size is now {5} bytes." -f $downloadState.BytesDownloadedThisAttempt, $uriDisplay, $OutFile, $attemptIndex, $RetryCount, $downloadState.TotalBytesOnDisk) -Level INF
+
+                            return
+                        }
+                        finally {
+                            if ($null -ne $responseStream) {
+                                $responseStream.Dispose()
+                            }
+
+                            if ($null -ne $fileStream) {
+                                $fileStream.Dispose()
+                            }
+
+                            if ($null -ne $response) {
+                                $response.Close()
+                            }
+                        }
+                    }
+                    else {
+                        $result = Invoke-WebRequest @callParams
+
+                        Write-StandardMessage -Message ("[OK] Request completed successfully on attempt {0} of {1} for {2} {3}." -f $attemptIndex, $RetryCount, $effectiveMethod, $uriDisplay) -Level INF
+
+                        return $result
+                    }
+                }
+                catch {
+                    $caughtError = $_
+                    $statusCode = _GetHttpStatusCodeFromErrorRecord -ErrorRecord $caughtError
+
+                    if ($useStreamingEngine -and -not $DisableResumeStreamingDownload -and $statusCode -eq 416 -and -not [string]::IsNullOrWhiteSpace($OutFile)) {
+                        try {
+                            $localStateOn416 = _GetDownloadLocalState -Path $OutFile
+                            if ($localStateOn416.Exists -and $localStateOn416.Length -gt 0) {
+                                $errorResponse = _GetResponseFromErrorRecord -ErrorRecord $caughtError
+                                if ($null -ne $errorResponse) {
+                                    $errorResponseInfo = _GetDownloadResponseInfo -Response $errorResponse
+                                    if ($null -ne $errorResponseInfo.ContentRangeTotalLength -and $localStateOn416.Length -eq $errorResponseInfo.ContentRangeTotalLength) {
+                                        Write-StandardMessage -Message ("[OK] The existing file '{0}' already matches the remote content length ({1} bytes). No download was necessary." -f $OutFile, $localStateOn416.Length) -Level INF
+                                        return
+                                    }
+                                }
+                            }
+                        }
+                        catch {
+                        }
+                    }
+
+                    $wwwAuthenticateValues = _GetWwwAuthenticateValuesFromErrorRecord -ErrorRecord $caughtError
+                    $hasWwwAuthenticateChallenge = $wwwAuthenticateValues.Count -gt 0
+
+                    $hasAutoUpgradeTrigger =
+                        $autoUseDefaultCredentialsAllowed -and
+                        (-not $requestUseDefaultCredentials) -and
+                        ($statusCode -eq 401) -and
+                        $hasWwwAuthenticateChallenge
+
+                    if ($hasAutoUpgradeTrigger -and -not $autoUseDefaultCredentialsGuardInfoResolved) {
+                        $autoUseDefaultCredentialsGuardInfo = _GetAutoUseDefaultCredentialsGuardInfo -TargetUri $Uri
+                        $autoUseDefaultCredentialsGuardInfoResolved = $true
+
+                        if ($autoUseDefaultCredentialsGuardInfo.IsIntranetLike) {
+                            Write-StandardMessage -Message ("[STATUS] Automatic default-credentials guard passed for '{0}'. Signal(s): {1}" -f $uriDisplay, ($autoUseDefaultCredentialsGuardInfo.Signals -join '; ')) -Level INF
+                        }
+                        else {
+                            $resolvedAddressText = if ($autoUseDefaultCredentialsGuardInfo.ResolvedAddresses.Count -gt 0) {
+                                $autoUseDefaultCredentialsGuardInfo.ResolvedAddresses -join ', '
+                            }
+                            else {
+                                'none'
+                            }
+
+                            Write-StandardMessage -Message ("[STATUS] Automatic default-credentials guard blocked upgrade for '{0}'. No intranet-like signals were found. Resolved address(es): {1}" -f $uriDisplay, $resolvedAddressText) -Level INF
+                        }
+                    }
+
+                    $shouldAutoUpgradeToDefaultCredentials =
+                        $hasAutoUpgradeTrigger -and
+                        $autoUseDefaultCredentialsGuardInfoResolved -and
+                        $autoUseDefaultCredentialsGuardInfo.IsIntranetLike
+
+                    if ($shouldAutoUpgradeToDefaultCredentials) {
+                        $requestUseDefaultCredentials = $true
+                        $autoUpgradedToDefaultCredentials = $true
+
+                        if (-not $useStreamingEngine) {
+                            $callParams['UseDefaultCredentials'] = $true
+                        }
+
+                        Write-StandardMessage -Message ("[STATUS] Received 401 with WWW-Authenticate challenge for '{0}'. Retrying the current attempt with default credentials. Challenge(s): {1}" -f $uriDisplay, ($wwwAuthenticateValues -join ', ')) -Level WRN
+
+                        continue
+                    }
+
+                    $remainingMilliseconds = [int]::MaxValue
+                    if ($TotalTimeoutSec -gt 0) {
+                        $remainingMilliseconds = [int](($TotalTimeoutSec * 1000) - $retryStopwatch.ElapsedMilliseconds)
+                    }
+
+                    $isLastAttempt = $attemptIndex -ge $RetryCount
+                    $retryBudgetExpired = ($TotalTimeoutSec -gt 0 -and $remainingMilliseconds -le 0)
+
+                    if ($isLastAttempt -or $retryBudgetExpired) {
+                        if ($useStreamingEngine -and $DeletePartialStreamingDownloadOnFailure -and -not [string]::IsNullOrWhiteSpace($OutFile)) {
+                            try {
+                                if ([System.IO.File]::Exists($OutFile)) {
+                                    if (-not $downloadTargetExistedBeforeInvocation) {
+                                        [System.IO.File]::Delete($OutFile)
+                                    }
+                                    else {
+                                        Write-StandardMessage -Message ("[STATUS] Streaming download failed, but '{0}' existed before this invocation and will be left in place." -f $OutFile) -Level INF
+                                    }
+                                }
+                            }
+                            catch {
+                                Write-StandardMessage -Message ("[WRN] Failed to delete the partial streaming download '{0}': {1}" -f $OutFile, $_.Exception.Message) -Level WRN
+                            }
+                        }
+
+                        if ($retryBudgetExpired) {
+                            Write-StandardMessage -Message ("[ERR] Retry budget expired after {0} ms while processing {1} {2}: {3}" -f $retryStopwatch.ElapsedMilliseconds, $effectiveMethod, $uriDisplay, $caughtError.Exception.Message) -Level ERR
+                        }
+                        else {
+                            Write-StandardMessage -Message ("[ERR] Attempt {0} of {1} failed and no retries remain for {2} {3}: {4}" -f $attemptIndex, $RetryCount, $effectiveMethod, $uriDisplay, $caughtError.Exception.Message) -Level ERR
+                        }
+
+                        return
+                    }
+
+                    $sleepMilliseconds = $RetryDelayMilliseconds
+                    if ($TotalTimeoutSec -gt 0 -and $sleepMilliseconds -gt $remainingMilliseconds) {
+                        $sleepMilliseconds = $remainingMilliseconds
+                    }
+
+                    if ($sleepMilliseconds -lt 0) {
+                        $sleepMilliseconds = 0
+                    }
+
+                    Write-StandardMessage -Message ("[RETRY] Attempt {0} of {1} failed for {2} {3}: {4}. Retrying in {5} ms." -f $attemptIndex, $RetryCount, $effectiveMethod, $uriDisplay, $caughtError.Exception.Message, $sleepMilliseconds) -Level WRN
+
+                    if ($sleepMilliseconds -gt 0) {
+                        Start-Sleep -Milliseconds $sleepMilliseconds
+                    }
+
+                    break
+                }
+            }
+        }
+    }
+    finally {
+        if ($skipCertificateCheckEnabled) {
+            if ($null -eq $previousCertificateValidationCallback) {
+                [System.Net.ServicePointManager]::ServerCertificateValidationCallback =
+                    [System.Net.Security.RemoteCertificateValidationCallback]$null
+            }
+            else {
+                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $previousCertificateValidationCallback
             }
         }
     }
 }
-
 
 function Get-GitRepoFileMetadata {
     <#
@@ -742,6 +1672,3 @@ function Mirror-GitRepoWithDownloadContent {
     $metadata = Get-GitRepoFileMetadata @metaParams
     Sync-GitRepoFiles -Metadata $metadata -DestinationRoot $DestinationRoot
 }
-
-
-#Mirror-GitRepoWithDownloadContent -RepoUrl 'https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B' -BranchName 'main' -DownloadEndpoint 'resolve' -DestinationRoot 'C:\Artificial_Intelligence' -Filter 'onnx/*','runs/*','metal/*','original/*'

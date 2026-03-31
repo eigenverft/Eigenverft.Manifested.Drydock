@@ -1025,9 +1025,15 @@ PS> Install-ModulesFromRepoFolder -Folder C:\repo -Name Pester,PSScriptAnalyzer
         Join-Path $Env:LOCALAPPDATA "PackageManagement\ProviderAssemblies\NuGet"
     }
 
+    $providerRoots = @(
+        (Join-Path $Env:ProgramFiles 'PackageManagement\ProviderAssemblies')
+        (Join-Path $Env:LOCALAPPDATA 'PackageManagement\ProviderAssemblies')
+        (Join-Path $Env:ProgramData 'PackageManagement\ProviderAssemblies')
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+
     $providerPresent =
-        @(Get-ChildItem -Path $Env:ProgramFiles,$Env:LOCALAPPDATA,$Env:ProgramData `
-        -Recurse -ErrorAction SilentlyContinue `
+        @(Get-ChildItem -Path $providerRoots `
+        -Recurse -File -ErrorAction SilentlyContinue `
         -Include 'Microsoft.PackageManagement.NuGetProvider.dll','NuGet*.dll').Count -gt 0
 
     if (-not $providerPresent) {

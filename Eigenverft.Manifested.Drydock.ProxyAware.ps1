@@ -107,8 +107,9 @@ Behavior:
 - Global variables are still populated for easy re-use inside the current shell.
 - If manual proxy entry would be required in a non-interactive session, the function throws.
 - TLS 1.2 is ensured for proxy validation and discovery probes.
-- Certificate validation is skipped by default for proxy validation and discovery
-  probes. Use -EnforceCertificateCheck to require normal server certificate validation.
+- Proxy validation and discovery probes start with normal TLS server certificate
+  validation. If neither certificate switch is supplied and a probe fails because
+  of certificate validation, that probe is retried once with certificate validation bypass.
 
 This helper is primarily intended for Windows PowerShell 5.1 and PowerShell
 7+ on Windows in corporate environments where direct access is not guaranteed.
@@ -162,8 +163,12 @@ This helper is primarily intended for Windows PowerShell 5.1 and PowerShell
         -not [bool]$EnforceCertificateCheck
     }
     else {
-        $true
+        $false
     }
+
+    $automaticCertificateFallbackAllowed =
+        (-not $explicitSkipCertificateCheckSupplied) -and
+        (-not $explicitEnforceCertificateCheckSupplied)
 
     function Set-ProxyGlobals {
         param(
@@ -232,6 +237,61 @@ This helper is primarily intended for Windows PowerShell 5.1 and PowerShell
         Set-Variable -Scope Global -Name ($GlobalPrefix + 'ProfilePath') -Value $ProxyProfilePath -Force
         Set-Variable -Scope Global -Name ($GlobalPrefix + 'Initialized') -Value $false -Force
         Set-Variable -Scope Global -Name ($GlobalPrefix + 'LastRefresh') -Value $null -Force
+    }
+
+    function Get-AcceptAllCertificateValidationCallback {
+        if (-not ('CertificateValidationHelper' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+
+public static class CertificateValidationHelper
+{
+    public static bool AcceptAll(
+        object sender,
+        X509Certificate certificate,
+        X509Chain chain,
+        SslPolicyErrors sslPolicyErrors)
+    {
+        return true;
+    }
+}
+'@
+        }
+
+        $bindingFlags =
+            [System.Reflection.BindingFlags]::Public -bor
+            [System.Reflection.BindingFlags]::Static
+
+        $methodInfo = [CertificateValidationHelper].GetMethod('AcceptAll', $bindingFlags)
+        if ($null -eq $methodInfo) {
+            throw "Failed to resolve CertificateValidationHelper.AcceptAll."
+        }
+
+        return [System.Net.Security.RemoteCertificateValidationCallback](
+            [System.Delegate]::CreateDelegate(
+                [System.Net.Security.RemoteCertificateValidationCallback],
+                $methodInfo
+            )
+        )
+    }
+
+    function Test-IsCertificateValidationFailure {
+        param(
+            [Parameter(Mandatory = $true)]
+            [System.Exception]$Exception
+        )
+
+        $currentException = $Exception
+        while ($null -ne $currentException) {
+            if ($currentException -is [System.Security.Authentication.AuthenticationException]) {
+                return $true
+            }
+
+            $currentException = $currentException.InnerException
+        }
+
+        return $false
     }
 
     function Ensure-ProfileDirectory {
@@ -542,67 +602,111 @@ This helper is primarily intended for Windows PowerShell 5.1 and PowerShell
             [System.Net.IWebProxy]$Proxy
         )
 
-        $response = $null
-        try {
-            $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($Uri)
-            $request.Method = 'GET'
-            $request.Timeout = $TimeoutSec * 1000
-            $request.ReadWriteTimeout = $TimeoutSec * 1000
-            $request.AllowAutoRedirect = $true
-            $request.UserAgent = 'PowerShell Initialize-ProxyAccessProfile'
-            # The caller controls whether this is a true direct test,
-            # a loopback relay test, a system-proxy test, or a manual-proxy test.
-            $request.Proxy = $Proxy
+        $certificateValidationBypassActive = [bool]$effectiveSkipCertificateCheck
 
-            $response = [System.Net.HttpWebResponse]$request.GetResponse()
-
-            [pscustomobject]@{
-                Success      = $true
-                StatusCode   = [int]$response.StatusCode
-                ErrorMessage = $null
-            }
-        }
-        catch [System.Net.WebException] {
+        while ($true) {
             $response = $null
 
             try {
-                if ($_.Exception.Response -is [System.Net.HttpWebResponse]) {
-                    $response = [System.Net.HttpWebResponse]$_.Exception.Response
+                $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($Uri)
+                $request.Method = 'GET'
+                $request.Timeout = $TimeoutSec * 1000
+                $request.ReadWriteTimeout = $TimeoutSec * 1000
+                $request.AllowAutoRedirect = $true
+                $request.UserAgent = 'PowerShell Initialize-ProxyAccessProfile'
+                # The caller controls whether this is a true direct test,
+                # a loopback relay test, a system-proxy test, or a manual-proxy test.
+                $request.Proxy = $Proxy
+
+                if ($certificateValidationBypassActive -and $null -ne $acceptAllCallback) {
+                    $request.ServerCertificateValidationCallback = $acceptAllCallback
+                }
+
+                $response = [System.Net.HttpWebResponse]$request.GetResponse()
+
+                return [pscustomobject]@{
+                    Success = $true
+                    StatusCode = [int]$response.StatusCode
+                    ErrorMessage = $null
+                    IsCertificateValidationFailure = $false
+                }
+            }
+            catch [System.Net.WebException] {
+                $response = $null
+
+                try {
+                    if ($_.Exception.Response -is [System.Net.HttpWebResponse]) {
+                        $response = [System.Net.HttpWebResponse]$_.Exception.Response
+                    }
+                }
+                catch {
+                    $response = $null
+                }
+
+                $isCertificateValidationFailure = Test-IsCertificateValidationFailure -Exception $_.Exception
+                if (
+                    -not $certificateValidationBypassActive -and
+                    $automaticCertificateFallbackAllowed -and
+                    $isCertificateValidationFailure -and
+                    $null -ne $acceptAllCallback
+                ) {
+                    Write-StandardMessage -Message (
+                        "[WRN] TLS server certificate validation failed while probing '{0}'. Retrying once with certificate validation bypass enabled." -f
+                        $Uri.AbsoluteUri
+                    ) -Level WRN
+
+                    $certificateValidationBypassActive = $true
+                    continue
+                }
+
+                if ($null -ne $response) {
+                    $statusCode = [int]$response.StatusCode
+                    $isProxyAuthenticationRequired =
+                        $statusCode -eq [int][System.Net.HttpStatusCode]::ProxyAuthenticationRequired
+
+                    return [pscustomobject]@{
+                        Success = -not $isProxyAuthenticationRequired
+                        StatusCode = $statusCode
+                        ErrorMessage = if ($isProxyAuthenticationRequired) { $_.Exception.Message } else { $null }
+                        IsCertificateValidationFailure = $false
+                    }
+                }
+
+                return [pscustomobject]@{
+                    Success = $false
+                    StatusCode = $null
+                    ErrorMessage = $_.Exception.Message
+                    IsCertificateValidationFailure = $isCertificateValidationFailure
                 }
             }
             catch {
-                $response = $null
-            }
+                $isCertificateValidationFailure = Test-IsCertificateValidationFailure -Exception $_.Exception
+                if (
+                    -not $certificateValidationBypassActive -and
+                    $automaticCertificateFallbackAllowed -and
+                    $isCertificateValidationFailure -and
+                    $null -ne $acceptAllCallback
+                ) {
+                    Write-StandardMessage -Message (
+                        "[WRN] TLS server certificate validation failed while probing '{0}'. Retrying once with certificate validation bypass enabled." -f
+                        $Uri.AbsoluteUri
+                    ) -Level WRN
 
-            if ($null -ne $response) {
-                $statusCode = [int]$response.StatusCode
-                $isProxyAuthenticationRequired =
-                    $statusCode -eq [int][System.Net.HttpStatusCode]::ProxyAuthenticationRequired
-
-                [pscustomobject]@{
-                    Success      = -not $isProxyAuthenticationRequired
-                    StatusCode   = $statusCode
-                    ErrorMessage = if ($isProxyAuthenticationRequired) { $_.Exception.Message } else { $null }
+                    $certificateValidationBypassActive = $true
+                    continue
                 }
-                return
-            }
 
-            [pscustomobject]@{
-                Success      = $false
-                StatusCode   = $null
-                ErrorMessage = $_.Exception.Message
+                return [pscustomobject]@{
+                    Success = $false
+                    StatusCode = $null
+                    ErrorMessage = $_.Exception.Message
+                    IsCertificateValidationFailure = $isCertificateValidationFailure
+                }
             }
-        }
-        catch {
-            [pscustomobject]@{
-                Success      = $false
-                StatusCode   = $null
-                ErrorMessage = $_.Exception.Message
-            }
-        }
-        finally {
-            if ($response) {
-                $response.Close()
+            finally {
+                if ($response) {
+                    $response.Close()
+                }
             }
         }
     }
@@ -1377,8 +1481,7 @@ This helper is primarily intended for Windows PowerShell 5.1 and PowerShell
         }
     }
 
-    $previousCertificateValidationCallback = $null
-    $skipCertificateCheckEnabled = $false
+    $acceptAllCallback = $null
     $persistedProfileValidationDiagnostics = @()
 
     try {
@@ -1393,46 +1496,8 @@ This helper is primarily intended for Windows PowerShell 5.1 and PowerShell
         catch {
         }
 
-        if ($effectiveSkipCertificateCheck) {
-            if (-not ('CertificateValidationHelper' -as [type])) {
-                Add-Type -TypeDefinition @'
-using System.Net.Security;
-using System.Security.Cryptography.X509Certificates;
-
-public static class CertificateValidationHelper
-{
-    public static bool AcceptAll(
-        object sender,
-        X509Certificate certificate,
-        X509Chain chain,
-        SslPolicyErrors sslPolicyErrors)
-    {
-        return true;
-    }
-}
-'@
-            }
-
-            $bindingFlags =
-                [System.Reflection.BindingFlags]::Public -bor
-                [System.Reflection.BindingFlags]::Static
-
-            $methodInfo = [CertificateValidationHelper].GetMethod('AcceptAll', $bindingFlags)
-
-            if ($null -eq $methodInfo) {
-                throw "Failed to resolve CertificateValidationHelper.AcceptAll."
-            }
-
-            $acceptAllCallback = [System.Net.Security.RemoteCertificateValidationCallback](
-                [System.Delegate]::CreateDelegate(
-                    [System.Net.Security.RemoteCertificateValidationCallback],
-                    $methodInfo
-                )
-            )
-
-            $previousCertificateValidationCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
-            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $acceptAllCallback
-            $skipCertificateCheckEnabled = $true
+        if ($effectiveSkipCertificateCheck -or $automaticCertificateFallbackAllowed) {
+            $acceptAllCallback = Get-AcceptAllCertificateValidationCallback
         }
 
         if (-not $ForceRefresh) {
@@ -1639,15 +1704,7 @@ public static class CertificateValidationHelper
             -ProfileSource 'FreshDetection'
     }
     finally {
-        if ($skipCertificateCheckEnabled) {
-            if ($null -eq $previousCertificateValidationCallback) {
-                [System.Net.ServicePointManager]::ServerCertificateValidationCallback =
-                    [System.Net.Security.RemoteCertificateValidationCallback]$null
-            }
-            else {
-                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $previousCertificateValidationCallback
-            }
-        }
+        # No function-wide certificate validation callback state is retained.
     }
 }
 
@@ -1732,12 +1789,15 @@ function Invoke-WebRequestEx10 {
 
     Certificate behavior:
     - If neither -SkipCertificateCheck nor -EnforceCertificateCheck is supplied,
-      certificate bypass is enabled by default for compatibility with the
-      proxy-resolution workflow
-    - -EnforceCertificateCheck restores normal TLS server certificate validation
+      requests and proxy probes start with normal TLS server certificate validation
+    - A detected certificate-validation failure triggers one retry with
+      certificate validation bypass enabled
+    - -EnforceCertificateCheck keeps normal TLS server certificate validation
+      enabled and disables that automatic fallback
+    - -SkipCertificateCheck enables certificate validation bypass from the start
     - When the active native request path does not expose a clean per-call
       certificate-bypass switch, bypass still relies on temporary process-level
-      callback changes in that path when enabled
+      callback changes in that path only while bypass is active
 
     If the caller manually supplies proxy-related parameters, the persisted proxy
     profile logic is skipped entirely and the caller's settings win.
@@ -1837,12 +1897,11 @@ function Invoke-WebRequestEx10 {
     Supplying this parameter makes the request stay on the native path.
 
 .PARAMETER SkipCertificateCheck
-    Explicitly enables TLS server certificate validation bypass.
-    If neither this parameter nor -EnforceCertificateCheck is supplied, bypass is enabled by default.
+    Explicitly enables TLS server certificate validation bypass from the start.
 
 .PARAMETER EnforceCertificateCheck
-    Explicitly requires normal TLS server certificate validation.
-    Use this to opt out of the function's default certificate-bypass behavior.
+    Explicitly requires normal TLS server certificate validation and disables
+    the automatic certificate-bypass fallback.
 
 .PARAMETER DisableAutoUseDefaultCredentials
     Disables the automatic retry with UseDefaultCredentials after an initial 401
@@ -1932,8 +1991,8 @@ function Invoke-WebRequestEx10 {
 .EXAMPLE
     Invoke-WebRequestEx10 -Uri 'https://intranet-app/api/status' -EnforceCertificateCheck
 
-    Performs a request with normal TLS certificate validation enabled instead of
-    the function's default certificate-bypass behavior.
+    Performs a request with normal TLS certificate validation enforced and
+    without the automatic certificate-bypass fallback.
 
 .EXAMPLE
     Invoke-WebRequestEx10 -Uri 'https://artifact.example.corp/file.zip' -OutFile 'C:\Temp\file.zip' -ForceRefreshProxyProfile
@@ -2248,6 +2307,61 @@ function Invoke-WebRequestEx10 {
         return $null
     }
 
+    function local:_GetAcceptAllCertificateValidationCallback {
+        if (-not ('CertificateValidationHelper' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+
+public static class CertificateValidationHelper
+{
+    public static bool AcceptAll(
+        object sender,
+        X509Certificate certificate,
+        X509Chain chain,
+        SslPolicyErrors sslPolicyErrors)
+    {
+        return true;
+    }
+}
+'@
+        }
+
+        $bindingFlags =
+            [System.Reflection.BindingFlags]::Public -bor
+            [System.Reflection.BindingFlags]::Static
+
+        $methodInfo = [CertificateValidationHelper].GetMethod('AcceptAll', $bindingFlags)
+        if ($null -eq $methodInfo) {
+            throw "Failed to resolve CertificateValidationHelper.AcceptAll."
+        }
+
+        return [System.Net.Security.RemoteCertificateValidationCallback](
+            [System.Delegate]::CreateDelegate(
+                [System.Net.Security.RemoteCertificateValidationCallback],
+                $methodInfo
+            )
+        )
+    }
+
+    function local:_TestIsCertificateValidationFailureFromException {
+        param(
+            [Parameter(Mandatory = $true)]
+            [System.Exception]$Exception
+        )
+
+        $currentException = $Exception
+        while ($null -ne $currentException) {
+            if ($currentException -is [System.Security.Authentication.AuthenticationException]) {
+                return $true
+            }
+
+            $currentException = $currentException.InnerException
+        }
+
+        return $false
+    }
+
     function local:_GetHttpStatusCodeFromErrorRecord {
         param(
             [Parameter(Mandatory = $true)]
@@ -2279,6 +2393,19 @@ function Invoke-WebRequestEx10 {
         }
 
         return $null
+    }
+
+    function local:_TestIsCertificateValidationFailure {
+        param(
+            [Parameter(Mandatory = $true)]
+            [System.Management.Automation.ErrorRecord]$ErrorRecord
+        )
+
+        if ($null -eq $ErrorRecord.Exception) {
+            return $false
+        }
+
+        return (_TestIsCertificateValidationFailureFromException -Exception $ErrorRecord.Exception)
     }
 
     function local:_GetWwwAuthenticateValuesFromErrorRecord {
@@ -2802,66 +2929,109 @@ function Invoke-WebRequestEx10 {
             [System.Net.IWebProxy]$ProxyObject
         )
 
-        $response = $null
+        $certificateValidationBypassActiveForProbe = [bool]$effectiveSkipCertificateCheck
 
-        try {
-            $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($TargetUri)
-            $request.Method = 'GET'
-            $request.Timeout = $ProbeTimeoutSec * 1000
-            $request.ReadWriteTimeout = $ProbeTimeoutSec * 1000
-            $request.AllowAutoRedirect = $true
-            $request.Proxy = $ProxyObject
-            $request.UserAgent = 'PowerShell Invoke-WebRequestEx10 ProxyProfileProbe'
-
-            $response = [System.Net.HttpWebResponse]$request.GetResponse()
-
-            [pscustomobject]@{
-                Success = $true
-                StatusCode = [int]$response.StatusCode
-                ErrorMessage = $null
-            }
-        }
-        catch [System.Net.WebException] {
+        while ($true) {
             $response = $null
 
             try {
-                if ($_.Exception.Response -is [System.Net.HttpWebResponse]) {
-                    $response = [System.Net.HttpWebResponse]$_.Exception.Response
+                $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($TargetUri)
+                $request.Method = 'GET'
+                $request.Timeout = $ProbeTimeoutSec * 1000
+                $request.ReadWriteTimeout = $ProbeTimeoutSec * 1000
+                $request.AllowAutoRedirect = $true
+                $request.Proxy = $ProxyObject
+                $request.UserAgent = 'PowerShell Invoke-WebRequestEx10 ProxyProfileProbe'
+
+                if ($certificateValidationBypassActiveForProbe -and $null -ne $acceptAllCallback) {
+                    $request.ServerCertificateValidationCallback = $acceptAllCallback
+                }
+
+                $response = [System.Net.HttpWebResponse]$request.GetResponse()
+
+                return [pscustomobject]@{
+                    Success = $true
+                    StatusCode = [int]$response.StatusCode
+                    ErrorMessage = $null
+                    IsCertificateValidationFailure = $false
+                }
+            }
+            catch [System.Net.WebException] {
+                $response = $null
+
+                try {
+                    if ($_.Exception.Response -is [System.Net.HttpWebResponse]) {
+                        $response = [System.Net.HttpWebResponse]$_.Exception.Response
+                    }
+                }
+                catch {
+                    $response = $null
+                }
+
+                $isCertificateValidationFailure = _TestIsCertificateValidationFailureFromException -Exception $_.Exception
+                if (
+                    -not $certificateValidationBypassActiveForProbe -and
+                    $automaticCertificateFallbackAllowed -and
+                    $isCertificateValidationFailure -and
+                    $null -ne $acceptAllCallback
+                ) {
+                    _Write-StandardMessage -Message (
+                        "[WRN] TLS server certificate validation failed while probing proxy access for '{0}'. Retrying that probe once with certificate validation bypass enabled." -f
+                        $TargetUri.AbsoluteUri
+                    ) -Level WRN
+
+                    $certificateValidationBypassActiveForProbe = $true
+                    continue
+                }
+
+                if ($null -ne $response) {
+                    $statusCode = [int]$response.StatusCode
+                    $isProxyAuthenticationRequired =
+                        $statusCode -eq [int][System.Net.HttpStatusCode]::ProxyAuthenticationRequired
+
+                    return [pscustomobject]@{
+                        Success = -not $isProxyAuthenticationRequired
+                        StatusCode = $statusCode
+                        ErrorMessage = if ($isProxyAuthenticationRequired) { $_.Exception.Message } else { $null }
+                        IsCertificateValidationFailure = $false
+                    }
+                }
+
+                return [pscustomobject]@{
+                    Success = $false
+                    StatusCode = $null
+                    ErrorMessage = $_.Exception.Message
+                    IsCertificateValidationFailure = $isCertificateValidationFailure
                 }
             }
             catch {
-                $response = $null
-            }
+                $isCertificateValidationFailure = _TestIsCertificateValidationFailureFromException -Exception $_.Exception
+                if (
+                    -not $certificateValidationBypassActiveForProbe -and
+                    $automaticCertificateFallbackAllowed -and
+                    $isCertificateValidationFailure -and
+                    $null -ne $acceptAllCallback
+                ) {
+                    _Write-StandardMessage -Message (
+                        "[WRN] TLS server certificate validation failed while probing proxy access for '{0}'. Retrying that probe once with certificate validation bypass enabled." -f
+                        $TargetUri.AbsoluteUri
+                    ) -Level WRN
 
-            if ($null -ne $response) {
-                $statusCode = [int]$response.StatusCode
-                $isProxyAuthenticationRequired =
-                    $statusCode -eq [int][System.Net.HttpStatusCode]::ProxyAuthenticationRequired
-
-                [pscustomobject]@{
-                    Success = -not $isProxyAuthenticationRequired
-                    StatusCode = $statusCode
-                    ErrorMessage = if ($isProxyAuthenticationRequired) { $_.Exception.Message } else { $null }
+                    $certificateValidationBypassActiveForProbe = $true
+                    continue
                 }
-                return
-            }
 
-            [pscustomobject]@{
-                Success = $false
-                StatusCode = $null
-                ErrorMessage = $_.Exception.Message
+                return [pscustomobject]@{
+                    Success = $false
+                    StatusCode = $null
+                    ErrorMessage = $_.Exception.Message
+                    IsCertificateValidationFailure = $isCertificateValidationFailure
+                }
             }
-        }
-        catch {
-            [pscustomobject]@{
-                Success = $false
-                StatusCode = $null
-                ErrorMessage = $_.Exception.Message
-            }
-        }
-        finally {
-            if ($response) {
-                $response.Close()
+            finally {
+                if ($response) {
+                    $response.Close()
+                }
             }
         }
     }
@@ -3963,8 +4133,7 @@ function Invoke-WebRequestEx10 {
             [switch]$ClearProfile
         )
 
-        $probePreviousCertificateValidationCallback = $null
-        $probeSkipCertificateCheckEnabled = $false
+        $acceptAllCallback = $null
 
         try {
             try {
@@ -3978,46 +4147,8 @@ function Invoke-WebRequestEx10 {
             catch {
             }
 
-            if ($effectiveSkipCertificateCheck) {
-                if (-not ('CertificateValidationHelper' -as [type])) {
-                    Add-Type -TypeDefinition @'
-using System.Net.Security;
-using System.Security.Cryptography.X509Certificates;
-
-public static class CertificateValidationHelper
-{
-    public static bool AcceptAll(
-        object sender,
-        X509Certificate certificate,
-        X509Chain chain,
-        SslPolicyErrors sslPolicyErrors)
-    {
-        return true;
-    }
-}
-'@
-                }
-
-                $bindingFlags =
-                    [System.Reflection.BindingFlags]::Public -bor
-                    [System.Reflection.BindingFlags]::Static
-
-                $methodInfo = [CertificateValidationHelper].GetMethod('AcceptAll', $bindingFlags)
-
-                if ($null -eq $methodInfo) {
-                    throw "Failed to resolve CertificateValidationHelper.AcceptAll."
-                }
-
-                $acceptAllCallback = [System.Net.Security.RemoteCertificateValidationCallback](
-                    [System.Delegate]::CreateDelegate(
-                        [System.Net.Security.RemoteCertificateValidationCallback],
-                        $methodInfo
-                    )
-                )
-
-                $probePreviousCertificateValidationCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
-                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $acceptAllCallback
-                $probeSkipCertificateCheckEnabled = $true
+            if ($effectiveSkipCertificateCheck -or $automaticCertificateFallbackAllowed) {
+                $acceptAllCallback = _GetAcceptAllCertificateValidationCallback
             }
 
             $isInteractive = [System.Environment]::UserInteractive
@@ -4257,15 +4388,7 @@ public static class CertificateValidationHelper
             return $noResolvedProxyProfileState
         }
         finally {
-            if ($probeSkipCertificateCheckEnabled) {
-                if ($null -eq $probePreviousCertificateValidationCallback) {
-                    [System.Net.ServicePointManager]::ServerCertificateValidationCallback =
-                        [System.Net.Security.RemoteCertificateValidationCallback]$null
-                }
-                else {
-                    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $probePreviousCertificateValidationCallback
-                }
-            }
+            # No function-wide certificate validation callback state is retained.
         }
     }
 
@@ -4286,6 +4409,27 @@ public static class CertificateValidationHelper
 
         foreach ($entry in $ProxyProfile.InvokeWebRequest.GetEnumerator()) {
             $CallParams[$entry.Key] = $entry.Value
+        }
+    }
+
+    function local:_SyncNativeSkipCertificateCheckCallParam {
+        param(
+            [Parameter(Mandatory = $true)]
+            [hashtable]$CallParams,
+
+            [Parameter(Mandatory = $true)]
+            [bool]$BypassEnabled,
+
+            [Parameter(Mandatory = $true)]
+            [bool]$NativeSupportsSkipCertificateCheck
+        )
+
+        if ($CallParams.ContainsKey('SkipCertificateCheck')) {
+            [void]$CallParams.Remove('SkipCertificateCheck')
+        }
+
+        if ($BypassEnabled -and $NativeSupportsSkipCertificateCheck) {
+            $CallParams['SkipCertificateCheck'] = $true
         }
     }
 
@@ -4322,8 +4466,15 @@ public static class CertificateValidationHelper
         -not [bool]$EnforceCertificateCheck
     }
     else {
-        $true
+        $false
     }
+
+    $automaticCertificateFallbackAllowed =
+        (-not $explicitSkipCertificateCheckSupplied) -and
+        (-not $explicitEnforceCertificateCheckSupplied)
+
+    $certificateBypassActive = $effectiveSkipCertificateCheck
+    $acceptAllCallback = $null
 
     $explicitCredentialSupplied = $PSBoundParameters.ContainsKey('Credential') -and $null -ne $Credential
     $explicitUseDefaultCredentialsSupplied = $PSBoundParameters.ContainsKey('UseDefaultCredentials')
@@ -4365,9 +4516,10 @@ public static class CertificateValidationHelper
         }
     }
 
-    if ($nativeSupportsSkipCertificateCheck -and $effectiveSkipCertificateCheck) {
-        $callParams['SkipCertificateCheck'] = $true
-    }
+    _SyncNativeSkipCertificateCheckCallParam `
+        -CallParams $callParams `
+        -BypassEnabled:$certificateBypassActive `
+        -NativeSupportsSkipCertificateCheck:$nativeSupportsSkipCertificateCheck
 
     $streamingHashValidationRequested =
         $PSBoundParameters.ContainsKey('RequiredStreamingHashType') -or
@@ -4508,25 +4660,41 @@ public static class CertificateValidationHelper
         if ($useStreamingEngine) {
             if ($nativeSupportsSkipCertificateCheck) {
                 _Write-StandardMessage -Message (
-                    "[STATUS] PowerShell {0} supports native -SkipCertificateCheck, and the compatible streaming path remains enabled for '{1}' to preserve function-managed download behavior." -f
-                    $PSVersionTable.PSVersion, $uriDisplay
+                    "[STATUS] Explicit -SkipCertificateCheck is active, and the compatible streaming path remains enabled for '{0}' to preserve function-managed download behavior." -f
+                    $uriDisplay
                 ) -Level INF
             }
             else {
                 _Write-StandardMessage -Message (
-                    "[STATUS] The streaming download path will apply certificate validation bypass per request for '{0}'." -f $uriDisplay
+                    "[STATUS] Explicit -SkipCertificateCheck is active. The streaming download path will apply certificate validation bypass per request for '{0}'." -f
+                    $uriDisplay
                 ) -Level INF
             }
         }
         elseif ($nativeSupportsSkipCertificateCheck) {
             _Write-StandardMessage -Message (
-                "[STATUS] PowerShell {0} will pass -SkipCertificateCheck directly to native Invoke-WebRequest for '{1}'." -f
-                $PSVersionTable.PSVersion, $uriDisplay
+                "[STATUS] Explicit -SkipCertificateCheck will be passed to native Invoke-WebRequest for '{0}'." -f
+                $uriDisplay
+            ) -Level INF
+        }
+        else {
+            _Write-StandardMessage -Message (
+                "[STATUS] Explicit -SkipCertificateCheck is active for '{0}'." -f
+                $uriDisplay
             ) -Level INF
         }
     }
+    elseif ($automaticCertificateFallbackAllowed) {
+        _Write-StandardMessage -Message (
+            "[STATUS] TLS server certificate validation starts enabled for '{0}'. The request will retry with certificate validation bypass only if a certificate-validation failure is detected." -f
+            $uriDisplay
+        ) -Level INF
+    }
     else {
-        _Write-StandardMessage -Message ("[STATUS] TLS server certificate validation remains enabled for '{0}'." -f $uriDisplay) -Level INF
+        _Write-StandardMessage -Message (
+            "[STATUS] TLS server certificate validation is enforced for '{0}'. Automatic certificate-bypass fallback is disabled." -f
+            $uriDisplay
+        ) -Level INF
     }
 
     if ($useStreamingEngine) {
@@ -4553,56 +4721,11 @@ public static class CertificateValidationHelper
         }
     }
 
-    $previousCertificateValidationCallback = $null
-    $skipCertificateCheckEnabled = $false
-    $acceptAllCallback = $null
+    if ($certificateBypassActive -or $automaticCertificateFallbackAllowed) {
+        $acceptAllCallback = _GetAcceptAllCertificateValidationCallback
+    }
 
     try {
-        if ($effectiveSkipCertificateCheck) {
-            if (-not ('CertificateValidationHelper' -as [type])) {
-                Add-Type -TypeDefinition @'
-using System.Net.Security;
-using System.Security.Cryptography.X509Certificates;
-
-public static class CertificateValidationHelper
-{
-    public static bool AcceptAll(
-        object sender,
-        X509Certificate certificate,
-        X509Chain chain,
-        SslPolicyErrors sslPolicyErrors)
-    {
-        return true;
-    }
-}
-'@
-            }
-
-            $bindingFlags =
-                [System.Reflection.BindingFlags]::Public -bor
-                [System.Reflection.BindingFlags]::Static
-
-            $methodInfo = [CertificateValidationHelper].GetMethod('AcceptAll', $bindingFlags)
-
-            if ($null -eq $methodInfo) {
-                throw "Failed to resolve CertificateValidationHelper.AcceptAll."
-            }
-
-            $acceptAllCallback = [System.Net.Security.RemoteCertificateValidationCallback](
-                [System.Delegate]::CreateDelegate(
-                    [System.Net.Security.RemoteCertificateValidationCallback],
-                    $methodInfo
-                )
-            )
-
-            if (-not $useStreamingEngine -and -not $nativeSupportsSkipCertificateCheck) {
-                _Write-StandardMessage -Message ("[STATUS] Enabling temporary certificate validation bypass for '{0}'." -f $uriDisplay) -Level INF
-                $previousCertificateValidationCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
-                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $acceptAllCallback
-                $skipCertificateCheckEnabled = $true
-            }
-        }
-
         $retryStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
         for ($attemptIndex = 1; $attemptIndex -le $RetryCount; $attemptIndex++) {
@@ -4743,7 +4866,7 @@ public static class CertificateValidationHelper
                                     throw ("Failed to create HttpWebRequest for '{0}'." -f $uriDisplay)
                                 }
 
-                                if ($effectiveSkipCertificateCheck -and $null -ne $acceptAllCallback) {
+                                if ($certificateBypassActive -and $null -ne $acceptAllCallback) {
                                     $request.ServerCertificateValidationCallback = $acceptAllCallback
                                 }
 
@@ -5110,6 +5233,8 @@ public static class CertificateValidationHelper
                     else {
                         $previousDefaultWebProxy = $null
                         $defaultWebProxyOverridden = $false
+                        $previousCertificateValidationCallback = $null
+                        $certificateValidationCallbackOverridden = $false
 
                         try {
                             if ($resolvedProfileForcesNoProxy -and -not $nativeSupportsNoProxy) {
@@ -5118,9 +5243,25 @@ public static class CertificateValidationHelper
                                 $defaultWebProxyOverridden = $true
                             }
 
+                            if ($certificateBypassActive -and -not $nativeSupportsSkipCertificateCheck -and $null -ne $acceptAllCallback) {
+                                $previousCertificateValidationCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+                                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $acceptAllCallback
+                                $certificateValidationCallbackOverridden = $true
+                            }
+
                             $result = Invoke-WebRequest @callParams
                         }
                         finally {
+                            if ($certificateValidationCallbackOverridden) {
+                                if ($null -eq $previousCertificateValidationCallback) {
+                                    [System.Net.ServicePointManager]::ServerCertificateValidationCallback =
+                                        [System.Net.Security.RemoteCertificateValidationCallback]$null
+                                }
+                                else {
+                                    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $previousCertificateValidationCallback
+                                }
+                            }
+
                             if ($defaultWebProxyOverridden) {
                                 [System.Net.WebRequest]::DefaultWebProxy = $previousDefaultWebProxy
                             }
@@ -5139,7 +5280,27 @@ public static class CertificateValidationHelper
                     $statusCode = _GetHttpStatusCodeFromErrorRecord -ErrorRecord $caughtError
                     $wwwAuthenticateValues = _GetWwwAuthenticateValuesFromErrorRecord -ErrorRecord $caughtError
                     $hasWwwAuthenticateChallenge = $wwwAuthenticateValues.Count -gt 0
+                    $isCertificateValidationFailure = _TestIsCertificateValidationFailure -ErrorRecord $caughtError
                     $isLikelyProxyAuthenticationFailure = _TestIsLikelyProxyAuthenticationFailure -ErrorRecord $caughtError -StatusCode $statusCode
+
+                    if (
+                        -not $certificateBypassActive -and
+                        $automaticCertificateFallbackAllowed -and
+                        $isCertificateValidationFailure
+                    ) {
+                        $certificateBypassActive = $true
+                        _SyncNativeSkipCertificateCheckCallParam `
+                            -CallParams $callParams `
+                            -BypassEnabled:$certificateBypassActive `
+                            -NativeSupportsSkipCertificateCheck:$nativeSupportsSkipCertificateCheck
+
+                        _Write-StandardMessage -Message (
+                            "[WRN] TLS server certificate validation failed for '{0}'. Retrying the current request with certificate validation bypass enabled." -f
+                            $uriDisplay
+                        ) -Level WRN
+
+                        continue
+                    }
 
                     if ($useStreamingEngine -and -not $DisableResumeStreamingDownload -and $statusCode -eq 416 -and -not [string]::IsNullOrWhiteSpace($OutFile)) {
                         try {
@@ -5377,18 +5538,11 @@ public static class CertificateValidationHelper
         }
     }
     finally {
-        if ($skipCertificateCheckEnabled) {
-            if ($null -eq $previousCertificateValidationCallback) {
-                [System.Net.ServicePointManager]::ServerCertificateValidationCallback =
-                    [System.Net.Security.RemoteCertificateValidationCallback]$null
-            }
-            else {
-                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $previousCertificateValidationCallback
-            }
-        }
+        # No function-wide certificate validation callback state is retained.
     }
 }
 
+Invoke-WebRequestEx10 -Uri "https://untrusted-root.badssl.com" -UseBasicParsing
 <#
 Set-Alias -Name 'Invoke-WebRequest-IStoppedAskingWhy'       -Value 'Invoke-WebRequestEx10'
 Set-Alias -Name 'Invoke-WebRequest-IJustNeedTheFile'        -Value 'Invoke-WebRequestEx10'

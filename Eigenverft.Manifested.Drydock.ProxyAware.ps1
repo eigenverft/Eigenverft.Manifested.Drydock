@@ -1,3 +1,89 @@
+function Write-StandardMessage {
+    [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+    param(
+        [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
+        [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
+        [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
+    )
+    if ($null -eq $Message) { $Message = [string]::Empty }
+    $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
+    if(-not $PSBoundParameters.ContainsKey('MinLevel')){
+        $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+        $MinLevel=if($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)){[string]$gv.Value}else{'INF'}
+    }
+    $lvl=$Level.ToUpperInvariant()
+    $min=$MinLevel.ToUpperInvariant()
+    $sev=$sevMap[$lvl];if($null -eq $sev){$lvl='INF';$sev=$sevMap['INF']}
+    $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
+    if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
+    if($sev -lt $gate){return}
+    $ts=[DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss')
+    $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
+    if($stack){
+        # 1: prefer first non-underscore function not defined in the helper's own file
+        for($i=0;$i -lt $stack.Count;$i++){
+            $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+            if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+        }
+        # 2: fallback to first non-underscore function (any file)
+        if(-not $caller){
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName
+                if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')){$caller=$f;break}
+            }
+        }
+        # 3: fallback to first non-helper frame not from helper's own file
+        if(-not $caller){
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                if($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+            }
+        }
+        # 4: final fallback to first non-helper frame
+        if(-not $caller){
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName
+                if($fn -and $fn -ne $helperName){$caller=$f;break}
+            }
+        }
+    }
+    if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
+    $lineNumber=$null ; 
+    $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
+    if(-not $lineNumber){
+        $p=$caller.PSObject.Properties['Position']
+        if($p -and $p.Value){
+            $sp=$p.Value.PSObject.Properties['StartLineNumber'];if($sp -and $sp.Value){$lineNumber=[string]$sp.Value}
+        }
+    }
+    if(-not $lineNumber){
+        $p=$caller.PSObject.Properties['Location']
+        if($p -and $p.Value){
+            $m=[regex]::Match([string]$p.Value,':(\d+)\s+char:','IgnoreCase');if($m.Success -and $m.Groups.Count -gt 1){$lineNumber=$m.Groups[1].Value}
+        }
+    }
+    $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
+    if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
+    $prefix="[$ts "
+    #$suffix="] [$file] $Message"
+    $suffix="] $Message"
+    $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='Red';Back='DarkRed'}}[$lvl]
+    $fore=$cfg.Fore
+    $back=$cfg.Back
+    $isInteractive = [System.Environment]::UserInteractive
+    if($isInteractive -and ($fore -or $back)){
+        Write-Host -NoNewline $prefix
+        if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
+        elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
+        elseif($back){Write-Host -NoNewline $lvl -BackgroundColor $back}
+        Write-Host $suffix
+    } else {
+        Write-Host "$prefix$lvl$suffix"
+    }
+
+    if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
+}
+
 function Initialize-ProxyAccessProfile {
 <#
 .SYNOPSIS
@@ -405,6 +491,37 @@ environments where direct access is not guaranteed.
                 Success      = $true
                 StatusCode   = [int]$response.StatusCode
                 ErrorMessage = $null
+            }
+        }
+        catch [System.Net.WebException] {
+            $response = $null
+
+            try {
+                if ($_.Exception.Response -is [System.Net.HttpWebResponse]) {
+                    $response = [System.Net.HttpWebResponse]$_.Exception.Response
+                }
+            }
+            catch {
+                $response = $null
+            }
+
+            if ($null -ne $response) {
+                $statusCode = [int]$response.StatusCode
+                $isProxyAuthenticationRequired =
+                    $statusCode -eq [int][System.Net.HttpStatusCode]::ProxyAuthenticationRequired
+
+                [pscustomobject]@{
+                    Success      = -not $isProxyAuthenticationRequired
+                    StatusCode   = $statusCode
+                    ErrorMessage = if ($isProxyAuthenticationRequired) { $_.Exception.Message } else { $null }
+                }
+                return
+            }
+
+            [pscustomobject]@{
+                Success      = $false
+                StatusCode   = $null
+                ErrorMessage = $_.Exception.Message
             }
         }
         catch {
@@ -1032,15 +1149,37 @@ public static class CertificateValidationHelper
 function Invoke-WebRequestEx10 {
 <#
 .SYNOPSIS
-    Invokes a web request with retries, proxy/TLS handling, optional streaming downloads,
-    persisted corporate proxy profile handling, resume support, resume metadata validation,
-    cooperative lock handling, optional partial-file cleanup, and optional final hash verification.
+    Invokes a web request with Windows PowerShell 5.1 compatibility improvements,
+    retry logic, persisted proxy-profile handling, proxy/TLS handling,
+    resilient streaming downloads, resume support, and optional final hash verification.
 
 .DESCRIPTION
-    This is a corporate variant of Invoke-WebRequestEx.
+    Invoke-WebRequestEx10 is intended for Windows PowerShell 5.1 environments
+    where outbound access may depend on proxy discovery and where large or
+    long-running downloads need stronger operational behavior.
 
-    It keeps the original request behavior intact, but replaces the simple proxy
-    auto-discovery block with a persisted proxy-profile resolver that tries:
+    The function supports general web requests and extends them with additional
+    behavior that is useful for automation, infrastructure scripts, artifact
+    downloads, and resumable file transfer scenarios.
+
+    Added behavior includes:
+    - TLS 1.2 enablement when not already active
+    - OutFile parent directory creation
+    - Persisted proxy-profile resolution when the caller did not explicitly provide proxy settings
+    - Live validation of persisted proxy profiles before reuse
+    - Retry handling for all HTTP methods
+    - Optional total retry budget across attempts
+    - Optional streaming download engine for compatible GET + OutFile requests
+    - Automatic resume for compatible streaming downloads unless disabled
+    - Resume metadata validation using persisted ETag / Last-Modified sidecar state
+    - Cooperative lock file handling to reduce concurrent download collisions for the same target
+    - Optional final required hash verification for streaming downloads
+    - Optional partial-file cleanup on terminal streaming failure
+    - Optional automatic retry with UseDefaultCredentials after an initial 401 challenge
+      when the target appears intranet-like and the caller did not explicitly provide credentials
+    - One-time persisted manual-proxy profile invalidation and re-resolution on likely proxy-authentication failure
+
+    Proxy resolution uses a persisted proxy-profile resolver that tries:
 
     1. Direct access
     2. Local relay proxy on loopback
@@ -1058,8 +1197,41 @@ function Invoke-WebRequestEx10 {
     Initialize-ProxyAccessProfile, but this function remains fully independent and
     does not rely on that helper.
 
-    The same -SkipCertificateCheck / -EnforceCertificateCheck behavior is applied
-    to both the proxy-profile probe path and the actual request path.
+    Request engine behavior:
+    - Native Invoke-WebRequest remains the default engine for general requests
+    - The streaming engine is only used for compatible GET + OutFile requests
+    - Proxy-profile handling is skipped when the caller explicitly supplies proxy settings
+    - Resume and final hash validation are function-managed features intended for the streaming path
+    - Future runtimes with native -SkipCertificateCheck support should still keep
+      compatible streaming downloads on the function-managed streaming path
+
+    Streaming download mode is generally selected only when:
+    - Method is GET
+    - OutFile is specified
+    - No incompatible compatibility-sensitive parameters are present
+
+    Resume behavior:
+    - Resume is enabled by default for compatible streaming downloads
+    - Resume can be disabled with -DisableResumeStreamingDownload
+    - Resume only appends when remote validator checks still match
+    - If resume is unsafe or unsupported, the transfer restarts from byte 0
+
+    Required final hash behavior:
+    - If -RequiredStreamingHashType and -RequiredStreamingHash are supplied,
+      the completed streaming download is verified before success is reported
+    - A hash mismatch invalidates the downloaded file
+    - Hash verification is intended for the streaming download path only
+
+    Certificate behavior:
+    - If neither -SkipCertificateCheck nor -EnforceCertificateCheck is supplied,
+      certificate bypass is enabled by default for compatibility with the
+      proxy-resolution workflow
+    - -EnforceCertificateCheck restores normal TLS server certificate validation
+    - On Windows PowerShell 5.1, native Invoke-WebRequest does not expose a clean
+      per-call certificate-bypass switch
+    - Because version 10 keeps the native path for general requests, certificate
+      bypass still relies on temporary process-level callback changes in those
+      native underlying call paths when bypass is enabled
 
     If the caller manually supplies proxy-related parameters, the persisted proxy
     profile logic is skipped entirely and the caller's settings win.
@@ -1071,12 +1243,210 @@ function Invoke-WebRequestEx10 {
     If manual proxy entry would be required in a non-interactive session, the
     function throws instead of attempting to prompt.
 
-    Added streaming-download features include:
-    - Resume support for compatible streaming downloads
-    - Resume metadata validation using persisted ETag / Last-Modified sidecar state
-    - Cooperative lock file handling to reduce concurrent download collisions
-    - Optional final required hash verification
-    - Optional partial-file cleanup on terminal failure
+.PARAMETER Uri
+    The request URI.
+
+.PARAMETER UseBasicParsing
+    Forwards UseBasicParsing to native Invoke-WebRequest on Windows PowerShell 5.1.
+    This parameter is not used by the streaming download path.
+
+.PARAMETER WebSession
+    Existing web session object to reuse with the native Invoke-WebRequest path.
+    Supplying this parameter makes the request stay on the native path.
+
+.PARAMETER SessionVariable
+    Name of a session variable to populate from the native Invoke-WebRequest path.
+    Supplying this parameter makes the request stay on the native path.
+
+.PARAMETER Credential
+    Explicit request credentials.
+    Used directly on the native path and converted to NetworkCredential on the streaming path.
+
+.PARAMETER UseDefaultCredentials
+    Explicitly uses the current Windows credentials for request authentication.
+    When supplied, this overrides the function's automatic intranet-style credential upgrade decision.
+
+.PARAMETER CertificateThumbprint
+    Client certificate thumbprint for the native Invoke-WebRequest path.
+    Supplying this parameter makes the request stay on the native path.
+
+.PARAMETER Certificate
+    Client certificate instance for the native Invoke-WebRequest path.
+    Supplying this parameter makes the request stay on the native path.
+
+.PARAMETER UserAgent
+    User-Agent string for the request.
+
+.PARAMETER DisableKeepAlive
+    Disables HTTP keep-alive for the underlying request where supported.
+
+.PARAMETER TimeoutSec
+    Per-attempt request timeout in seconds.
+    Proxy probing uses 8 seconds when no positive timeout is supplied.
+
+.PARAMETER Headers
+    Optional request headers.
+    Some headers such as Cookie, Date, or Range make the request stay on the native path.
+
+.PARAMETER MaximumRedirection
+    Maximum number of automatic redirects to follow.
+    A value less than or equal to 0 disables automatic redirection.
+
+.PARAMETER Method
+    HTTP method to use.
+    The streaming download path only supports GET.
+
+.PARAMETER Proxy
+    Explicit proxy URI for the request.
+    Supplying any explicit proxy-related parameter skips persisted proxy-profile resolution.
+
+.PARAMETER ProxyCredential
+    Credential for the explicit proxy specified by -Proxy.
+
+.PARAMETER ProxyUseDefaultCredentials
+    Uses the current Windows credentials for the explicit proxy specified by -Proxy.
+
+.PARAMETER Body
+    Request body content.
+    Supplying this parameter makes the request stay on the native path.
+
+.PARAMETER ContentType
+    Request content type.
+    Supplying this parameter makes the request stay on the native path.
+
+.PARAMETER TransferEncoding
+    Request transfer encoding.
+    Supplying this parameter makes the request stay on the native path.
+
+.PARAMETER InFile
+    Path to a request body file for upload scenarios.
+    Supplying this parameter makes the request stay on the native path.
+
+.PARAMETER OutFile
+    Target path for response content.
+    The parent directory is created automatically when needed.
+
+.PARAMETER PassThru
+    Requests pass-through output from the native Invoke-WebRequest path.
+    Supplying this parameter makes the request stay on the native path.
+
+.PARAMETER SkipCertificateCheck
+    Explicitly enables TLS server certificate validation bypass.
+    If neither this parameter nor -EnforceCertificateCheck is supplied, bypass is enabled by default.
+
+.PARAMETER EnforceCertificateCheck
+    Explicitly requires normal TLS server certificate validation.
+    Use this to opt out of the function's default certificate-bypass behavior.
+
+.PARAMETER DisableAutoUseDefaultCredentials
+    Disables the automatic retry with UseDefaultCredentials after an initial 401
+    challenge when the target appears intranet-like and the caller did not explicitly provide credentials.
+
+.PARAMETER RetryCount
+    Maximum number of request attempts.
+    Applies to both native and streaming paths.
+
+.PARAMETER RetryDelayMilliseconds
+    Delay between retry attempts in milliseconds.
+
+.PARAMETER TotalTimeoutSec
+    Optional total retry budget in seconds across all attempts.
+    A value of 0 disables total-budget enforcement.
+
+.PARAMETER BufferSizeBytes
+    Buffer size used by the streaming download engine.
+    The default is 4 MB.
+
+.PARAMETER ProgressIntervalPercent
+    Progress reporting interval, in percent, when the total content length is known.
+
+.PARAMETER ProgressIntervalBytes
+    Progress reporting interval, in bytes, when the total content length is unknown.
+
+.PARAMETER UseStreamingDownload
+    Prefers the streaming download engine when the request is compatible with it.
+    Compatible GET + OutFile requests may also use the streaming engine automatically.
+
+.PARAMETER DisableResumeStreamingDownload
+    Disables automatic resume behavior for the streaming download path.
+    When set, streaming retries restart from byte 0 instead of resuming.
+
+.PARAMETER DeletePartialStreamingDownloadOnFailure
+    Deletes the target file on terminal streaming failure when the file was created
+    by the current invocation and the operation did not complete successfully.
+
+.PARAMETER RequiredStreamingHashType
+    Required final hash algorithm for streaming download verification.
+    Must be supplied together with -RequiredStreamingHash.
+
+.PARAMETER RequiredStreamingHash
+    Required final hash value for streaming download verification.
+    Must be supplied together with -RequiredStreamingHashType.
+
+.PARAMETER ProxyProfilePath
+    Path to the persisted proxy profile file.
+    This is only used when the caller did not explicitly provide proxy parameters.
+
+.PARAMETER DefaultManualProxy
+    Default proxy URI shown in the interactive manual proxy prompt.
+
+.PARAMETER SkipProxyManualPrompt
+    Prevents the interactive manual proxy prompt during proxy-profile resolution.
+    If direct, local relay, and system proxy resolution all fail, the resolved mode becomes unavailable instead of prompting.
+
+.PARAMETER SkipProxySessionPreparation
+    Reserved compatibility switch for session-level proxy preparation.
+    Version 10 applies resolved proxy settings per request and typically does not require extra session preparation.
+
+.PARAMETER ForceRefreshProxyProfile
+    Ignores any in-process or persisted proxy-profile cache and performs fresh proxy detection.
+
+.PARAMETER ClearProxyProfile
+    Deletes the persisted proxy-profile file before proxy resolution starts.
+
+.EXAMPLE
+    Invoke-WebRequestEx10 -Uri 'https://example.org'
+
+    Performs a general web request using the native request path when
+    no function-managed download path is needed.
+
+.EXAMPLE
+    Invoke-WebRequestEx10 -Uri 'https://example.org/file.zip' -OutFile 'C:\Temp\file.zip'
+
+    Downloads a file. For compatible GET + OutFile requests, the function may use
+    the streaming download engine automatically.
+
+.EXAMPLE
+    Invoke-WebRequestEx10 -Uri 'https://example.org/file.iso' -OutFile 'C:\Temp\file.iso' -UseStreamingDownload -RetryCount 10 -RetryDelayMilliseconds 5000
+
+    Explicitly prefers the streaming path and retries the download up to 10 times
+    with a 5 second delay between attempts.
+
+.EXAMPLE
+    Invoke-WebRequestEx10 -Uri 'https://intranet-app/api/status' -EnforceCertificateCheck
+
+    Performs a request with normal TLS certificate validation enabled instead of
+    the function's default certificate-bypass behavior.
+
+.EXAMPLE
+    Invoke-WebRequestEx10 -Uri 'https://artifact.example.corp/file.zip' -OutFile 'C:\Temp\file.zip' -ForceRefreshProxyProfile
+
+    Forces fresh persisted proxy-profile detection before the request.
+
+.EXAMPLE
+    Invoke-WebRequestEx10 -Uri 'https://example.org/file.iso' -OutFile 'C:\Temp\file.iso' -RequiredStreamingHashType SHA256 -RequiredStreamingHash '570CE2BBC92545CFFBCB01DF43CBA59D86093DADC34C25DA9F554D256BC70B91'
+
+    Downloads an artifact and verifies the final file against the required SHA256
+    before success is reported.
+
+.NOTES
+    Intended as the replacement path for older Invoke-WebRequestEx variants in
+    this repository.
+
+    Target runtime: Windows PowerShell 5.1.
+
+    When explicit proxy parameters are supplied, persisted proxy-profile
+    resolution is skipped and the caller's proxy settings win.
 #>
     [CmdletBinding(PositionalBinding = $false)]
     param(
@@ -1575,7 +1945,7 @@ function Invoke-WebRequestEx10 {
                 "[WRN] Failed to persist proxy profile to '{0}': {1}" -f
                 $ProfilePath, $_.Exception.Message
             ) -Level WRN
-            throw
+            return
         }
     }
 
@@ -1656,15 +2026,6 @@ function Invoke-WebRequestEx10 {
                         Proxy = $proxyUri
                         ProxyCredential = $proxyCredential
                     }
-
-                    $capturedProxyUri = $proxyUri
-                    $capturedProxyCredential = $proxyCredential
-
-                    $prepareSession = {
-                        $webProxy = New-Object System.Net.WebProxy($capturedProxyUri.AbsoluteUri, $true)
-                        $webProxy.Credentials = $capturedProxyCredential.GetNetworkCredential()
-                        [System.Net.WebRequest]::DefaultWebProxy = $webProxy
-                    }.GetNewClosure()
                 }
             }
 
@@ -1681,12 +2042,6 @@ function Invoke-WebRequestEx10 {
                     $invokeWebRequest = @{
                         Proxy = $proxyUri
                     }
-
-                    $capturedProxyUri = $proxyUri
-
-                    $prepareSession = {
-                        [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($capturedProxyUri.AbsoluteUri, $true)
-                    }.GetNewClosure()
                 }
             }
 
@@ -1696,11 +2051,6 @@ function Invoke-WebRequestEx10 {
                         Proxy = $proxyUri
                         ProxyUseDefaultCredentials = $true
                     }
-
-                    $prepareSession = {
-                        [System.Net.WebRequest]::DefaultWebProxy = [System.Net.WebRequest]::GetSystemWebProxy()
-                        [System.Net.WebRequest]::DefaultWebProxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
-                    }.GetNewClosure()
                 }
             }
 
@@ -1835,6 +2185,37 @@ function Invoke-WebRequestEx10 {
                 Success = $true
                 StatusCode = [int]$response.StatusCode
                 ErrorMessage = $null
+            }
+        }
+        catch [System.Net.WebException] {
+            $response = $null
+
+            try {
+                if ($_.Exception.Response -is [System.Net.HttpWebResponse]) {
+                    $response = [System.Net.HttpWebResponse]$_.Exception.Response
+                }
+            }
+            catch {
+                $response = $null
+            }
+
+            if ($null -ne $response) {
+                $statusCode = [int]$response.StatusCode
+                $isProxyAuthenticationRequired =
+                    $statusCode -eq [int][System.Net.HttpStatusCode]::ProxyAuthenticationRequired
+
+                [pscustomobject]@{
+                    Success = -not $isProxyAuthenticationRequired
+                    StatusCode = $statusCode
+                    ErrorMessage = if ($isProxyAuthenticationRequired) { $_.Exception.Message } else { $null }
+                }
+                return
+            }
+
+            [pscustomobject]@{
+                Success = $false
+                StatusCode = $null
+                ErrorMessage = $_.Exception.Message
             }
         }
         catch {
@@ -2982,14 +3363,14 @@ public static class CertificateValidationHelper
             -ClearProfile:$ClearProxyProfile
 
         Write-StandardMessage -Message (
-            "[STATUS] Corporate proxy profile resolved mode '{0}' from '{1}' for '{2}'." -f
+            "[STATUS] Proxy profile resolved mode '{0}' from '{1}' for '{2}'." -f
             $proxyProfile.Mode, $proxyProfile.ProfileSource, $uriDisplay
         ) -Level INF
 
         _ApplyProxyProfileToCallParams -CallParams $callParams -ProxyProfile $proxyProfile
     }
     else {
-        Write-StandardMessage -Message ("[STATUS] Caller supplied proxy-related parameters for '{0}'. Persisted corporate proxy profile is skipped." -f $uriDisplay) -Level INF
+        Write-StandardMessage -Message ("[STATUS] Caller supplied proxy-related parameters for '{0}'. Persisted proxy profile is skipped." -f $uriDisplay) -Level INF
     }
 
     $useStreamingEngine = $false
@@ -3049,14 +3430,28 @@ public static class CertificateValidationHelper
         throw "Required streaming hash validation is only supported for the streaming download path."
     }
 
-    if ($nativeSupportsSkipCertificateCheck -and $effectiveSkipCertificateCheck) {
-        $useStreamingEngine = $false
-        Write-StandardMessage -Message (
-            "[STATUS] PowerShell {0} will pass -SkipCertificateCheck directly to native Invoke-WebRequest. Streaming path is disabled for '{1}'." -f
-            $PSVersionTable.PSVersion, $uriDisplay
-        ) -Level INF
+    if ($effectiveSkipCertificateCheck) {
+        if ($useStreamingEngine) {
+            if ($nativeSupportsSkipCertificateCheck) {
+                Write-StandardMessage -Message (
+                    "[STATUS] PowerShell {0} supports native -SkipCertificateCheck, and the compatible streaming path remains enabled for '{1}' to preserve function-managed download behavior." -f
+                    $PSVersionTable.PSVersion, $uriDisplay
+                ) -Level INF
+            }
+            else {
+                Write-StandardMessage -Message (
+                    "[STATUS] The streaming download path will apply certificate validation bypass per request for '{0}'." -f $uriDisplay
+                ) -Level INF
+            }
+        }
+        elseif ($nativeSupportsSkipCertificateCheck) {
+            Write-StandardMessage -Message (
+                "[STATUS] PowerShell {0} will pass -SkipCertificateCheck directly to native Invoke-WebRequest for '{1}'." -f
+                $PSVersionTable.PSVersion, $uriDisplay
+            ) -Level INF
+        }
     }
-    elseif (-not $effectiveSkipCertificateCheck) {
+    else {
         Write-StandardMessage -Message ("[STATUS] TLS server certificate validation remains enabled for '{0}'." -f $uriDisplay) -Level INF
     }
 
@@ -3091,11 +3486,10 @@ public static class CertificateValidationHelper
 
     $previousCertificateValidationCallback = $null
     $skipCertificateCheckEnabled = $false
+    $acceptAllCallback = $null
 
     try {
-        if ($effectiveSkipCertificateCheck -and -not $nativeSupportsSkipCertificateCheck) {
-            Write-StandardMessage -Message ("[STATUS] Enabling temporary certificate validation bypass for '{0}'." -f $uriDisplay) -Level INF
-
+        if ($effectiveSkipCertificateCheck) {
             if (-not ('CertificateValidationHelper' -as [type])) {
                 Add-Type -TypeDefinition @'
 using System.Net.Security;
@@ -3132,9 +3526,12 @@ public static class CertificateValidationHelper
                 )
             )
 
-            $previousCertificateValidationCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
-            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $acceptAllCallback
-            $skipCertificateCheckEnabled = $true
+            if (-not $useStreamingEngine -and -not $nativeSupportsSkipCertificateCheck) {
+                Write-StandardMessage -Message ("[STATUS] Enabling temporary certificate validation bypass for '{0}'." -f $uriDisplay) -Level INF
+                $previousCertificateValidationCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $acceptAllCallback
+                $skipCertificateCheckEnabled = $true
+            }
         }
 
         $retryStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -3273,6 +3670,10 @@ public static class CertificateValidationHelper
                                     throw ("Failed to create HttpWebRequest for '{0}'." -f $uriDisplay)
                                 }
 
+                                if ($effectiveSkipCertificateCheck -and $null -ne $acceptAllCallback) {
+                                    $request.ServerCertificateValidationCallback = $acceptAllCallback
+                                }
+
                                 $request.Method = 'GET'
 
                                 if ($downloadState.ResumeRequested) {
@@ -3305,7 +3706,7 @@ public static class CertificateValidationHelper
                                 }
 
                                 if ($explicitCredentialSupplied) {
-                                    $request.Credentials = $Credential
+                                    $request.Credentials = $Credential.GetNetworkCredential()
                                 }
                                 elseif ($requestUseDefaultCredentials) {
                                     $request.Credentials = [System.Net.CredentialCache]::DefaultCredentials
@@ -3315,10 +3716,10 @@ public static class CertificateValidationHelper
                                     $webProxy = New-Object System.Net.WebProxy(([uri]$callParams['Proxy']).AbsoluteUri, $true)
 
                                     if ($PSBoundParameters.ContainsKey('ProxyCredential') -and $null -ne $ProxyCredential) {
-                                        $webProxy.Credentials = $ProxyCredential
+                                        $webProxy.Credentials = $ProxyCredential.GetNetworkCredential()
                                     }
                                     elseif ($callParams.ContainsKey('ProxyCredential') -and $null -ne $callParams['ProxyCredential']) {
-                                        $webProxy.Credentials = $callParams['ProxyCredential']
+                                        $webProxy.Credentials = $callParams['ProxyCredential'].GetNetworkCredential()
                                     }
                                     elseif ($callParams.ContainsKey('ProxyUseDefaultCredentials') -and [bool]$callParams['ProxyUseDefaultCredentials']) {
                                         $webProxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
@@ -3715,7 +4116,7 @@ public static class CertificateValidationHelper
                                 -ClearProfile
 
                             Write-StandardMessage -Message (
-                                "[STATUS] Corporate proxy profile re-resolved mode '{0}' from '{1}' for '{2}' after manual proxy invalidation." -f
+                                "[STATUS] Proxy profile re-resolved mode '{0}' from '{1}' for '{2}' after manual proxy invalidation." -f
                                 $proxyProfile.Mode, $proxyProfile.ProfileSource, $uriDisplay
                             ) -Level INF
 
@@ -3895,3 +4296,6 @@ public static class CertificateValidationHelper
         }
     }
 }
+
+
+Invoke-WebRequestEx10 -Uri 'https://www.powershellgallery.com/api/v2/' -UseBasicParsing

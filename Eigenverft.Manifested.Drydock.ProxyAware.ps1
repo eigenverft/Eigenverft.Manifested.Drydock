@@ -1,89 +1,3 @@
-function Write-StandardMessage {
-    [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
-    param(
-        [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
-        [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
-        [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
-    )
-    if ($null -eq $Message) { $Message = [string]::Empty }
-    $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
-    if(-not $PSBoundParameters.ContainsKey('MinLevel')){
-        $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
-        $MinLevel=if($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)){[string]$gv.Value}else{'INF'}
-    }
-    $lvl=$Level.ToUpperInvariant()
-    $min=$MinLevel.ToUpperInvariant()
-    $sev=$sevMap[$lvl];if($null -eq $sev){$lvl='INF';$sev=$sevMap['INF']}
-    $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
-    if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
-    if($sev -lt $gate){return}
-    $ts=[DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss')
-    $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
-    if($stack){
-        # 1: prefer first non-underscore function not defined in the helper's own file
-        for($i=0;$i -lt $stack.Count;$i++){
-            $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
-            if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
-        }
-        # 2: fallback to first non-underscore function (any file)
-        if(-not $caller){
-            for($i=0;$i -lt $stack.Count;$i++){
-                $f=$stack[$i];$fn=$f.FunctionName
-                if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')){$caller=$f;break}
-            }
-        }
-        # 3: fallback to first non-helper frame not from helper's own file
-        if(-not $caller){
-            for($i=0;$i -lt $stack.Count;$i++){
-                $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
-                if($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
-            }
-        }
-        # 4: final fallback to first non-helper frame
-        if(-not $caller){
-            for($i=0;$i -lt $stack.Count;$i++){
-                $f=$stack[$i];$fn=$f.FunctionName
-                if($fn -and $fn -ne $helperName){$caller=$f;break}
-            }
-        }
-    }
-    if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
-    $lineNumber=$null ; 
-    $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
-    if(-not $lineNumber){
-        $p=$caller.PSObject.Properties['Position']
-        if($p -and $p.Value){
-            $sp=$p.Value.PSObject.Properties['StartLineNumber'];if($sp -and $sp.Value){$lineNumber=[string]$sp.Value}
-        }
-    }
-    if(-not $lineNumber){
-        $p=$caller.PSObject.Properties['Location']
-        if($p -and $p.Value){
-            $m=[regex]::Match([string]$p.Value,':(\d+)\s+char:','IgnoreCase');if($m.Success -and $m.Groups.Count -gt 1){$lineNumber=$m.Groups[1].Value}
-        }
-    }
-    $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
-    if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
-    $prefix="[$ts "
-    #$suffix="] [$file] $Message"
-    $suffix="] $Message"
-    $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='Red';Back='DarkRed'}}[$lvl]
-    $fore=$cfg.Fore
-    $back=$cfg.Back
-    $isInteractive = [System.Environment]::UserInteractive
-    if($isInteractive -and ($fore -or $back)){
-        Write-Host -NoNewline $prefix
-        if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
-        elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
-        elseif($back){Write-Host -NoNewline $lvl -BackgroundColor $back}
-        Write-Host $suffix
-    } else {
-        Write-Host "$prefix$lvl$suffix"
-    }
-
-    if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
-}
-
 function Initialize-ProxyAccessProfile {
 <#
 .SYNOPSIS
@@ -138,6 +52,92 @@ This helper is primarily intended for Windows PowerShell 5.1 and PowerShell
         [switch]$ForceRefresh
     )
 
+    function local:_Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
+        )
+        if ($null -eq $Message) { $Message = [string]::Empty }
+        $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
+        if(-not $PSBoundParameters.ContainsKey('MinLevel')){
+            $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+            $MinLevel=if($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)){[string]$gv.Value}else{'INF'}
+        }
+        $lvl=$Level.ToUpperInvariant()
+        $min=$MinLevel.ToUpperInvariant()
+        $sev=$sevMap[$lvl];if($null -eq $sev){$lvl='INF';$sev=$sevMap['INF']}
+        $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
+        if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
+        if($sev -lt $gate){return}
+        $ts=[DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss')
+        $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
+        if($stack){
+            # 1: prefer first non-underscore function not defined in the helper's own file
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+            }
+            # 2: fallback to first non-underscore function (any file)
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')){$caller=$f;break}
+                }
+            }
+            # 3: fallback to first non-helper frame not from helper's own file
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                    if($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+                }
+            }
+            # 4: final fallback to first non-helper frame
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName){$caller=$f;break}
+                }
+            }
+        }
+        if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
+        $lineNumber=$null ; 
+        $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Position']
+            if($p -and $p.Value){
+                $sp=$p.Value.PSObject.Properties['StartLineNumber'];if($sp -and $sp.Value){$lineNumber=[string]$sp.Value}
+            }
+        }
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Location']
+            if($p -and $p.Value){
+                $m=[regex]::Match([string]$p.Value,':(\d+)\s+char:','IgnoreCase');if($m.Success -and $m.Groups.Count -gt 1){$lineNumber=$m.Groups[1].Value}
+            }
+        }
+        $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
+        if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
+        $prefix="[$ts "
+        #$suffix="] [$file] $Message"
+        $suffix="] $Message"
+        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='Red';Back='DarkRed'}}[$lvl]
+        $fore=$cfg.Fore
+        $back=$cfg.Back
+        $isInteractive = [System.Environment]::UserInteractive
+        if($isInteractive -and ($fore -or $back)){
+            Write-Host -NoNewline $prefix
+            if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
+            elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
+            elseif($back){Write-Host -NoNewline $lvl -BackgroundColor $back}
+            Write-Host $suffix
+        } else {
+            Write-Host "$prefix$lvl$suffix"
+        }
+
+        if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
+    }
+
     $isWindowsEnv = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
     if (-not $isWindowsEnv) {
         throw "Initialize-ProxyAccessProfile is intended for Windows PowerShell 5.1 and PowerShell 7+ on Windows. Current version: $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)."
@@ -150,6 +150,10 @@ This helper is primarily intended for Windows PowerShell 5.1 and PowerShell
 
     $initialized = Get-Variable -Scope Global -Name ($GlobalPrefix + 'Initialized') -ErrorAction SilentlyContinue
     if (-not $ForceRefresh -and $initialized -and $initialized.Value) {
+        _Write-StandardMessage -Message (
+            "[STATUS] Proxy globals already initialized for prefix '{0}'. Skipping refresh." -f
+            $GlobalPrefix
+        ) -Level DBG
         return
     }
 
@@ -237,6 +241,34 @@ This helper is primarily intended for Windows PowerShell 5.1 and PowerShell
         Set-Variable -Scope Global -Name ($GlobalPrefix + 'ProfilePath') -Value $ProxyProfilePath -Force
         Set-Variable -Scope Global -Name ($GlobalPrefix + 'Initialized') -Value $false -Force
         Set-Variable -Scope Global -Name ($GlobalPrefix + 'LastRefresh') -Value $null -Force
+    }
+
+    function Write-ProxyResolutionDiagnostics {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Mode,
+
+            [Parameter(Mandatory = $true)]
+            [string]$ProfileSource,
+
+            [string[]]$Diagnostics = @(),
+
+            [bool]$SessionPrepared = $false
+        )
+
+        _Write-StandardMessage -Message (
+            "[STATUS] Proxy profile mode '{0}' from '{1}'. SessionPrepared={2}." -f
+            $Mode, $ProfileSource, $SessionPrepared
+        ) -Level INF
+
+        foreach ($message in @($Diagnostics)) {
+            $diagnosticText = [string]$message
+            if ([string]::IsNullOrWhiteSpace($diagnosticText)) {
+                continue
+            }
+
+            _Write-StandardMessage -Message ("[DIAG] {0}" -f $diagnosticText) -Level DBG
+        }
     }
 
     function Get-AcceptAllCertificateValidationCallback {
@@ -588,6 +620,12 @@ public static class CertificateValidationHelper
             -Diagnostics @($StoredProfile.Diagnostics) `
             -ProfileSource $ProfileSource `
             -LastRefresh $lastRefresh
+
+        Write-ProxyResolutionDiagnostics `
+            -Mode $mode `
+            -ProfileSource $ProfileSource `
+            -Diagnostics @($StoredProfile.Diagnostics) `
+            -SessionPrepared:$sessionPrepared
     }
 
     function Test-Access {
@@ -650,7 +688,7 @@ public static class CertificateValidationHelper
                     $isCertificateValidationFailure -and
                     $null -ne $acceptAllCallback
                 ) {
-                    Write-StandardMessage -Message (
+                    _Write-StandardMessage -Message (
                         "[WRN] TLS server certificate validation failed while probing '{0}'. Retrying once with certificate validation bypass enabled." -f
                         $Uri.AbsoluteUri
                     ) -Level WRN
@@ -687,7 +725,7 @@ public static class CertificateValidationHelper
                     $isCertificateValidationFailure -and
                     $null -ne $acceptAllCallback
                 ) {
-                    Write-StandardMessage -Message (
+                    _Write-StandardMessage -Message (
                         "[WRN] TLS server certificate validation failed while probing '{0}'. Retrying once with certificate validation bypass enabled." -f
                         $Uri.AbsoluteUri
                     ) -Level WRN
@@ -1702,13 +1740,19 @@ public static class CertificateValidationHelper
             -Mode 'NoResolvedProxyProfile' `
             -Diagnostics $diagnostics.ToArray() `
             -ProfileSource 'FreshDetection'
+
+        Write-ProxyResolutionDiagnostics `
+            -Mode 'NoResolvedProxyProfile' `
+            -ProfileSource 'FreshDetection' `
+            -Diagnostics $diagnostics.ToArray() `
+            -SessionPrepared:$false
     }
     finally {
         # No function-wide certificate validation callback state is retained.
     }
 }
 
-function Invoke-WebRequestEx10 {
+function Invoke-WebRequestExP {
 <#
 .SYNOPSIS
     Invokes a web request with Windows-focused compatibility improvements,
@@ -1716,7 +1760,7 @@ function Invoke-WebRequestEx10 {
     resilient streaming downloads, resume support, and optional final hash verification.
 
 .DESCRIPTION
-    Invoke-WebRequestEx10 is intended for Windows PowerShell 5.1 and
+    Invoke-WebRequestExP is intended for Windows PowerShell 5.1 and
     PowerShell 7+ on Windows where outbound access may depend on proxy
     discovery and where large or long-running downloads need stronger
     operational behavior.
@@ -1952,6 +1996,9 @@ function Invoke-WebRequestEx10 {
     Path to the persisted proxy profile file.
     This is only used when the caller did not explicitly provide proxy parameters.
 
+.PARAMETER GlobalPrefix
+    Prefix used for the function-owned global cache variables.
+
 .PARAMETER DefaultManualProxy
     Default proxy URI shown in the interactive manual proxy prompt.
 
@@ -1971,36 +2018,36 @@ function Invoke-WebRequestEx10 {
     Deletes the persisted proxy-profile file before proxy resolution starts.
 
 .EXAMPLE
-    Invoke-WebRequestEx10 -Uri 'https://example.org'
+    Invoke-WebRequestExP -Uri 'https://example.org'
 
     Performs a general web request using the native request path when
     no function-managed download path is needed.
 
 .EXAMPLE
-    Invoke-WebRequestEx10 -Uri 'https://example.org/file.zip' -OutFile 'C:\Temp\file.zip'
+    Invoke-WebRequestExP -Uri 'https://example.org/file.zip' -OutFile 'C:\Temp\file.zip'
 
     Downloads a file. For compatible GET + OutFile requests, the function may use
     the streaming download engine automatically.
 
 .EXAMPLE
-    Invoke-WebRequestEx10 -Uri 'https://example.org/file.iso' -OutFile 'C:\Temp\file.iso' -UseStreamingDownload -RetryCount 10 -RetryDelayMilliseconds 5000
+    Invoke-WebRequestExP -Uri 'https://example.org/file.iso' -OutFile 'C:\Temp\file.iso' -UseStreamingDownload -RetryCount 10 -RetryDelayMilliseconds 5000
 
     Explicitly prefers the streaming path and retries the download up to 10 times
     with a 5 second delay between attempts.
 
 .EXAMPLE
-    Invoke-WebRequestEx10 -Uri 'https://intranet-app/api/status' -EnforceCertificateCheck
+    Invoke-WebRequestExP -Uri 'https://intranet-app/api/status' -EnforceCertificateCheck
 
     Performs a request with normal TLS certificate validation enforced and
     without the automatic certificate-bypass fallback.
 
 .EXAMPLE
-    Invoke-WebRequestEx10 -Uri 'https://artifact.example.corp/file.zip' -OutFile 'C:\Temp\file.zip' -ForceRefreshProxyProfile
+    Invoke-WebRequestExP -Uri 'https://artifact.example.corp/file.zip' -OutFile 'C:\Temp\file.zip' -ForceRefreshProxyProfile
 
     Forces fresh persisted proxy-profile detection before the request.
 
 .EXAMPLE
-    Invoke-WebRequestEx10 -Uri 'https://example.org/file.iso' -OutFile 'C:\Temp\file.iso' -RequiredStreamingHashType SHA256 -RequiredStreamingHash '570CE2BBC92545CFFBCB01DF43CBA59D86093DADC34C25DA9F554D256BC70B91'
+    Invoke-WebRequestExP -Uri 'https://example.org/file.iso' -OutFile 'C:\Temp\file.iso' -RequiredStreamingHashType SHA256 -RequiredStreamingHash '570CE2BBC92545CFFBCB01DF43CBA59D86093DADC34C25DA9F554D256BC70B91'
 
     Downloads an artifact and verifies the final file against the required SHA256
     before success is reported.
@@ -2146,6 +2193,10 @@ function Invoke-WebRequestEx10 {
         # Persisted proxy profile controls.
         [Parameter()]
         [string]$ProxyProfilePath = (Join-Path -Path $env:LOCALAPPDATA -ChildPath 'Programs\ProxyAccessProfile\ProxyAccessProfile.clixml'),
+
+        [Parameter()]
+        [ValidateNotNullOrEmpty()]
+        [string]$GlobalPrefix = 'ProxyParamsWebReq',
 
         [Parameter()]
         [string]$DefaultManualProxy = 'http://test.corp.com:8080',
@@ -2609,12 +2660,52 @@ public static class CertificateValidationHelper
     }
 
     function local:_GetProcessProxyProfileCacheTable {
-        if (-not $global:InvokeWebRequestEx10ProxyProfileProcessCache -or
-            $global:InvokeWebRequestEx10ProxyProfileProcessCache -isnot [hashtable]) {
-            $global:InvokeWebRequestEx10ProxyProfileProcessCache = @{}
+        $variableName = $GlobalPrefix + 'ProxyProfileProcessCache'
+        $existingVariable = Get-Variable -Scope Global -Name $variableName -ErrorAction SilentlyContinue
+
+        if (-not $existingVariable -or $existingVariable.Value -isnot [hashtable]) {
+            Set-Variable -Scope Global -Name $variableName -Value @{} -Force
+            $existingVariable = Get-Variable -Scope Global -Name $variableName -ErrorAction Stop
         }
 
-        return $global:InvokeWebRequestEx10ProxyProfileProcessCache
+        return [hashtable]$existingVariable.Value
+    }
+
+    function local:_GetCertificateFallbackAuthorityCacheTable {
+        $variableName = $GlobalPrefix + 'CertificateFallbackAuthorityCache'
+        $existingVariable = Get-Variable -Scope Global -Name $variableName -ErrorAction SilentlyContinue
+
+        if (-not $existingVariable -or $existingVariable.Value -isnot [hashtable]) {
+            Set-Variable -Scope Global -Name $variableName -Value @{} -Force
+            $existingVariable = Get-Variable -Scope Global -Name $variableName -ErrorAction Stop
+        }
+
+        return [hashtable]$existingVariable.Value
+    }
+
+    function local:_GetCertificateFallbackAuthorityKey {
+        param(
+            [Parameter(Mandatory = $true)]
+            [uri]$TargetUri
+        )
+
+        $hostName = if (-not [string]::IsNullOrWhiteSpace($TargetUri.DnsSafeHost)) {
+            $TargetUri.DnsSafeHost
+        }
+        else {
+            $TargetUri.Host
+        }
+
+        if ([string]::IsNullOrWhiteSpace($hostName)) {
+            return $TargetUri.AbsoluteUri.ToLowerInvariant()
+        }
+
+        $scheme = [string]$TargetUri.Scheme
+        if ($TargetUri.IsDefaultPort) {
+            return ("{0}://{1}" -f $scheme, $hostName).ToLowerInvariant()
+        }
+
+        return ("{0}://{1}:{2}" -f $scheme, $hostName, $TargetUri.Port).ToLowerInvariant()
     }
 
     function local:_EnsurePersistedProxyProfileDirectory {
@@ -2941,7 +3032,7 @@ public static class CertificateValidationHelper
                 $request.ReadWriteTimeout = $ProbeTimeoutSec * 1000
                 $request.AllowAutoRedirect = $true
                 $request.Proxy = $ProxyObject
-                $request.UserAgent = 'PowerShell Invoke-WebRequestEx10 ProxyProfileProbe'
+                $request.UserAgent = 'PowerShell Invoke-WebRequestExP ProxyProfileProbe'
 
                 if ($certificateValidationBypassActiveForProbe -and $null -ne $acceptAllCallback) {
                     $request.ServerCertificateValidationCallback = $acceptAllCallback
@@ -4435,12 +4526,10 @@ public static class CertificateValidationHelper
 
     $isWindowsEnv = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
     if (-not $isWindowsEnv) {
-        throw "Invoke-WebRequestEx10 is intended for Windows PowerShell 5.1 and PowerShell 7+ on Windows."
+        throw "Invoke-WebRequestExP is intended for Windows PowerShell 5.1 and PowerShell 7+ on Windows."
     }
 
     $uriDisplay = _UriDisplayShortener -TargetUri $Uri
-
-    _Write-StandardMessage -Message ("[STATUS] Initializing Invoke-WebRequestEx10 for '{0}'." -f $uriDisplay) -Level INF
 
     $effectiveMethod = if ($PSBoundParameters.ContainsKey('Method') -and $null -ne $Method) {
         $Method.ToString().ToUpperInvariant()
@@ -4475,6 +4564,15 @@ public static class CertificateValidationHelper
 
     $certificateBypassActive = $effectiveSkipCertificateCheck
     $acceptAllCallback = $null
+    $certificateFallbackAuthorityKey = $null
+    $certificateFallbackAuthorityCache = $null
+
+    if ($automaticCertificateFallbackAllowed) {
+        $certificateFallbackAuthorityKey = _GetCertificateFallbackAuthorityKey -TargetUri $Uri
+        $certificateFallbackAuthorityCache = _GetCertificateFallbackAuthorityCacheTable
+    }
+
+    _Write-StandardMessage -Message ("[STATUS] Initializing Invoke-WebRequestExP for '{0}'." -f $uriDisplay) -Level INF
 
     $explicitCredentialSupplied = $PSBoundParameters.ContainsKey('Credential') -and $null -ne $Credential
     $explicitUseDefaultCredentialsSupplied = $PSBoundParameters.ContainsKey('UseDefaultCredentials')
@@ -4689,6 +4787,17 @@ public static class CertificateValidationHelper
             "[STATUS] TLS server certificate validation starts enabled for '{0}'. The request will retry with certificate validation bypass only if a certificate-validation failure is detected." -f
             $uriDisplay
         ) -Level INF
+
+        if (
+            $null -ne $certificateFallbackAuthorityCache -and
+            -not [string]::IsNullOrWhiteSpace($certificateFallbackAuthorityKey) -and
+            $certificateFallbackAuthorityCache.ContainsKey($certificateFallbackAuthorityKey)
+        ) {
+            _Write-StandardMessage -Message (
+                "[WRN] Earlier in this session, '{0}' needed automatic certificate bypass." -f
+                $uriDisplay
+            ) -Level WRN
+        }
     }
     else {
         _Write-StandardMessage -Message (
@@ -5289,6 +5398,12 @@ public static class CertificateValidationHelper
                         $isCertificateValidationFailure
                     ) {
                         $certificateBypassActive = $true
+                        if (
+                            $null -ne $certificateFallbackAuthorityCache -and
+                            -not [string]::IsNullOrWhiteSpace($certificateFallbackAuthorityKey)
+                        ) {
+                            $certificateFallbackAuthorityCache[$certificateFallbackAuthorityKey] = $true
+                        }
                         _SyncNativeSkipCertificateCheckCallParam `
                             -CallParams $callParams `
                             -BypassEnabled:$certificateBypassActive `
@@ -5542,11 +5657,3 @@ public static class CertificateValidationHelper
     }
 }
 
-Invoke-WebRequestEx10 -Uri "https://untrusted-root.badssl.com" -UseBasicParsing
-<#
-Set-Alias -Name 'Invoke-WebRequest-IStoppedAskingWhy'       -Value 'Invoke-WebRequestEx10'
-Set-Alias -Name 'Invoke-WebRequest-IJustNeedTheFile'        -Value 'Invoke-WebRequestEx10'
-Set-Alias -Name 'Invoke-WebRequest-TemporaryBecamePermanent' -Value 'Invoke-WebRequestEx10'
-Set-Alias -Name 'Invoke-WebRequest-LetsNeverSpeakOfThisAgain' -Value 'Invoke-WebRequestEx10'
-Set-Alias -Name 'Invoke-WebRequest-GetItDoneAnyway'         -Value 'Invoke-WebRequestEx10'
-#>

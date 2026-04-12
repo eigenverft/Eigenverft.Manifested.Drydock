@@ -390,19 +390,37 @@ environments where direct access is not guaranteed.
 
             'EnvironmentProxy' {
                 if ($null -ne $proxy) {
-                    $installPackageProvider = @{
-                        Proxy = $proxy
+                    if ($useDefaultProxyCredentials -and $null -eq $proxyCredential) {
+                        # Package cmdlets do not expose ProxyUseDefaultCredentials,
+                        # so session preparation is the compatibility path here.
+                        $invokeWebRequest = @{
+                            Proxy = $proxy
+                            ProxyUseDefaultCredentials = $true
+                        }
+
+                        $capturedProxy = $proxy
+
+                        $prepareSession = {
+                            $webProxy = New-Object System.Net.WebProxy($capturedProxy.AbsoluteUri, $true)
+                            $webProxy.UseDefaultCredentials = $true
+                            [System.Net.WebRequest]::DefaultWebProxy = $webProxy
+                        }.GetNewClosure()
+                    }
+                    else {
+                        $installPackageProvider = @{
+                            Proxy = $proxy
+                        }
+
+                        $installModule = @{
+                            Proxy = $proxy
+                        }
+
+                        $invokeWebRequest = @{
+                            Proxy = $proxy
+                        }
                     }
 
-                    $installModule = @{
-                        Proxy = $proxy
-                    }
-
-                    $invokeWebRequest = @{
-                        Proxy = $proxy
-                    }
-
-                    if ($null -ne $proxyCredential) {
+                    if (-not $useDefaultProxyCredentials -and $null -ne $proxyCredential) {
                         $installPackageProvider['ProxyCredential'] = $proxyCredential
                         $installModule['ProxyCredential'] = $proxyCredential
                         $invokeWebRequest['ProxyCredential'] = $proxyCredential
@@ -607,7 +625,7 @@ environments where direct access is not guaranteed.
 
         $entries = New-Object System.Collections.Generic.List[string]
 
-        foreach ($rawEntry in ($NoProxyValue -split '[,;]')) {
+        foreach ($rawEntry in ($NoProxyValue -split ',')) {
             $entry = [string]$rawEntry
             if (-not [string]::IsNullOrWhiteSpace($entry)) {
                 [void]$entries.Add($entry.Trim())
@@ -632,10 +650,6 @@ environments where direct access is not guaranteed.
         }
 
         $entryText = $entryText.Trim()
-        if ($entryText -eq '*') {
-            return $true
-        }
-
         $targetHost = [string]$TargetUri.Host
         if ([string]::IsNullOrWhiteSpace($targetHost)) {
             return $false
@@ -684,15 +698,16 @@ environments where direct access is not guaranteed.
             return $false
         }
 
-        if ($targetHostNormalized -eq $entryHostNormalized) {
-            return $true
-        }
-
         if ($entryHasLeadingDot) {
+            $entryHostNormalized = $entryHostNormalized.TrimStart('.')
+            if ([string]::IsNullOrWhiteSpace($entryHostNormalized)) {
+                return $false
+            }
+
             return $targetHostNormalized.EndsWith(".{0}" -f $entryHostNormalized)
         }
 
-        return $targetHostNormalized.EndsWith(".{0}" -f $entryHostNormalized)
+        return $targetHostNormalized -eq $entryHostNormalized
     }
 
     function Resolve-EnvironmentProxySetting {
@@ -704,9 +719,9 @@ environments where direct access is not guaranteed.
         $diagnostics = New-Object System.Collections.Generic.List[string]
 
         $proxyVariableNames = switch ($TargetUri.Scheme.ToLowerInvariant()) {
-            'https' { @('HTTPS_PROXY','https_proxy','ALL_PROXY','all_proxy') }
-            'http' { @('HTTP_PROXY','http_proxy','ALL_PROXY','all_proxy') }
-            default { @('ALL_PROXY','all_proxy') }
+            'https' { @('https_proxy','HTTPS_PROXY','all_proxy','ALL_PROXY') }
+            'http' { @('http_proxy','HTTP_PROXY','all_proxy','ALL_PROXY') }
+            default { @('all_proxy','ALL_PROXY') }
         }
 
         $proxyVariable = Get-EnvironmentVariableSetting -Names $proxyVariableNames
@@ -721,7 +736,7 @@ environments where direct access is not guaranteed.
             }
         }
 
-        $noProxyVariable = Get-EnvironmentVariableSetting -Names @('NO_PROXY','no_proxy')
+        $noProxyVariable = Get-EnvironmentVariableSetting -Names @('no_proxy','NO_PROXY')
         if ($null -ne $noProxyVariable) {
             foreach ($entry in (Get-NoProxyEntries -NoProxyValue $noProxyVariable.Value)) {
                 if (Test-NoProxyEntryMatchesTarget -Entry $entry -TargetUri $TargetUri) {
@@ -770,6 +785,19 @@ environments where direct access is not guaranteed.
         $proxyScheme = $parsedProxyUri.Scheme.ToLowerInvariant()
         if (@('http','https') -notcontains $proxyScheme) {
             [void]$diagnostics.Add("Environment proxy variable '$($proxyVariable.Name)' uses unsupported proxy scheme '$proxyScheme'.")
+            return [pscustomobject]@{
+                Resolved = $false
+                ProxyUri = $null
+                ProxyCredential = $null
+                SourceVariableName = $proxyVariable.Name
+                Diagnostics = @($diagnostics.ToArray())
+            }
+        }
+
+        if (($parsedProxyUri.AbsolutePath -ne '/') -or
+            -not [string]::IsNullOrWhiteSpace($parsedProxyUri.Query) -or
+            -not [string]::IsNullOrWhiteSpace($parsedProxyUri.Fragment)) {
+            [void]$diagnostics.Add("Environment proxy variable '$($proxyVariable.Name)' contains unsupported path, query, or fragment text after the proxy host.")
             return [pscustomobject]@{
                 Resolved = $false
                 ProxyUri = $null
@@ -850,6 +878,7 @@ environments where direct access is not guaranteed.
                 Success = $false
                 ProxyUri = $null
                 ProxyCredential = $null
+                UseDefaultProxyCredentials = $false
                 StatusCode = $null
                 Diagnostics = @($diagnostics.ToArray())
             }
@@ -868,12 +897,39 @@ environments where direct access is not guaranteed.
                     Success = $true
                     ProxyUri = $environmentProxy.ProxyUri
                     ProxyCredential = $environmentProxy.ProxyCredential
+                    UseDefaultProxyCredentials = $false
                     StatusCode = $result.StatusCode
                     Diagnostics = @($diagnostics.ToArray())
                 }
             }
 
             [void]$diagnostics.Add("Environment proxy '$($environmentProxy.ProxyUri.AbsoluteUri)' failed HTTP probe: $($result.ErrorMessage)")
+
+            $canRetryWithDefaultProxyCredentials =
+                ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) -and
+                ($null -eq $environmentProxy.ProxyCredential)
+
+            if ($canRetryWithDefaultProxyCredentials -and $result.StatusCode -eq [int][System.Net.HttpStatusCode]::ProxyAuthenticationRequired) {
+                [void]$diagnostics.Add("Environment proxy '$($environmentProxy.ProxyUri.AbsoluteUri)' requested proxy authentication. Retrying once with default proxy credentials.")
+
+                $defaultCredentialProxy = New-Object System.Net.WebProxy($environmentProxy.ProxyUri.AbsoluteUri, $true)
+                $defaultCredentialProxy.UseDefaultCredentials = $true
+
+                $defaultCredentialResult = Test-Access -Uri $Uri -TimeoutSec $TimeoutSec -Proxy $defaultCredentialProxy
+                if ($defaultCredentialResult.Success) {
+                    [void]$diagnostics.Add("Environment proxy '$($environmentProxy.ProxyUri.AbsoluteUri)' succeeded when retried with default proxy credentials.")
+                    return [pscustomobject]@{
+                        Success = $true
+                        ProxyUri = $environmentProxy.ProxyUri
+                        ProxyCredential = $null
+                        UseDefaultProxyCredentials = $true
+                        StatusCode = $defaultCredentialResult.StatusCode
+                        Diagnostics = @($diagnostics.ToArray())
+                    }
+                }
+
+                [void]$diagnostics.Add("Environment proxy '$($environmentProxy.ProxyUri.AbsoluteUri)' still failed after retry with default proxy credentials: $($defaultCredentialResult.ErrorMessage)")
+            }
         }
         catch {
             [void]$diagnostics.Add("Environment proxy '$($environmentProxy.ProxyUri.AbsoluteUri)' check failed: $($_.Exception.Message)")
@@ -883,6 +939,7 @@ environments where direct access is not guaranteed.
             Success = $false
             ProxyUri = $environmentProxy.ProxyUri
             ProxyCredential = $environmentProxy.ProxyCredential
+            UseDefaultProxyCredentials = $false
             StatusCode = $null
             Diagnostics = @($diagnostics.ToArray())
         }
@@ -1042,7 +1099,10 @@ environments where direct access is not guaranteed.
                 try {
                     $proxyUri = [uri][string]$StoredProfile.ProxyUri
                     $environmentProxy = New-Object System.Net.WebProxy($proxyUri.AbsoluteUri, $true)
-                    if ($null -ne $proxyCredential) {
+                    if ([bool]$StoredProfile.UseDefaultProxyCredentials -and $null -eq $proxyCredential) {
+                        $environmentProxy.UseDefaultCredentials = $true
+                    }
+                    elseif ($null -ne $proxyCredential) {
                         $environmentProxy.Credentials = $proxyCredential.GetNetworkCredential()
                     }
 
@@ -1429,6 +1489,7 @@ public static class CertificateValidationHelper
                 -DetectedTestUri $TestUri `
                 -ProxyUri $environmentProxy.ProxyUri `
                 -ProxyCredential $environmentProxy.ProxyCredential `
+                -UseDefaultProxyCredentials $environmentProxy.UseDefaultProxyCredentials `
                 -Diagnostics @(
                     $diagnostics.ToArray() +
                     "Environment proxy probe succeeded with status code $($environmentProxy.StatusCode) via '$($environmentProxy.ProxyUri.AbsoluteUri)'."
@@ -2466,19 +2527,27 @@ function Invoke-WebRequestEx10 {
 
             'EnvironmentProxy' {
                 if ($null -ne $proxyUri) {
-                    $installPackageProvider = @{
-                        Proxy = $proxyUri
+                    if ($useDefaultProxyCredentials -and $null -eq $proxyCredential) {
+                        $invokeWebRequest = @{
+                            Proxy = $proxyUri
+                            ProxyUseDefaultCredentials = $true
+                        }
+                    }
+                    else {
+                        $installPackageProvider = @{
+                            Proxy = $proxyUri
+                        }
+
+                        $installModule = @{
+                            Proxy = $proxyUri
+                        }
+
+                        $invokeWebRequest = @{
+                            Proxy = $proxyUri
+                        }
                     }
 
-                    $installModule = @{
-                        Proxy = $proxyUri
-                    }
-
-                    $invokeWebRequest = @{
-                        Proxy = $proxyUri
-                    }
-
-                    if ($null -ne $proxyCredential) {
+                    if (-not $useDefaultProxyCredentials -and $null -ne $proxyCredential) {
                         $installPackageProvider['ProxyCredential'] = $proxyCredential
                         $installModule['ProxyCredential'] = $proxyCredential
                         $invokeWebRequest['ProxyCredential'] = $proxyCredential
@@ -2719,7 +2788,7 @@ function Invoke-WebRequestEx10 {
 
         $entries = New-Object System.Collections.Generic.List[string]
 
-        foreach ($rawEntry in ($NoProxyValue -split '[,;]')) {
+        foreach ($rawEntry in ($NoProxyValue -split ',')) {
             $entry = [string]$rawEntry
             if (-not [string]::IsNullOrWhiteSpace($entry)) {
                 [void]$entries.Add($entry.Trim())
@@ -2744,10 +2813,6 @@ function Invoke-WebRequestEx10 {
         }
 
         $entryText = $entryText.Trim()
-        if ($entryText -eq '*') {
-            return $true
-        }
-
         $targetHost = [string]$TargetUri.Host
         if ([string]::IsNullOrWhiteSpace($targetHost)) {
             return $false
@@ -2796,15 +2861,16 @@ function Invoke-WebRequestEx10 {
             return $false
         }
 
-        if ($targetHostNormalized -eq $entryHostNormalized) {
-            return $true
-        }
-
         if ($entryHasLeadingDot) {
+            $entryHostNormalized = $entryHostNormalized.TrimStart('.')
+            if ([string]::IsNullOrWhiteSpace($entryHostNormalized)) {
+                return $false
+            }
+
             return $targetHostNormalized.EndsWith(".{0}" -f $entryHostNormalized)
         }
 
-        return $targetHostNormalized.EndsWith(".{0}" -f $entryHostNormalized)
+        return $targetHostNormalized -eq $entryHostNormalized
     }
 
     function _ResolveEnvironmentProxySetting {
@@ -2816,9 +2882,9 @@ function Invoke-WebRequestEx10 {
         $diagnostics = New-Object System.Collections.Generic.List[string]
 
         $proxyVariableNames = switch ($TargetUri.Scheme.ToLowerInvariant()) {
-            'https' { @('HTTPS_PROXY','https_proxy','ALL_PROXY','all_proxy') }
-            'http' { @('HTTP_PROXY','http_proxy','ALL_PROXY','all_proxy') }
-            default { @('ALL_PROXY','all_proxy') }
+            'https' { @('https_proxy','HTTPS_PROXY','all_proxy','ALL_PROXY') }
+            'http' { @('http_proxy','HTTP_PROXY','all_proxy','ALL_PROXY') }
+            default { @('all_proxy','ALL_PROXY') }
         }
 
         $proxyVariable = _GetEnvironmentVariableSetting -Names $proxyVariableNames
@@ -2833,7 +2899,7 @@ function Invoke-WebRequestEx10 {
             }
         }
 
-        $noProxyVariable = _GetEnvironmentVariableSetting -Names @('NO_PROXY','no_proxy')
+        $noProxyVariable = _GetEnvironmentVariableSetting -Names @('no_proxy','NO_PROXY')
         if ($null -ne $noProxyVariable) {
             foreach ($entry in (_GetNoProxyEntries -NoProxyValue $noProxyVariable.Value)) {
                 if (_TestNoProxyEntryMatchesTarget -Entry $entry -TargetUri $TargetUri) {
@@ -2884,6 +2950,19 @@ function Invoke-WebRequestEx10 {
         $proxyScheme = $parsedProxyUri.Scheme.ToLowerInvariant()
         if (@('http','https') -notcontains $proxyScheme) {
             [void]$diagnostics.Add("Environment proxy variable '$($proxyVariable.Name)' uses unsupported proxy scheme '$proxyScheme'.")
+            return [pscustomobject]@{
+                Resolved = $false
+                ProxyUri = $null
+                ProxyCredential = $null
+                SourceVariableName = $proxyVariable.Name
+                Diagnostics = @($diagnostics.ToArray())
+            }
+        }
+
+        if (($parsedProxyUri.AbsolutePath -ne '/') -or
+            -not [string]::IsNullOrWhiteSpace($parsedProxyUri.Query) -or
+            -not [string]::IsNullOrWhiteSpace($parsedProxyUri.Fragment)) {
+            [void]$diagnostics.Add("Environment proxy variable '$($proxyVariable.Name)' contains unsupported path, query, or fragment text after the proxy host.")
             return [pscustomobject]@{
                 Resolved = $false
                 ProxyUri = $null
@@ -2963,6 +3042,7 @@ function Invoke-WebRequestEx10 {
                 Success = $false
                 ProxyUri = $null
                 ProxyCredential = $null
+                UseDefaultProxyCredentials = $false
                 StatusCode = $null
                 Diagnostics = @($diagnostics.ToArray())
             }
@@ -2981,12 +3061,39 @@ function Invoke-WebRequestEx10 {
                     Success = $true
                     ProxyUri = $environmentProxy.ProxyUri
                     ProxyCredential = $environmentProxy.ProxyCredential
+                    UseDefaultProxyCredentials = $false
                     StatusCode = $proxyTest.StatusCode
                     Diagnostics = @($diagnostics.ToArray())
                 }
             }
 
             [void]$diagnostics.Add("Environment proxy '$($environmentProxy.ProxyUri.AbsoluteUri)' failed HTTP probe: $($proxyTest.ErrorMessage)")
+
+            $canRetryWithDefaultProxyCredentials =
+                ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) -and
+                ($null -eq $environmentProxy.ProxyCredential)
+
+            if ($canRetryWithDefaultProxyCredentials -and $proxyTest.StatusCode -eq [int][System.Net.HttpStatusCode]::ProxyAuthenticationRequired) {
+                [void]$diagnostics.Add("Environment proxy '$($environmentProxy.ProxyUri.AbsoluteUri)' requested proxy authentication. Retrying once with default proxy credentials.")
+
+                $defaultCredentialProxy = New-Object System.Net.WebProxy($environmentProxy.ProxyUri.AbsoluteUri, $true)
+                $defaultCredentialProxy.UseDefaultCredentials = $true
+
+                $defaultCredentialResult = _TestProxyProfileAccess -TargetUri $TargetUri -ProbeTimeoutSec $ProbeTimeoutSec -ProxyObject $defaultCredentialProxy
+                if ($defaultCredentialResult.Success) {
+                    [void]$diagnostics.Add("Environment proxy '$($environmentProxy.ProxyUri.AbsoluteUri)' succeeded when retried with default proxy credentials.")
+                    return [pscustomobject]@{
+                        Success = $true
+                        ProxyUri = $environmentProxy.ProxyUri
+                        ProxyCredential = $null
+                        UseDefaultProxyCredentials = $true
+                        StatusCode = $defaultCredentialResult.StatusCode
+                        Diagnostics = @($diagnostics.ToArray())
+                    }
+                }
+
+                [void]$diagnostics.Add("Environment proxy '$($environmentProxy.ProxyUri.AbsoluteUri)' still failed after retry with default proxy credentials: $($defaultCredentialResult.ErrorMessage)")
+            }
         }
         catch {
             [void]$diagnostics.Add("Environment proxy '$($environmentProxy.ProxyUri.AbsoluteUri)' check failed: $($_.Exception.Message)")
@@ -2996,6 +3103,7 @@ function Invoke-WebRequestEx10 {
             Success = $false
             ProxyUri = $environmentProxy.ProxyUri
             ProxyCredential = $environmentProxy.ProxyCredential
+            UseDefaultProxyCredentials = $false
             StatusCode = $null
             Diagnostics = @($diagnostics.ToArray())
         }
@@ -3154,7 +3262,10 @@ function Invoke-WebRequestEx10 {
                 try {
                     $proxyUri = [uri][string]$StoredProfile.ProxyUri
                     $environmentProxy = New-Object System.Net.WebProxy($proxyUri.AbsoluteUri, $true)
-                    if ($null -ne $proxyCredential) {
+                    if ([bool]$StoredProfile.UseDefaultProxyCredentials -and $null -eq $proxyCredential) {
+                        $environmentProxy.UseDefaultCredentials = $true
+                    }
+                    elseif ($null -ne $proxyCredential) {
                         $environmentProxy.Credentials = $proxyCredential.GetNetworkCredential()
                     }
 
@@ -3887,6 +3998,7 @@ public static class CertificateValidationHelper
                     -TestUri $TargetUri `
                     -ProxyUri $environmentProxyResult.ProxyUri `
                     -ProxyCredential $environmentProxyResult.ProxyCredential `
+                    -UseDefaultProxyCredentials $environmentProxyResult.UseDefaultProxyCredentials `
                     -Diagnostics @(
                         $diagnostics.ToArray() +
                         "Environment proxy probe succeeded with status code $($environmentProxyResult.StatusCode) via '$($environmentProxyResult.ProxyUri.AbsoluteUri)'."

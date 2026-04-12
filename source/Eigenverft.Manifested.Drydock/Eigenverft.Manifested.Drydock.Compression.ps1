@@ -616,5 +616,44 @@ function Add-FileToZipArchive {
     }
 }
 
+function Compress-B64Def {
+    [CmdletBinding()]
+    param()
+
+    Add-Type -AssemblyName System.IO.Compression
+
+    $t = Get-Clipboard -Raw
+    if ([string]::IsNullOrEmpty([string]$t)) {
+        throw 'Clipboard empty.'
+    }
+
+    $src = [Text.Encoding]::UTF8.GetBytes([string]$t)
+    $ms = New-Object IO.MemoryStream
+
+    try {
+        $ds = New-Object IO.Compression.DeflateStream(
+            $ms,
+            [IO.Compression.CompressionMode]::Compress,
+            $true
+        )
+        try {
+            $ds.Write($src, 0, $src.Length)
+        }
+        finally {
+            $ds.Dispose()
+        }
+
+        $b64 = [Convert]::ToBase64String($ms.ToArray())
+        $imp = 'function Import-B64Def{[CmdletBinding()]param([Parameter(Mandatory=$true,Position=0)][string]$Text);Add-Type -AssemblyName System.IO.Compression;$z=[Convert]::FromBase64String($Text);$i=New-Object IO.MemoryStream(,$z);$o=New-Object IO.MemoryStream;try{$d=New-Object IO.Compression.DeflateStream($i,[IO.Compression.CompressionMode]::Decompress);try{$b=New-Object byte[] 4096;do{$n=$d.Read($b,0,$b.Length);if($n -gt 0){$o.Write($b,0,$n)}}while($n -gt 0)}finally{$d.Dispose()};[scriptblock]::Create([Text.Encoding]::UTF8.GetString($o.ToArray()))}finally{$o.Dispose();$i.Dispose()}}'
+        $out = $imp + ';$s=''' + $b64 + ''';. (Import-B64Def $s)'
+
+        Set-Clipboard -Value $out
+        Write-Output $out
+    }
+    finally {
+        $ms.Dispose()
+    }
+}
+
 # Add-FileToZipArchive -SourceFile "C:\Temp\Eigenverft.App.ReverseProxy-drops\sln\Eigenverft.App.ReverseProxy\production\0.1.20256.47288\LICENSE-SERILOG_EXTENSIONS_HOSTING" -DestinationZip "C:\Archives\logs.zip" -DateFolderPattern YYYYMMDD
 # Write-Output "Done"

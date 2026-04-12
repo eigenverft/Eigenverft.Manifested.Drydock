@@ -79,6 +79,7 @@ FunctionsToExport = @(
     # ...Compression.ps1
     'Compress-Directory',
     'Add-FileToZipArchive',
+    'Compress-B64Def',
 
     # ...Convert.ps1
     'Convert-FilePlaceholders',
@@ -192,6 +193,7 @@ FunctionsToExport = @(
     # ...ProxyAware.ps1
     'Initialize-ProxyAccessProfile',
     'Invoke-WebRequestExP',
+    'Initialize-Compact',
 
     # ...WebRequest.ps1
     'Invoke-WebRequestEx'
@@ -218,13 +220,15 @@ AliasesToExport = @(
     'cdv64psr',
 
     'iexec',
-    
+
     'ummv',
 
     'ffbp',
     'tvv',
     'gre',
-    'gcv'
+    'gcv',
+
+    'Invoke-IJustNeedTheFile'
     )
 
 # DSC resources to export from this module

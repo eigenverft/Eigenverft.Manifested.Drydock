@@ -189,6 +189,10 @@ FunctionsToExport = @(
     'Convert-DateTimeTo64SecPowershellVersion',
     'Convert-64SecPowershellVersionToDateTime',
 
+    # ...ProxyAware.ps1
+    'Initialize-ProxyAccessProfile',
+    'Invoke-WebRequestExP',
+
     # ...WebRequest.ps1
     'Invoke-WebRequestEx'
     )

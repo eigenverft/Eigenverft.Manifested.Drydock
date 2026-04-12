@@ -22,4 +22,5 @@
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Process.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.WebRequest.ps1"
+. "$PSScriptRoot\Eigenverft.Manifested.Drydock.ProxyAware.ps1"
 

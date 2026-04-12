@@ -94,9 +94,10 @@ in global variables.
 .DESCRIPTION
 Resolution order:
 1. Direct access
-2. Local relay proxy on loopback
-3. System proxy with default credentials
-4. Manual proxy
+2. Environment proxy from process environment variables
+3. Local relay proxy on loopback
+4. System proxy with default credentials
+5. Manual proxy
 
 Behavior:
 - A second call exits early unless -ForceRefresh is used.
@@ -163,7 +164,7 @@ environments where direct access is not guaranteed.
 
     function Set-ProxyGlobals {
         param(
-            [ValidateSet('Direct','LocalRelayProxy','SystemProxyDefaultCredentials','ManualProxy','Unavailable')]
+            [ValidateSet('Direct','EnvironmentProxy','LocalRelayProxy','SystemProxyDefaultCredentials','ManualProxy','Unavailable')]
             [string]$Mode,
 
             [hashtable]$InstallPackageProvider = @{},
@@ -306,7 +307,7 @@ environments where direct access is not guaranteed.
     function New-StoredProfile {
         param(
             [Parameter(Mandatory = $true)]
-            [ValidateSet('Direct','LocalRelayProxy','SystemProxyDefaultCredentials','ManualProxy','Unavailable')]
+            [ValidateSet('Direct','EnvironmentProxy','LocalRelayProxy','SystemProxyDefaultCredentials','ManualProxy','Unavailable')]
             [string]$Mode,
 
             [Parameter(Mandatory = $true)]
@@ -384,6 +385,44 @@ environments where direct access is not guaranteed.
                         $webProxy.Credentials = $capturedCredential.GetNetworkCredential()
                         [System.Net.WebRequest]::DefaultWebProxy = $webProxy
                     }.GetNewClosure()
+                }
+            }
+
+            'EnvironmentProxy' {
+                if ($null -ne $proxy) {
+                    $installPackageProvider = @{
+                        Proxy = $proxy
+                    }
+
+                    $installModule = @{
+                        Proxy = $proxy
+                    }
+
+                    $invokeWebRequest = @{
+                        Proxy = $proxy
+                    }
+
+                    if ($null -ne $proxyCredential) {
+                        $installPackageProvider['ProxyCredential'] = $proxyCredential
+                        $installModule['ProxyCredential'] = $proxyCredential
+                        $invokeWebRequest['ProxyCredential'] = $proxyCredential
+
+                        $capturedProxy = $proxy
+                        $capturedCredential = $proxyCredential
+
+                        $prepareSession = {
+                            $webProxy = New-Object System.Net.WebProxy($capturedProxy.AbsoluteUri, $true)
+                            $webProxy.Credentials = $capturedCredential.GetNetworkCredential()
+                            [System.Net.WebRequest]::DefaultWebProxy = $webProxy
+                        }.GetNewClosure()
+                    }
+                    else {
+                        $capturedProxy = $proxy
+
+                        $prepareSession = {
+                            [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($capturedProxy.AbsoluteUri, $true)
+                        }.GetNewClosure()
+                    }
                 }
             }
 
@@ -538,6 +577,317 @@ environments where direct access is not guaranteed.
         }
     }
 
+    function Get-EnvironmentVariableSetting {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string[]]$Names
+        )
+
+        foreach ($name in $Names) {
+            $value = [System.Environment]::GetEnvironmentVariable($name)
+            if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+                return [pscustomobject]@{
+                    Name = $name
+                    Value = [string]$value
+                }
+            }
+        }
+
+        return $null
+    }
+
+    function Get-NoProxyEntries {
+        param(
+            [string]$NoProxyValue
+        )
+
+        if ([string]::IsNullOrWhiteSpace($NoProxyValue)) {
+            return @()
+        }
+
+        $entries = New-Object System.Collections.Generic.List[string]
+
+        foreach ($rawEntry in ($NoProxyValue -split '[,;]')) {
+            $entry = [string]$rawEntry
+            if (-not [string]::IsNullOrWhiteSpace($entry)) {
+                [void]$entries.Add($entry.Trim())
+            }
+        }
+
+        return @($entries.ToArray())
+    }
+
+    function Test-NoProxyEntryMatchesTarget {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Entry,
+
+            [Parameter(Mandatory = $true)]
+            [uri]$TargetUri
+        )
+
+        $entryText = [string]$Entry
+        if ([string]::IsNullOrWhiteSpace($entryText)) {
+            return $false
+        }
+
+        $entryText = $entryText.Trim()
+        if ($entryText -eq '*') {
+            return $true
+        }
+
+        $targetHost = [string]$TargetUri.Host
+        if ([string]::IsNullOrWhiteSpace($targetHost)) {
+            return $false
+        }
+
+        $targetHostNormalized = $targetHost.Trim().Trim('.').ToLowerInvariant()
+        $entryHostText = $entryText
+        $entryPort = $null
+        $entryHasLeadingDot = $entryText.StartsWith('.')
+
+        if ($entryText -match '^[a-zA-Z][a-zA-Z0-9+.-]*://') {
+            try {
+                $entryUri = [uri]$entryText
+                $entryHostText = $entryUri.Host
+                if (-not $entryUri.IsDefaultPort) {
+                    $entryPort = [int]$entryUri.Port
+                }
+            }
+            catch {
+                return $false
+            }
+        }
+        elseif ($entryText.StartsWith('[') -or $entryText -match '^[^:]+:\d+$') {
+            try {
+                $entryUri = [uri]("http://{0}" -f $entryText)
+                $entryHostText = $entryUri.Host
+                if (-not $entryUri.IsDefaultPort) {
+                    $entryPort = [int]$entryUri.Port
+                }
+            }
+            catch {
+                return $false
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($entryHostText)) {
+            return $false
+        }
+
+        $entryHostNormalized = $entryHostText.Trim().Trim('.').ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($entryHostNormalized)) {
+            return $false
+        }
+
+        if ($null -ne $entryPort -and $TargetUri.Port -ne $entryPort) {
+            return $false
+        }
+
+        if ($targetHostNormalized -eq $entryHostNormalized) {
+            return $true
+        }
+
+        if ($entryHasLeadingDot) {
+            return $targetHostNormalized.EndsWith(".{0}" -f $entryHostNormalized)
+        }
+
+        return $targetHostNormalized.EndsWith(".{0}" -f $entryHostNormalized)
+    }
+
+    function Resolve-EnvironmentProxySetting {
+        param(
+            [Parameter(Mandatory = $true)]
+            [uri]$TargetUri
+        )
+
+        $diagnostics = New-Object System.Collections.Generic.List[string]
+
+        $proxyVariableNames = switch ($TargetUri.Scheme.ToLowerInvariant()) {
+            'https' { @('HTTPS_PROXY','https_proxy','ALL_PROXY','all_proxy') }
+            'http' { @('HTTP_PROXY','http_proxy','ALL_PROXY','all_proxy') }
+            default { @('ALL_PROXY','all_proxy') }
+        }
+
+        $proxyVariable = Get-EnvironmentVariableSetting -Names $proxyVariableNames
+        if ($null -eq $proxyVariable) {
+            [void]$diagnostics.Add('No applicable environment proxy variable was found for the current target URI.')
+            return [pscustomobject]@{
+                Resolved = $false
+                ProxyUri = $null
+                ProxyCredential = $null
+                SourceVariableName = $null
+                Diagnostics = @($diagnostics.ToArray())
+            }
+        }
+
+        $noProxyVariable = Get-EnvironmentVariableSetting -Names @('NO_PROXY','no_proxy')
+        if ($null -ne $noProxyVariable) {
+            foreach ($entry in (Get-NoProxyEntries -NoProxyValue $noProxyVariable.Value)) {
+                if (Test-NoProxyEntryMatchesTarget -Entry $entry -TargetUri $TargetUri) {
+                    [void]$diagnostics.Add("Environment proxy variable '$($proxyVariable.Name)' is bypassed for '$($TargetUri.Host)' by NO_PROXY entry '$entry'.")
+                    return [pscustomobject]@{
+                        Resolved = $false
+                        ProxyUri = $null
+                        ProxyCredential = $null
+                        SourceVariableName = $proxyVariable.Name
+                        Diagnostics = @($diagnostics.ToArray())
+                    }
+                }
+            }
+        }
+
+        $proxyLiteral = ([string]$proxyVariable.Value).Trim()
+        if ($proxyLiteral -notmatch '^[a-zA-Z][a-zA-Z0-9+.-]*://') {
+            $proxyLiteral = "http://{0}" -f $proxyLiteral
+        }
+
+        try {
+            $parsedProxyUri = [uri]$proxyLiteral
+        }
+        catch {
+            [void]$diagnostics.Add("Environment proxy variable '$($proxyVariable.Name)' is invalid: $($_.Exception.Message)")
+            return [pscustomobject]@{
+                Resolved = $false
+                ProxyUri = $null
+                ProxyCredential = $null
+                SourceVariableName = $proxyVariable.Name
+                Diagnostics = @($diagnostics.ToArray())
+            }
+        }
+
+        if (-not $parsedProxyUri.IsAbsoluteUri -or [string]::IsNullOrWhiteSpace($parsedProxyUri.Host)) {
+            [void]$diagnostics.Add("Environment proxy variable '$($proxyVariable.Name)' does not contain a usable absolute proxy URI.")
+            return [pscustomobject]@{
+                Resolved = $false
+                ProxyUri = $null
+                ProxyCredential = $null
+                SourceVariableName = $proxyVariable.Name
+                Diagnostics = @($diagnostics.ToArray())
+            }
+        }
+
+        $proxyScheme = $parsedProxyUri.Scheme.ToLowerInvariant()
+        if (@('http','https') -notcontains $proxyScheme) {
+            [void]$diagnostics.Add("Environment proxy variable '$($proxyVariable.Name)' uses unsupported proxy scheme '$proxyScheme'.")
+            return [pscustomobject]@{
+                Resolved = $false
+                ProxyUri = $null
+                ProxyCredential = $null
+                SourceVariableName = $proxyVariable.Name
+                Diagnostics = @($diagnostics.ToArray())
+            }
+        }
+
+        $builder = New-Object System.UriBuilder($parsedProxyUri)
+        $proxyCredential = $null
+
+        if (-not [string]::IsNullOrWhiteSpace([string]$builder.UserName) -or
+            -not [string]::IsNullOrWhiteSpace([string]$builder.Password)) {
+            if ([string]::IsNullOrWhiteSpace([string]$builder.UserName)) {
+                [void]$diagnostics.Add("Environment proxy variable '$($proxyVariable.Name)' contains proxy credentials without a user name.")
+                return [pscustomobject]@{
+                    Resolved = $false
+                    ProxyUri = $null
+                    ProxyCredential = $null
+                    SourceVariableName = $proxyVariable.Name
+                    Diagnostics = @($diagnostics.ToArray())
+                }
+            }
+
+            try {
+                $userName = [System.Uri]::UnescapeDataString([string]$builder.UserName)
+                $password = [System.Uri]::UnescapeDataString([string]$builder.Password)
+                $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+                $proxyCredential = New-Object System.Management.Automation.PSCredential($userName, $securePassword)
+            }
+            catch {
+                [void]$diagnostics.Add("Environment proxy credentials from '$($proxyVariable.Name)' could not be parsed: $($_.Exception.Message)")
+                return [pscustomobject]@{
+                    Resolved = $false
+                    ProxyUri = $null
+                    ProxyCredential = $null
+                    SourceVariableName = $proxyVariable.Name
+                    Diagnostics = @($diagnostics.ToArray())
+                }
+            }
+
+            $builder.UserName = ''
+            $builder.Password = ''
+        }
+
+        $proxyUri = $builder.Uri
+        [void]$diagnostics.Add("Environment proxy settings were resolved from '$($proxyVariable.Name)' as '$($proxyUri.AbsoluteUri)'.")
+
+        return [pscustomobject]@{
+            Resolved = $true
+            ProxyUri = $proxyUri
+            ProxyCredential = $proxyCredential
+            SourceVariableName = $proxyVariable.Name
+            Diagnostics = @($diagnostics.ToArray())
+        }
+    }
+
+    function Try-ResolveEnvironmentProxy {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory = $true)]
+            [uri]$Uri,
+
+            [Parameter(Mandatory = $true)]
+            [int]$TimeoutSec
+        )
+
+        $environmentProxy = Resolve-EnvironmentProxySetting -TargetUri $Uri
+        $diagnostics = New-Object System.Collections.Generic.List[string]
+
+        foreach ($message in $environmentProxy.Diagnostics) {
+            [void]$diagnostics.Add($message)
+        }
+
+        if (-not $environmentProxy.Resolved -or $null -eq $environmentProxy.ProxyUri) {
+            return [pscustomobject]@{
+                Success = $false
+                ProxyUri = $null
+                ProxyCredential = $null
+                StatusCode = $null
+                Diagnostics = @($diagnostics.ToArray())
+            }
+        }
+
+        try {
+            $proxyObject = New-Object System.Net.WebProxy($environmentProxy.ProxyUri.AbsoluteUri, $true)
+            if ($null -ne $environmentProxy.ProxyCredential) {
+                $proxyObject.Credentials = $environmentProxy.ProxyCredential.GetNetworkCredential()
+            }
+
+            $result = Test-Access -Uri $Uri -TimeoutSec $TimeoutSec -Proxy $proxyObject
+
+            if ($result.Success) {
+                return [pscustomobject]@{
+                    Success = $true
+                    ProxyUri = $environmentProxy.ProxyUri
+                    ProxyCredential = $environmentProxy.ProxyCredential
+                    StatusCode = $result.StatusCode
+                    Diagnostics = @($diagnostics.ToArray())
+                }
+            }
+
+            [void]$diagnostics.Add("Environment proxy '$($environmentProxy.ProxyUri.AbsoluteUri)' failed HTTP probe: $($result.ErrorMessage)")
+        }
+        catch {
+            [void]$diagnostics.Add("Environment proxy '$($environmentProxy.ProxyUri.AbsoluteUri)' check failed: $($_.Exception.Message)")
+        }
+
+        return [pscustomobject]@{
+            Success = $false
+            ProxyUri = $environmentProxy.ProxyUri
+            ProxyCredential = $environmentProxy.ProxyCredential
+            StatusCode = $null
+            Diagnostics = @($diagnostics.ToArray())
+        }
+    }
+
     function Get-LocalRelayProxyCandidates {
         return @(
             [uri]'http://127.0.0.1:3128',
@@ -657,6 +1007,61 @@ environments where direct access is not guaranteed.
                 }
 
                 [void]$diagnostics.Add("Persisted direct profile validation failed: $($direct.ErrorMessage)")
+                return [pscustomobject]@{
+                    Success     = $false
+                    Diagnostics = @($diagnostics.ToArray())
+                }
+            }
+
+            'EnvironmentProxy' {
+                if (-not $StoredProfile.ProxyUri) {
+                    [void]$diagnostics.Add('Persisted environment proxy profile is missing ProxyUri.')
+                    return [pscustomobject]@{
+                        Success     = $false
+                        Diagnostics = @($diagnostics.ToArray())
+                    }
+                }
+
+                $proxyCredential = $null
+                if ($StoredProfile.ProxyCredential -is [System.Management.Automation.PSCredential]) {
+                    $proxyCredential = [System.Management.Automation.PSCredential]$StoredProfile.ProxyCredential
+                }
+                elseif ($null -ne $StoredProfile.ProxyUserName) {
+                    try {
+                        $securePassword = ConvertTo-SecureString ([string]$StoredProfile.ProxyPassword) -AsPlainText -Force
+                        $proxyCredential = New-Object System.Management.Automation.PSCredential(
+                            [string]$StoredProfile.ProxyUserName,
+                            $securePassword
+                        )
+                    }
+                    catch {
+                        $proxyCredential = $null
+                    }
+                }
+
+                try {
+                    $proxyUri = [uri][string]$StoredProfile.ProxyUri
+                    $environmentProxy = New-Object System.Net.WebProxy($proxyUri.AbsoluteUri, $true)
+                    if ($null -ne $proxyCredential) {
+                        $environmentProxy.Credentials = $proxyCredential.GetNetworkCredential()
+                    }
+
+                    $result = Test-Access -Uri $ValidationUri -TimeoutSec $TimeoutSec -Proxy $environmentProxy
+
+                    if ($result.Success) {
+                        [void]$diagnostics.Add("Persisted environment proxy validation succeeded with status code $($result.StatusCode) via '$($proxyUri.AbsoluteUri)'.")
+                        return [pscustomobject]@{
+                            Success     = $true
+                            Diagnostics = @($diagnostics.ToArray())
+                        }
+                    }
+
+                    [void]$diagnostics.Add("Persisted environment proxy validation failed: $($result.ErrorMessage)")
+                }
+                catch {
+                    [void]$diagnostics.Add("Persisted environment proxy validation check failed: $($_.Exception.Message)")
+                }
+
                 return [pscustomobject]@{
                     Success     = $false
                     Diagnostics = @($diagnostics.ToArray())
@@ -1011,6 +1416,33 @@ public static class CertificateValidationHelper
 
         [void]$diagnostics.Add("Direct probe failed: $($direct.ErrorMessage)")
 
+        # Try process-environment proxy settings before heuristic local or system proxy discovery.
+        $environmentProxy = Try-ResolveEnvironmentProxy -Uri $TestUri -TimeoutSec $TimeoutSec
+
+        foreach ($message in $environmentProxy.Diagnostics) {
+            [void]$diagnostics.Add($message)
+        }
+
+        if ($environmentProxy.Success -and $null -ne $environmentProxy.ProxyUri) {
+            $stored = New-StoredProfile `
+                -Mode 'EnvironmentProxy' `
+                -DetectedTestUri $TestUri `
+                -ProxyUri $environmentProxy.ProxyUri `
+                -ProxyCredential $environmentProxy.ProxyCredential `
+                -Diagnostics @(
+                    $diagnostics.ToArray() +
+                    "Environment proxy probe succeeded with status code $($environmentProxy.StatusCode) via '$($environmentProxy.ProxyUri.AbsoluteUri)'."
+                )
+
+            $saveError = Save-PersistedProfile -StoredProfile $stored -ProfilePath $ProxyProfilePath
+            if ($saveError) {
+                $stored.Diagnostics = @($stored.Diagnostics + "Profile file save failed: $saveError")
+            }
+
+            Apply-StoredProfileToGlobals -StoredProfile $stored -ProfileSource 'FreshDetection'
+            return
+        }
+
         # Try a local loopback relay before system proxy. This is useful when users
         # run tools like px or similar local proxy helpers.
         $localRelay = Try-ResolveLocalRelayProxy -Uri $TestUri -TimeoutSec $TimeoutSec
@@ -1166,6 +1598,7 @@ function Invoke-WebRequestEx10 {
     - TLS 1.2 enablement when not already active
     - OutFile parent directory creation
     - Persisted proxy-profile resolution when the caller did not explicitly provide proxy settings
+    - Environment-defined proxy discovery from HTTPS_PROXY / HTTP_PROXY / ALL_PROXY with NO_PROXY handling
     - Live validation of persisted proxy profiles before reuse
     - Retry handling for all HTTP methods
     - Optional total retry budget across attempts
@@ -1182,9 +1615,10 @@ function Invoke-WebRequestEx10 {
     Proxy resolution uses a persisted proxy-profile resolver that tries:
 
     1. Direct access
-    2. Local relay proxy on loopback
-    3. System proxy with default credentials
-    4. Manual proxy
+    2. Environment proxy from process environment variables
+    3. Local relay proxy on loopback
+    4. System proxy with default credentials
+    5. Manual proxy
 
     The resolved profile is cached in-process and also persisted as a CliXml file
     in the current user's profile.
@@ -1392,7 +1826,8 @@ function Invoke-WebRequestEx10 {
 
 .PARAMETER SkipProxyManualPrompt
     Prevents the interactive manual proxy prompt during proxy-profile resolution.
-    If direct, local relay, and system proxy resolution all fail, the resolved mode becomes unavailable instead of prompting.
+    If direct, environment proxy, local relay, and system proxy resolution all fail,
+    the resolved mode becomes unavailable instead of prompting.
 
 .PARAMETER SkipProxySessionPreparation
     Reserved compatibility switch for session-level proxy preparation.
@@ -2029,6 +2464,28 @@ function Invoke-WebRequestEx10 {
                 }
             }
 
+            'EnvironmentProxy' {
+                if ($null -ne $proxyUri) {
+                    $installPackageProvider = @{
+                        Proxy = $proxyUri
+                    }
+
+                    $installModule = @{
+                        Proxy = $proxyUri
+                    }
+
+                    $invokeWebRequest = @{
+                        Proxy = $proxyUri
+                    }
+
+                    if ($null -ne $proxyCredential) {
+                        $installPackageProvider['ProxyCredential'] = $proxyCredential
+                        $installModule['ProxyCredential'] = $proxyCredential
+                        $invokeWebRequest['ProxyCredential'] = $proxyCredential
+                    }
+                }
+            }
+
             'LocalRelayProxy' {
                 if ($null -ne $proxyUri) {
                     $installPackageProvider = @{
@@ -2129,7 +2586,7 @@ function Invoke-WebRequestEx10 {
     function _NewStoredProxyProfile {
         param(
             [Parameter(Mandatory = $true)]
-            [ValidateSet('Direct','LocalRelayProxy','SystemProxyDefaultCredentials','ManualProxy','Unavailable')]
+            [ValidateSet('Direct','EnvironmentProxy','LocalRelayProxy','SystemProxyDefaultCredentials','ManualProxy','Unavailable')]
             [string]$Mode,
 
             [Parameter(Mandatory = $true)]
@@ -2229,6 +2686,318 @@ function Invoke-WebRequestEx10 {
             if ($response) {
                 $response.Close()
             }
+        }
+    }
+
+    function _GetEnvironmentVariableSetting {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string[]]$Names
+        )
+
+        foreach ($name in $Names) {
+            $value = [System.Environment]::GetEnvironmentVariable($name)
+            if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+                return [pscustomobject]@{
+                    Name = $name
+                    Value = [string]$value
+                }
+            }
+        }
+
+        return $null
+    }
+
+    function _GetNoProxyEntries {
+        param(
+            [string]$NoProxyValue
+        )
+
+        if ([string]::IsNullOrWhiteSpace($NoProxyValue)) {
+            return @()
+        }
+
+        $entries = New-Object System.Collections.Generic.List[string]
+
+        foreach ($rawEntry in ($NoProxyValue -split '[,;]')) {
+            $entry = [string]$rawEntry
+            if (-not [string]::IsNullOrWhiteSpace($entry)) {
+                [void]$entries.Add($entry.Trim())
+            }
+        }
+
+        return @($entries.ToArray())
+    }
+
+    function _TestNoProxyEntryMatchesTarget {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Entry,
+
+            [Parameter(Mandatory = $true)]
+            [uri]$TargetUri
+        )
+
+        $entryText = [string]$Entry
+        if ([string]::IsNullOrWhiteSpace($entryText)) {
+            return $false
+        }
+
+        $entryText = $entryText.Trim()
+        if ($entryText -eq '*') {
+            return $true
+        }
+
+        $targetHost = [string]$TargetUri.Host
+        if ([string]::IsNullOrWhiteSpace($targetHost)) {
+            return $false
+        }
+
+        $targetHostNormalized = $targetHost.Trim().Trim('.').ToLowerInvariant()
+        $entryHostText = $entryText
+        $entryPort = $null
+        $entryHasLeadingDot = $entryText.StartsWith('.')
+
+        if ($entryText -match '^[a-zA-Z][a-zA-Z0-9+.-]*://') {
+            try {
+                $entryUri = [uri]$entryText
+                $entryHostText = $entryUri.Host
+                if (-not $entryUri.IsDefaultPort) {
+                    $entryPort = [int]$entryUri.Port
+                }
+            }
+            catch {
+                return $false
+            }
+        }
+        elseif ($entryText.StartsWith('[') -or $entryText -match '^[^:]+:\d+$') {
+            try {
+                $entryUri = [uri]("http://{0}" -f $entryText)
+                $entryHostText = $entryUri.Host
+                if (-not $entryUri.IsDefaultPort) {
+                    $entryPort = [int]$entryUri.Port
+                }
+            }
+            catch {
+                return $false
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($entryHostText)) {
+            return $false
+        }
+
+        $entryHostNormalized = $entryHostText.Trim().Trim('.').ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($entryHostNormalized)) {
+            return $false
+        }
+
+        if ($null -ne $entryPort -and $TargetUri.Port -ne $entryPort) {
+            return $false
+        }
+
+        if ($targetHostNormalized -eq $entryHostNormalized) {
+            return $true
+        }
+
+        if ($entryHasLeadingDot) {
+            return $targetHostNormalized.EndsWith(".{0}" -f $entryHostNormalized)
+        }
+
+        return $targetHostNormalized.EndsWith(".{0}" -f $entryHostNormalized)
+    }
+
+    function _ResolveEnvironmentProxySetting {
+        param(
+            [Parameter(Mandatory = $true)]
+            [uri]$TargetUri
+        )
+
+        $diagnostics = New-Object System.Collections.Generic.List[string]
+
+        $proxyVariableNames = switch ($TargetUri.Scheme.ToLowerInvariant()) {
+            'https' { @('HTTPS_PROXY','https_proxy','ALL_PROXY','all_proxy') }
+            'http' { @('HTTP_PROXY','http_proxy','ALL_PROXY','all_proxy') }
+            default { @('ALL_PROXY','all_proxy') }
+        }
+
+        $proxyVariable = _GetEnvironmentVariableSetting -Names $proxyVariableNames
+        if ($null -eq $proxyVariable) {
+            [void]$diagnostics.Add('No applicable environment proxy variable was found for the current target URI.')
+            return [pscustomobject]@{
+                Resolved = $false
+                ProxyUri = $null
+                ProxyCredential = $null
+                SourceVariableName = $null
+                Diagnostics = @($diagnostics.ToArray())
+            }
+        }
+
+        $noProxyVariable = _GetEnvironmentVariableSetting -Names @('NO_PROXY','no_proxy')
+        if ($null -ne $noProxyVariable) {
+            foreach ($entry in (_GetNoProxyEntries -NoProxyValue $noProxyVariable.Value)) {
+                if (_TestNoProxyEntryMatchesTarget -Entry $entry -TargetUri $TargetUri) {
+                    [void]$diagnostics.Add(
+                        "Environment proxy variable '$($proxyVariable.Name)' is bypassed for '$($TargetUri.Host)' by NO_PROXY entry '$entry'."
+                    )
+                    return [pscustomobject]@{
+                        Resolved = $false
+                        ProxyUri = $null
+                        ProxyCredential = $null
+                        SourceVariableName = $proxyVariable.Name
+                        Diagnostics = @($diagnostics.ToArray())
+                    }
+                }
+            }
+        }
+
+        $proxyLiteral = ([string]$proxyVariable.Value).Trim()
+        if ($proxyLiteral -notmatch '^[a-zA-Z][a-zA-Z0-9+.-]*://') {
+            $proxyLiteral = "http://{0}" -f $proxyLiteral
+        }
+
+        try {
+            $parsedProxyUri = [uri]$proxyLiteral
+        }
+        catch {
+            [void]$diagnostics.Add("Environment proxy variable '$($proxyVariable.Name)' is invalid: $($_.Exception.Message)")
+            return [pscustomobject]@{
+                Resolved = $false
+                ProxyUri = $null
+                ProxyCredential = $null
+                SourceVariableName = $proxyVariable.Name
+                Diagnostics = @($diagnostics.ToArray())
+            }
+        }
+
+        if (-not $parsedProxyUri.IsAbsoluteUri -or [string]::IsNullOrWhiteSpace($parsedProxyUri.Host)) {
+            [void]$diagnostics.Add("Environment proxy variable '$($proxyVariable.Name)' does not contain a usable absolute proxy URI.")
+            return [pscustomobject]@{
+                Resolved = $false
+                ProxyUri = $null
+                ProxyCredential = $null
+                SourceVariableName = $proxyVariable.Name
+                Diagnostics = @($diagnostics.ToArray())
+            }
+        }
+
+        $proxyScheme = $parsedProxyUri.Scheme.ToLowerInvariant()
+        if (@('http','https') -notcontains $proxyScheme) {
+            [void]$diagnostics.Add("Environment proxy variable '$($proxyVariable.Name)' uses unsupported proxy scheme '$proxyScheme'.")
+            return [pscustomobject]@{
+                Resolved = $false
+                ProxyUri = $null
+                ProxyCredential = $null
+                SourceVariableName = $proxyVariable.Name
+                Diagnostics = @($diagnostics.ToArray())
+            }
+        }
+
+        $builder = New-Object System.UriBuilder($parsedProxyUri)
+        $proxyCredential = $null
+
+        if (-not [string]::IsNullOrWhiteSpace([string]$builder.UserName) -or
+            -not [string]::IsNullOrWhiteSpace([string]$builder.Password)) {
+            if ([string]::IsNullOrWhiteSpace([string]$builder.UserName)) {
+                [void]$diagnostics.Add("Environment proxy variable '$($proxyVariable.Name)' contains proxy credentials without a user name.")
+                return [pscustomobject]@{
+                    Resolved = $false
+                    ProxyUri = $null
+                    ProxyCredential = $null
+                    SourceVariableName = $proxyVariable.Name
+                    Diagnostics = @($diagnostics.ToArray())
+                }
+            }
+
+            try {
+                $userName = [System.Uri]::UnescapeDataString([string]$builder.UserName)
+                $password = [System.Uri]::UnescapeDataString([string]$builder.Password)
+                $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+                $proxyCredential = New-Object System.Management.Automation.PSCredential($userName, $securePassword)
+            }
+            catch {
+                [void]$diagnostics.Add("Environment proxy credentials from '$($proxyVariable.Name)' could not be parsed: $($_.Exception.Message)")
+                return [pscustomobject]@{
+                    Resolved = $false
+                    ProxyUri = $null
+                    ProxyCredential = $null
+                    SourceVariableName = $proxyVariable.Name
+                    Diagnostics = @($diagnostics.ToArray())
+                }
+            }
+
+            $builder.UserName = ''
+            $builder.Password = ''
+        }
+
+        $proxyUri = $builder.Uri
+        [void]$diagnostics.Add("Environment proxy settings were resolved from '$($proxyVariable.Name)' as '$($proxyUri.AbsoluteUri)'.")
+
+        return [pscustomobject]@{
+            Resolved = $true
+            ProxyUri = $proxyUri
+            ProxyCredential = $proxyCredential
+            SourceVariableName = $proxyVariable.Name
+            Diagnostics = @($diagnostics.ToArray())
+        }
+    }
+
+    function _TryResolveEnvironmentProxy {
+        param(
+            [Parameter(Mandatory = $true)]
+            [uri]$TargetUri,
+
+            [Parameter(Mandatory = $true)]
+            [int]$ProbeTimeoutSec
+        )
+
+        $environmentProxy = _ResolveEnvironmentProxySetting -TargetUri $TargetUri
+        $diagnostics = New-Object System.Collections.Generic.List[string]
+
+        foreach ($message in $environmentProxy.Diagnostics) {
+            [void]$diagnostics.Add($message)
+        }
+
+        if (-not $environmentProxy.Resolved -or $null -eq $environmentProxy.ProxyUri) {
+            return [pscustomobject]@{
+                Success = $false
+                ProxyUri = $null
+                ProxyCredential = $null
+                StatusCode = $null
+                Diagnostics = @($diagnostics.ToArray())
+            }
+        }
+
+        try {
+            $proxyObject = New-Object System.Net.WebProxy($environmentProxy.ProxyUri.AbsoluteUri, $true)
+            if ($null -ne $environmentProxy.ProxyCredential) {
+                $proxyObject.Credentials = $environmentProxy.ProxyCredential.GetNetworkCredential()
+            }
+
+            $proxyTest = _TestProxyProfileAccess -TargetUri $TargetUri -ProbeTimeoutSec $ProbeTimeoutSec -ProxyObject $proxyObject
+
+            if ($proxyTest.Success) {
+                return [pscustomobject]@{
+                    Success = $true
+                    ProxyUri = $environmentProxy.ProxyUri
+                    ProxyCredential = $environmentProxy.ProxyCredential
+                    StatusCode = $proxyTest.StatusCode
+                    Diagnostics = @($diagnostics.ToArray())
+                }
+            }
+
+            [void]$diagnostics.Add("Environment proxy '$($environmentProxy.ProxyUri.AbsoluteUri)' failed HTTP probe: $($proxyTest.ErrorMessage)")
+        }
+        catch {
+            [void]$diagnostics.Add("Environment proxy '$($environmentProxy.ProxyUri.AbsoluteUri)' check failed: $($_.Exception.Message)")
+        }
+
+        return [pscustomobject]@{
+            Success = $false
+            ProxyUri = $environmentProxy.ProxyUri
+            ProxyCredential = $environmentProxy.ProxyCredential
+            StatusCode = $null
+            Diagnostics = @($diagnostics.ToArray())
         }
     }
 
@@ -2350,6 +3119,61 @@ function Invoke-WebRequestEx10 {
                 }
 
                 [void]$diagnostics.Add("Persisted direct profile validation failed: $($direct.ErrorMessage)")
+                return [pscustomobject]@{
+                    Success = $false
+                    Diagnostics = @($diagnostics.ToArray())
+                }
+            }
+
+            'EnvironmentProxy' {
+                if (-not $StoredProfile.ProxyUri) {
+                    [void]$diagnostics.Add('Persisted environment proxy profile is missing ProxyUri.')
+                    return [pscustomobject]@{
+                        Success = $false
+                        Diagnostics = @($diagnostics.ToArray())
+                    }
+                }
+
+                $proxyCredential = $null
+                if ($StoredProfile.ProxyCredential -is [System.Management.Automation.PSCredential]) {
+                    $proxyCredential = [System.Management.Automation.PSCredential]$StoredProfile.ProxyCredential
+                }
+                elseif ($null -ne $StoredProfile.ProxyUserName) {
+                    try {
+                        $securePassword = ConvertTo-SecureString ([string]$StoredProfile.ProxyPassword) -AsPlainText -Force
+                        $proxyCredential = New-Object System.Management.Automation.PSCredential(
+                            [string]$StoredProfile.ProxyUserName,
+                            $securePassword
+                        )
+                    }
+                    catch {
+                        $proxyCredential = $null
+                    }
+                }
+
+                try {
+                    $proxyUri = [uri][string]$StoredProfile.ProxyUri
+                    $environmentProxy = New-Object System.Net.WebProxy($proxyUri.AbsoluteUri, $true)
+                    if ($null -ne $proxyCredential) {
+                        $environmentProxy.Credentials = $proxyCredential.GetNetworkCredential()
+                    }
+
+                    $result = _TestProxyProfileAccess -TargetUri $ValidationUri -ProbeTimeoutSec $ProbeTimeoutSec -ProxyObject $environmentProxy
+
+                    if ($result.Success) {
+                        [void]$diagnostics.Add("Persisted environment proxy validation succeeded with status code $($result.StatusCode) via '$($proxyUri.AbsoluteUri)'.")
+                        return [pscustomobject]@{
+                            Success = $true
+                            Diagnostics = @($diagnostics.ToArray())
+                        }
+                    }
+
+                    [void]$diagnostics.Add("Persisted environment proxy validation failed: $($result.ErrorMessage)")
+                }
+                catch {
+                    [void]$diagnostics.Add("Persisted environment proxy validation check failed: $($_.Exception.Message)")
+                }
+
                 return [pscustomobject]@{
                     Success = $false
                     Diagnostics = @($diagnostics.ToArray())
@@ -3050,7 +3874,33 @@ public static class CertificateValidationHelper
 
             [void]$diagnostics.Add("Direct probe failed: $($directTest.ErrorMessage)")
 
-            # 2) Local relay proxy on loopback.
+            # 2) Environment proxy from process environment variables.
+            $environmentProxyResult = _TryResolveEnvironmentProxy -TargetUri $TargetUri -ProbeTimeoutSec $ProbeTimeoutSec
+
+            foreach ($message in $environmentProxyResult.Diagnostics) {
+                [void]$diagnostics.Add($message)
+            }
+
+            if ($environmentProxyResult.Success -and $null -ne $environmentProxyResult.ProxyUri) {
+                $stored = _NewStoredProxyProfile `
+                    -Mode 'EnvironmentProxy' `
+                    -TestUri $TargetUri `
+                    -ProxyUri $environmentProxyResult.ProxyUri `
+                    -ProxyCredential $environmentProxyResult.ProxyCredential `
+                    -Diagnostics @(
+                        $diagnostics.ToArray() +
+                        "Environment proxy probe succeeded with status code $($environmentProxyResult.StatusCode) via '$($environmentProxyResult.ProxyUri.AbsoluteUri)'."
+                    )
+
+                _SavePersistedProxyProfile -StoredProfile $stored -ProfilePath $ProfilePath
+
+                $runtimeState = _BuildRuntimeProxyProfileState -StoredProfile $stored -ProfileSource 'FreshDetection'
+                $runtimeState = _EnsurePreparedRuntimeProxyProfileState -RuntimeState $runtimeState -SkipSessionPreparation:$SkipSessionPreparation
+                _SetProcessProxyProfileState -ProfilePath $ProfilePath -RuntimeState $runtimeState
+                return $runtimeState
+            }
+
+            # 3) Local relay proxy on loopback.
             $localRelayResult = _TryResolveLocalRelayProxy -TargetUri $TargetUri -ProbeTimeoutSec $ProbeTimeoutSec
 
             foreach ($message in $localRelayResult.Diagnostics) {
@@ -3075,7 +3925,7 @@ public static class CertificateValidationHelper
                 return $runtimeState
             }
 
-            # 3) System proxy + default credentials.
+            # 4) System proxy + default credentials.
             try {
                 $systemProxy = [System.Net.WebRequest]::GetSystemWebProxy()
                 $resolvedProxy = $systemProxy.GetProxy($TargetUri)
@@ -3116,7 +3966,7 @@ public static class CertificateValidationHelper
                 [void]$diagnostics.Add("System proxy discovery failed: $($_.Exception.Message)")
             }
 
-            # 4) Manual proxy prompt.
+            # 5) Manual proxy prompt.
             if (-not $SkipManualPrompt) {
                 if (-not $isInteractive) {
                     [void]$diagnostics.Add('Manual proxy entry is required, but the current session is non-interactive.')
@@ -4297,5 +5147,3 @@ public static class CertificateValidationHelper
     }
 }
 
-
-Invoke-WebRequestEx10 -Uri 'https://www.powershellgallery.com/api/v2/' -UseBasicParsing

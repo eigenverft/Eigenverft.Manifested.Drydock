@@ -87,9 +87,9 @@ function Write-StandardMessage {
 function Initialize-ProxyAccessProfile {
 <#
 .SYNOPSIS
-Resolves a usable outbound proxy access profile for Windows PowerShell 5.1,
-persists the result to a CliXml profile file, and stores ready-to-use values
-in global variables.
+Resolves a usable outbound proxy access profile on Windows, persists the
+result to a CliXml profile file, and stores ready-to-use values in global
+variables.
 
 .DESCRIPTION
 Resolution order:
@@ -110,8 +110,8 @@ Behavior:
 - Certificate validation is skipped by default for proxy validation and discovery
   probes. Use -EnforceCertificateCheck to require normal server certificate validation.
 
-This helper is primarily intended for Windows PowerShell 5.1 in corporate
-environments where direct access is not guaranteed.
+This helper is primarily intended for Windows PowerShell 5.1 and PowerShell
+7+ on Windows in corporate environments where direct access is not guaranteed.
 #>
     [CmdletBinding()]
     param(
@@ -137,12 +137,15 @@ environments where direct access is not guaranteed.
         [switch]$ForceRefresh
     )
 
-    # This helper is intentionally written for Windows PowerShell 5.1.
-    if ($PSVersionTable.PSEdition -ne 'Desktop' -or
-        $PSVersionTable.PSVersion.Major -ne 5 -or
-        $PSVersionTable.PSVersion.Minor -ne 1) {
-        throw "Initialize-ProxyAccessProfile is intended for Windows PowerShell 5.1. Current version: $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)."
+    $isWindowsEnv = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+    if (-not $isWindowsEnv) {
+        throw "Initialize-ProxyAccessProfile is intended for Windows PowerShell 5.1 and PowerShell 7+ on Windows. Current version: $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)."
     }
+
+    $nativeInvokeWebRequestCommand = Get-Command Invoke-WebRequest -ErrorAction SilentlyContinue
+    $nativeSupportsNoProxy =
+        ($null -ne $nativeInvokeWebRequestCommand) -and
+        $nativeInvokeWebRequestCommand.Parameters.ContainsKey('NoProxy')
 
     $initialized = Get-Variable -Scope Global -Name ($GlobalPrefix + 'Initialized') -ErrorAction SilentlyContinue
     if (-not $ForceRefresh -and $initialized -and $initialized.Value) {
@@ -164,7 +167,7 @@ environments where direct access is not guaranteed.
 
     function Set-ProxyGlobals {
         param(
-            [ValidateSet('Direct','EnvironmentProxy','LocalRelayProxy','SystemProxyDefaultCredentials','ManualProxy','Unavailable')]
+            [ValidateSet('Direct','EnvironmentProxy','LocalRelayProxy','SystemProxyDefaultCredentials','ManualProxy','NoResolvedProxyProfile')]
             [string]$Mode,
 
             [hashtable]$InstallPackageProvider = @{},
@@ -307,7 +310,7 @@ environments where direct access is not guaranteed.
     function New-StoredProfile {
         param(
             [Parameter(Mandatory = $true)]
-            [ValidateSet('Direct','EnvironmentProxy','LocalRelayProxy','SystemProxyDefaultCredentials','ManualProxy','Unavailable')]
+            [ValidateSet('Direct','EnvironmentProxy','LocalRelayProxy','SystemProxyDefaultCredentials','ManualProxy','NoResolvedProxyProfile')]
             [string]$Mode,
 
             [Parameter(Mandatory = $true)]
@@ -418,28 +421,28 @@ environments where direct access is not guaranteed.
                         $invokeWebRequest = @{
                             Proxy = $proxy
                         }
-                    }
 
-                    if (-not $useDefaultProxyCredentials -and $null -ne $proxyCredential) {
-                        $installPackageProvider['ProxyCredential'] = $proxyCredential
-                        $installModule['ProxyCredential'] = $proxyCredential
-                        $invokeWebRequest['ProxyCredential'] = $proxyCredential
+                        if ($null -ne $proxyCredential) {
+                            $installPackageProvider['ProxyCredential'] = $proxyCredential
+                            $installModule['ProxyCredential'] = $proxyCredential
+                            $invokeWebRequest['ProxyCredential'] = $proxyCredential
 
-                        $capturedProxy = $proxy
-                        $capturedCredential = $proxyCredential
+                            $capturedProxy = $proxy
+                            $capturedCredential = $proxyCredential
 
-                        $prepareSession = {
-                            $webProxy = New-Object System.Net.WebProxy($capturedProxy.AbsoluteUri, $true)
-                            $webProxy.Credentials = $capturedCredential.GetNetworkCredential()
-                            [System.Net.WebRequest]::DefaultWebProxy = $webProxy
-                        }.GetNewClosure()
-                    }
-                    else {
-                        $capturedProxy = $proxy
+                            $prepareSession = {
+                                $webProxy = New-Object System.Net.WebProxy($capturedProxy.AbsoluteUri, $true)
+                                $webProxy.Credentials = $capturedCredential.GetNetworkCredential()
+                                [System.Net.WebRequest]::DefaultWebProxy = $webProxy
+                            }.GetNewClosure()
+                        }
+                        else {
+                            $capturedProxy = $proxy
 
-                        $prepareSession = {
-                            [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($capturedProxy.AbsoluteUri, $true)
-                        }.GetNewClosure()
+                            $prepareSession = {
+                                [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($capturedProxy.AbsoluteUri, $true)
+                            }.GetNewClosure()
+                        }
                     }
                 }
             }
@@ -483,9 +486,18 @@ environments where direct access is not guaranteed.
             }
 
             'Direct' {
+                if ($nativeSupportsNoProxy) {
+                    $invokeWebRequest = @{
+                        NoProxy = $true
+                    }
+                }
+
+                $prepareSession = {
+                    [System.Net.WebRequest]::DefaultWebProxy = [System.Net.GlobalProxySelection]::GetEmptyWebProxy()
+                }.GetNewClosure()
             }
 
-            'Unavailable' {
+            'NoResolvedProxyProfile' {
             }
         }
 
@@ -537,7 +549,7 @@ environments where direct access is not guaranteed.
             $request.Timeout = $TimeoutSec * 1000
             $request.ReadWriteTimeout = $TimeoutSec * 1000
             $request.AllowAutoRedirect = $true
-            $request.UserAgent = 'WindowsPowerShell/5.1 Initialize-ProxyAccessProfile'
+            $request.UserAgent = 'PowerShell Initialize-ProxyAccessProfile'
             # The caller controls whether this is a true direct test,
             # a loopback relay test, a system-proxy test, or a manual-proxy test.
             $request.Proxy = $Proxy
@@ -1263,8 +1275,8 @@ environments where direct access is not guaranteed.
                 }
             }
 
-            'Unavailable' {
-                [void]$diagnostics.Add('Persisted unavailable profiles are not considered reusable.')
+            'NoResolvedProxyProfile' {
+                [void]$diagnostics.Add('Persisted NoResolvedProxyProfile entries are not considered reusable.')
                 return [pscustomobject]@{
                     Success     = $false
                     Diagnostics = @($diagnostics.ToArray())
@@ -1617,12 +1629,12 @@ public static class CertificateValidationHelper
             [void]$diagnostics.Add('Manual proxy prompt was skipped by caller.')
         }
 
-        # We do not persist an unavailable state. That avoids carrying a bad result
+        # We do not persist a NoResolvedProxyProfile state. That avoids carrying a bad result
         # across sessions after a temporary network problem.
         Remove-PersistedProfile -ProfilePath $ProxyProfilePath
 
         Set-ProxyGlobals `
-            -Mode 'Unavailable' `
+            -Mode 'NoResolvedProxyProfile' `
             -Diagnostics $diagnostics.ToArray() `
             -ProfileSource 'FreshDetection'
     }
@@ -1642,14 +1654,15 @@ public static class CertificateValidationHelper
 function Invoke-WebRequestEx10 {
 <#
 .SYNOPSIS
-    Invokes a web request with Windows PowerShell 5.1 compatibility improvements,
+    Invokes a web request with Windows-focused compatibility improvements,
     retry logic, persisted proxy-profile handling, proxy/TLS handling,
     resilient streaming downloads, resume support, and optional final hash verification.
 
 .DESCRIPTION
-    Invoke-WebRequestEx10 is intended for Windows PowerShell 5.1 environments
-    where outbound access may depend on proxy discovery and where large or
-    long-running downloads need stronger operational behavior.
+    Invoke-WebRequestEx10 is intended for Windows PowerShell 5.1 and
+    PowerShell 7+ on Windows where outbound access may depend on proxy
+    discovery and where large or long-running downloads need stronger
+    operational behavior.
 
     The function supports general web requests and extends them with additional
     behavior that is useful for automation, infrastructure scripts, artifact
@@ -1722,11 +1735,9 @@ function Invoke-WebRequestEx10 {
       certificate bypass is enabled by default for compatibility with the
       proxy-resolution workflow
     - -EnforceCertificateCheck restores normal TLS server certificate validation
-    - On Windows PowerShell 5.1, native Invoke-WebRequest does not expose a clean
-      per-call certificate-bypass switch
-    - Because version 10 keeps the native path for general requests, certificate
-      bypass still relies on temporary process-level callback changes in those
-      native underlying call paths when bypass is enabled
+    - When the active native request path does not expose a clean per-call
+      certificate-bypass switch, bypass still relies on temporary process-level
+      callback changes in that path when enabled
 
     If the caller manually supplies proxy-related parameters, the persisted proxy
     profile logic is skipped entirely and the caller's settings win.
@@ -1742,8 +1753,8 @@ function Invoke-WebRequestEx10 {
     The request URI.
 
 .PARAMETER UseBasicParsing
-    Forwards UseBasicParsing to native Invoke-WebRequest on Windows PowerShell 5.1.
-    This parameter is not used by the streaming download path.
+    Forwards UseBasicParsing to native Invoke-WebRequest when supported by the
+    active runtime. This parameter is not used by the streaming download path.
 
 .PARAMETER WebSession
     Existing web session object to reuse with the native Invoke-WebRequest path.
@@ -1888,7 +1899,7 @@ function Invoke-WebRequestEx10 {
 .PARAMETER SkipProxyManualPrompt
     Prevents the interactive manual proxy prompt during proxy-profile resolution.
     If direct, environment proxy, local relay, and system proxy resolution all fail,
-    the resolved mode becomes unavailable instead of prompting.
+    the resolved mode becomes NoResolvedProxyProfile instead of prompting.
 
 .PARAMETER SkipProxySessionPreparation
     Reserved compatibility switch for session-level proxy preparation.
@@ -1939,10 +1950,16 @@ function Invoke-WebRequestEx10 {
     Intended as the replacement path for older Invoke-WebRequestEx variants in
     this repository.
 
-    Target runtime: Windows PowerShell 5.1.
+    Active runtime gate: Windows PowerShell 5.1 and PowerShell 7+ on Windows.
 
-    When explicit proxy parameters are supplied, persisted proxy-profile
-    resolution is skipped and the caller's proxy settings win.
+    Explicit proxy parameters bypass proxy-profile resolution and win.
+
+    If no managed proxy profile is resolved, the request falls back to
+    normal/default behavior instead of failing resolution as a hard network
+    error.
+
+    Proxy-profile caching is tuned for the common corporate outbound-access
+    case.
 #>
     [CmdletBinding(PositionalBinding = $false)]
     param(
@@ -2087,7 +2104,93 @@ function Invoke-WebRequestEx10 {
         [switch]$ClearProxyProfile
     )
 
-    function _UriDisplayShortener {
+    function local:_Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
+        )
+        if ($null -eq $Message) { $Message = [string]::Empty }
+        $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
+        if(-not $PSBoundParameters.ContainsKey('MinLevel')){
+            $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+            $MinLevel=if($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)){[string]$gv.Value}else{'INF'}
+        }
+        $lvl=$Level.ToUpperInvariant()
+        $min=$MinLevel.ToUpperInvariant()
+        $sev=$sevMap[$lvl];if($null -eq $sev){$lvl='INF';$sev=$sevMap['INF']}
+        $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
+        if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
+        if($sev -lt $gate){return}
+        $ts=[DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss')
+        $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
+        if($stack){
+            # 1: prefer first non-underscore function not defined in the helper's own file
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+            }
+            # 2: fallback to first non-underscore function (any file)
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')){$caller=$f;break}
+                }
+            }
+            # 3: fallback to first non-helper frame not from helper's own file
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                    if($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+                }
+            }
+            # 4: final fallback to first non-helper frame
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName){$caller=$f;break}
+                }
+            }
+        }
+        if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
+        $lineNumber=$null ; 
+        $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Position']
+            if($p -and $p.Value){
+                $sp=$p.Value.PSObject.Properties['StartLineNumber'];if($sp -and $sp.Value){$lineNumber=[string]$sp.Value}
+            }
+        }
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Location']
+            if($p -and $p.Value){
+                $m=[regex]::Match([string]$p.Value,':(\d+)\s+char:','IgnoreCase');if($m.Success -and $m.Groups.Count -gt 1){$lineNumber=$m.Groups[1].Value}
+            }
+        }
+        $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
+        if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
+        $prefix="[$ts "
+        #$suffix="] [$file] $Message"
+        $suffix="] $Message"
+        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back=$null};FTL=@{Fore='Red';Back='DarkRed'}}[$lvl]
+        $fore=$cfg.Fore
+        $back=$cfg.Back
+        $isInteractive = [System.Environment]::UserInteractive
+        if($isInteractive -and ($fore -or $back)){
+            Write-Host -NoNewline $prefix
+            if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
+            elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
+            elseif($back){Write-Host -NoNewline $lvl -BackgroundColor $back}
+            Write-Host $suffix
+        } else {
+            Write-Host "$prefix$lvl$suffix"
+        }
+
+        if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
+    }
+
+    function local:_UriDisplayShortener {
         param(
             [Parameter(Mandatory = $true)]
             [uri]$TargetUri
@@ -2127,7 +2230,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _GetResponseFromErrorRecord {
+    function local:_GetResponseFromErrorRecord {
         param(
             [Parameter(Mandatory = $true)]
             [System.Management.Automation.ErrorRecord]$ErrorRecord
@@ -2145,7 +2248,7 @@ function Invoke-WebRequestEx10 {
         return $null
     }
 
-    function _GetHttpStatusCodeFromErrorRecord {
+    function local:_GetHttpStatusCodeFromErrorRecord {
         param(
             [Parameter(Mandatory = $true)]
             [System.Management.Automation.ErrorRecord]$ErrorRecord
@@ -2178,7 +2281,7 @@ function Invoke-WebRequestEx10 {
         return $null
     }
 
-    function _GetWwwAuthenticateValuesFromErrorRecord {
+    function local:_GetWwwAuthenticateValuesFromErrorRecord {
         param(
             [Parameter(Mandatory = $true)]
             [System.Management.Automation.ErrorRecord]$ErrorRecord
@@ -2227,7 +2330,7 @@ function Invoke-WebRequestEx10 {
         return ,$result.ToArray()
     }
 
-    function _TestIsLikelyProxyAuthenticationFailure {
+    function local:_TestIsLikelyProxyAuthenticationFailure {
         param(
             [Parameter(Mandatory = $true)]
             [System.Management.Automation.ErrorRecord]$ErrorRecord,
@@ -2271,7 +2374,7 @@ function Invoke-WebRequestEx10 {
         return $false
     }
 
-    function _TestIsPrivateOrIntranetAddress {
+    function local:_TestIsPrivateOrIntranetAddress {
         param(
             [Parameter(Mandatory = $true)]
             [System.Net.IPAddress]$Address
@@ -2315,7 +2418,7 @@ function Invoke-WebRequestEx10 {
         return $false
     }
 
-    function _GetAutoUseDefaultCredentialsGuardInfo {
+    function local:_GetAutoUseDefaultCredentialsGuardInfo {
         param(
             [Parameter(Mandatory = $true)]
             [uri]$TargetUri
@@ -2378,7 +2481,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _GetProcessProxyProfileCacheTable {
+    function local:_GetProcessProxyProfileCacheTable {
         if (-not $global:InvokeWebRequestEx10ProxyProfileProcessCache -or
             $global:InvokeWebRequestEx10ProxyProfileProcessCache -isnot [hashtable]) {
             $global:InvokeWebRequestEx10ProxyProfileProcessCache = @{}
@@ -2387,7 +2490,7 @@ function Invoke-WebRequestEx10 {
         return $global:InvokeWebRequestEx10ProxyProfileProcessCache
     }
 
-    function _EnsurePersistedProxyProfileDirectory {
+    function local:_EnsurePersistedProxyProfileDirectory {
         param(
             [Parameter(Mandatory = $true)]
             [string]$ProfilePath
@@ -2399,7 +2502,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _RemovePersistedProxyProfile {
+    function local:_RemovePersistedProxyProfile {
         param(
             [Parameter(Mandatory = $true)]
             [string]$ProfilePath
@@ -2415,7 +2518,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _SavePersistedProxyProfile {
+    function local:_SavePersistedProxyProfile {
         param(
             [Parameter(Mandatory = $true)]
             [pscustomobject]$StoredProfile,
@@ -2432,12 +2535,12 @@ function Invoke-WebRequestEx10 {
                 throw "The proxy profile file could not be verified after export."
             }
 
-            Write-StandardMessage -Message (
+            _Write-StandardMessage -Message (
                 "[STATUS] Persisted proxy profile to '{0}'." -f $ProfilePath
             ) -Level INF
         }
         catch {
-            Write-StandardMessage -Message (
+            _Write-StandardMessage -Message (
                 "[WRN] Failed to persist proxy profile to '{0}': {1}" -f
                 $ProfilePath, $_.Exception.Message
             ) -Level WRN
@@ -2445,7 +2548,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _LoadPersistedProxyProfile {
+    function local:_LoadPersistedProxyProfile {
         param(
             [Parameter(Mandatory = $true)]
             [string]$ProfilePath
@@ -2464,7 +2567,7 @@ function Invoke-WebRequestEx10 {
             return $storedProfile
         }
         catch {
-            Write-StandardMessage -Message (
+            _Write-StandardMessage -Message (
                 "[WRN] Failed to load persisted proxy profile from '{0}': {1}. The stored profile will be cleared." -f
                 $ProfilePath, $_.Exception.Message
             ) -Level WRN
@@ -2474,7 +2577,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _BuildRuntimeProxyProfileState {
+    function local:_BuildRuntimeProxyProfileState {
         param(
             [Parameter(Mandatory = $true)]
             [pscustomobject]$StoredProfile,
@@ -2581,9 +2684,14 @@ function Invoke-WebRequestEx10 {
             }
 
             'Direct' {
+                if ($nativeSupportsNoProxy) {
+                    $invokeWebRequest = @{
+                        NoProxy = $true
+                    }
+                }
             }
 
-            'Unavailable' {
+            'NoResolvedProxyProfile' {
             }
         }
 
@@ -2606,7 +2714,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _SetProcessProxyProfileState {
+    function local:_SetProcessProxyProfileState {
         param(
             [Parameter(Mandatory = $true)]
             [string]$ProfilePath,
@@ -2619,7 +2727,7 @@ function Invoke-WebRequestEx10 {
         $cacheTable[$ProfilePath] = $RuntimeState
     }
 
-    function _GetProcessProxyProfileState {
+    function local:_GetProcessProxyProfileState {
         param(
             [Parameter(Mandatory = $true)]
             [string]$ProfilePath
@@ -2634,7 +2742,7 @@ function Invoke-WebRequestEx10 {
         return $null
     }
 
-    function _EnsurePreparedRuntimeProxyProfileState {
+    function local:_EnsurePreparedRuntimeProxyProfileState {
         param(
             [Parameter(Mandatory = $true)]
             [pscustomobject]$RuntimeState,
@@ -2652,10 +2760,10 @@ function Invoke-WebRequestEx10 {
         return $RuntimeState
     }
 
-    function _NewStoredProxyProfile {
+    function local:_NewStoredProxyProfile {
         param(
             [Parameter(Mandatory = $true)]
-            [ValidateSet('Direct','EnvironmentProxy','LocalRelayProxy','SystemProxyDefaultCredentials','ManualProxy','Unavailable')]
+            [ValidateSet('Direct','EnvironmentProxy','LocalRelayProxy','SystemProxyDefaultCredentials','ManualProxy','NoResolvedProxyProfile')]
             [string]$Mode,
 
             [Parameter(Mandatory = $true)]
@@ -2682,7 +2790,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _TestProxyProfileAccess {
+    function local:_TestProxyProfileAccess {
         param(
             [Parameter(Mandatory = $true)]
             [uri]$TargetUri,
@@ -2703,7 +2811,7 @@ function Invoke-WebRequestEx10 {
             $request.ReadWriteTimeout = $ProbeTimeoutSec * 1000
             $request.AllowAutoRedirect = $true
             $request.Proxy = $ProxyObject
-            $request.UserAgent = 'WindowsPowerShell Invoke-WebRequestEx10 ProxyProfileProbe'
+            $request.UserAgent = 'PowerShell Invoke-WebRequestEx10 ProxyProfileProbe'
 
             $response = [System.Net.HttpWebResponse]$request.GetResponse()
 
@@ -2758,7 +2866,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _GetEnvironmentVariableSetting {
+    function local:_GetEnvironmentVariableSetting {
         param(
             [Parameter(Mandatory = $true)]
             [string[]]$Names
@@ -2777,7 +2885,7 @@ function Invoke-WebRequestEx10 {
         return $null
     }
 
-    function _GetNoProxyEntries {
+    function local:_GetNoProxyEntries {
         param(
             [string]$NoProxyValue
         )
@@ -2798,7 +2906,7 @@ function Invoke-WebRequestEx10 {
         return @($entries.ToArray())
     }
 
-    function _TestNoProxyEntryMatchesTarget {
+    function local:_TestNoProxyEntryMatchesTarget {
         param(
             [Parameter(Mandatory = $true)]
             [string]$Entry,
@@ -2873,7 +2981,7 @@ function Invoke-WebRequestEx10 {
         return $targetHostNormalized -eq $entryHostNormalized
     }
 
-    function _ResolveEnvironmentProxySetting {
+    function local:_ResolveEnvironmentProxySetting {
         param(
             [Parameter(Mandatory = $true)]
             [uri]$TargetUri
@@ -3021,7 +3129,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _TryResolveEnvironmentProxy {
+    function local:_TryResolveEnvironmentProxy {
         param(
             [Parameter(Mandatory = $true)]
             [uri]$TargetUri,
@@ -3109,14 +3217,14 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _GetLocalRelayProxyCandidates {
+    function local:_GetLocalRelayProxyCandidates {
         return @(
-            [uri]'http://127.0.0.1:3128',
-            [uri]'http://localhost:3128'
+            [uri]'http://localhost:3128',
+            [uri]'http://127.0.0.1:3128'
         )
     }
 
-    function _TestLoopbackPortOpen {
+    function local:_TestLoopbackPortOpen {
         param(
             [Parameter(Mandatory = $true)]
             [uri]$ProxyUri,
@@ -3153,7 +3261,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _TryResolveLocalRelayProxy {
+    function local:_TryResolveLocalRelayProxy {
         param(
             [Parameter(Mandatory = $true)]
             [uri]$TargetUri,
@@ -3198,7 +3306,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _TestPersistedProxyProfile {
+    function local:_TestPersistedProxyProfile {
         param(
             [Parameter(Mandatory = $true)]
             [pscustomobject]$StoredProfile,
@@ -3442,8 +3550,8 @@ function Invoke-WebRequestEx10 {
                 }
             }
 
-            'Unavailable' {
-                [void]$diagnostics.Add('Persisted unavailable profiles are not considered reusable.')
+            'NoResolvedProxyProfile' {
+                [void]$diagnostics.Add('Persisted NoResolvedProxyProfile entries are not considered reusable.')
                 return [pscustomobject]@{
                     Success = $false
                     Diagnostics = @($diagnostics.ToArray())
@@ -3460,7 +3568,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _GetManualProxyEntry {
+    function local:_GetManualProxyEntry {
         param(
             [string]$DefaultProxy
         )
@@ -3543,7 +3651,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _GetDownloadLocalState {
+    function local:_GetDownloadLocalState {
         param(
             [Parameter(Mandatory = $true)]
             [string]$Path
@@ -3567,7 +3675,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _GetDownloadResponseInfo {
+    function local:_GetDownloadResponseInfo {
         param(
             [Parameter(Mandatory = $true)]
             [System.Net.HttpWebResponse]$Response
@@ -3623,7 +3731,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _OpenDownloadFileStream {
+    function local:_OpenDownloadFileStream {
         param(
             [Parameter(Mandatory = $true)]
             [string]$Path,
@@ -3640,7 +3748,7 @@ function Invoke-WebRequestEx10 {
         )
     }
 
-    function _GetResolvedDownloadPath {
+    function local:_GetResolvedDownloadPath {
         param(
             [Parameter(Mandatory = $true)]
             [string]$Path
@@ -3654,7 +3762,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _GetDownloadSidecarHash {
+    function local:_GetDownloadSidecarHash {
         param(
             [Parameter(Mandatory = $true)]
             [uri]$TargetUri,
@@ -3677,7 +3785,7 @@ function Invoke-WebRequestEx10 {
         return ([System.BitConverter]::ToString($hashBytes).Replace('-', '').ToLowerInvariant())
     }
 
-    function _GetDownloadLockPath {
+    function local:_GetDownloadLockPath {
         param(
             [Parameter(Mandatory = $true)]
             [uri]$TargetUri,
@@ -3690,7 +3798,7 @@ function Invoke-WebRequestEx10 {
         return ([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ("InvokeWebRequestEx_{0}.lock" -f $hash)))
     }
 
-    function _GetResumeMetadataPath {
+    function local:_GetResumeMetadataPath {
         param(
             [Parameter(Mandatory = $true)]
             [uri]$TargetUri,
@@ -3703,7 +3811,7 @@ function Invoke-WebRequestEx10 {
         return ([System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), ("InvokeWebRequestEx_{0}.resume" -f $hash)))
     }
 
-    function _ReadJsonFile {
+    function local:_ReadJsonFile {
         param(
             [Parameter(Mandatory = $true)]
             [string]$Path
@@ -3721,7 +3829,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _WriteJsonFile {
+    function local:_WriteJsonFile {
         param(
             [Parameter(Mandatory = $true)]
             [string]$Path,
@@ -3734,7 +3842,7 @@ function Invoke-WebRequestEx10 {
         [System.IO.File]::WriteAllText($Path, $json, [System.Text.Encoding]::UTF8)
     }
 
-    function _RemoveFileIfExists {
+    function local:_RemoveFileIfExists {
         param(
             [Parameter(Mandatory = $true)]
             [string]$Path
@@ -3749,7 +3857,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _GetCurrentProcessStartTimeUtcText {
+    function local:_GetCurrentProcessStartTimeUtcText {
         try {
             return ([System.Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToString('o'))
         }
@@ -3758,7 +3866,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _TestDownloadLockIsStale {
+    function local:_TestDownloadLockIsStale {
         param(
             [Parameter(Mandatory = $true)]
             [string]$LockPath
@@ -3803,7 +3911,7 @@ function Invoke-WebRequestEx10 {
         return $false
     }
 
-    function _GetFileHashHex {
+    function local:_GetFileHashHex {
         param(
             [Parameter(Mandatory = $true)]
             [string]$Path,
@@ -3832,7 +3940,7 @@ function Invoke-WebRequestEx10 {
         }
     }
 
-    function _ResolveCorporateProxyProfile {
+    function local:_ResolveCorporateProxyProfile {
         param(
             [Parameter(Mandatory = $true)]
             [uri]$TargetUri,
@@ -3944,12 +4052,12 @@ public static class CertificateValidationHelper
                     $persistedProfileValidationDiagnostics = @($persistedValidation.Diagnostics)
 
                     foreach ($message in $persistedProfileValidationDiagnostics) {
-                        Write-StandardMessage -Message (
+                        _Write-StandardMessage -Message (
                             "[WRN] {0}" -f $message
                         ) -Level WRN
                     }
 
-                    Write-StandardMessage -Message (
+                    _Write-StandardMessage -Message (
                         "[WRN] Persisted proxy profile from '{0}' failed validation and will be cleared before fresh detection." -f $ProfilePath
                     ) -Level WRN
 
@@ -4137,16 +4245,16 @@ public static class CertificateValidationHelper
 
             _RemovePersistedProxyProfile -ProfilePath $ProfilePath
 
-            $unavailableStored = _NewStoredProxyProfile `
-                -Mode 'Unavailable' `
+            $noResolvedProxyProfileStored = _NewStoredProxyProfile `
+                -Mode 'NoResolvedProxyProfile' `
                 -TestUri $TargetUri `
                 -Diagnostics $diagnostics.ToArray()
 
-            $unavailableState = _BuildRuntimeProxyProfileState -StoredProfile $unavailableStored -ProfileSource 'FreshDetection'
-            $unavailableState.Persisted = $false
-            _SetProcessProxyProfileState -ProfilePath $ProfilePath -RuntimeState $unavailableState
+            $noResolvedProxyProfileState = _BuildRuntimeProxyProfileState -StoredProfile $noResolvedProxyProfileStored -ProfileSource 'FreshDetection'
+            $noResolvedProxyProfileState.Persisted = $false
+            _SetProcessProxyProfileState -ProfilePath $ProfilePath -RuntimeState $noResolvedProxyProfileState
 
-            return $unavailableState
+            return $noResolvedProxyProfileState
         }
         finally {
             if ($probeSkipCertificateCheckEnabled) {
@@ -4161,7 +4269,7 @@ public static class CertificateValidationHelper
         }
     }
 
-    function _ApplyProxyProfileToCallParams {
+    function local:_ApplyProxyProfileToCallParams {
         param(
             [Parameter(Mandatory = $true)]
             [hashtable]$CallParams,
@@ -4170,7 +4278,7 @@ public static class CertificateValidationHelper
             [pscustomobject]$ProxyProfile
         )
 
-        foreach ($key in @('Proxy', 'ProxyCredential', 'ProxyUseDefaultCredentials')) {
+        foreach ($key in @('Proxy', 'ProxyCredential', 'ProxyUseDefaultCredentials', 'NoProxy')) {
             if ($CallParams.ContainsKey($key)) {
                 [void]$CallParams.Remove($key)
             }
@@ -4181,15 +4289,14 @@ public static class CertificateValidationHelper
         }
     }
 
-    if ($PSVersionTable.PSEdition -ne 'Desktop' -or
-        $PSVersionTable.PSVersion.Major -ne 5 -or
-        $PSVersionTable.PSVersion.Minor -ne 1) {
-        throw "Invoke-WebRequestEx10 is intended for Windows PowerShell 5.1."
+    $isWindowsEnv = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+    if (-not $isWindowsEnv) {
+        throw "Invoke-WebRequestEx10 is intended for Windows PowerShell 5.1 and PowerShell 7+ on Windows."
     }
 
     $uriDisplay = _UriDisplayShortener -TargetUri $Uri
 
-    Write-StandardMessage -Message ("[STATUS] Initializing Invoke-WebRequestEx10 for '{0}'." -f $uriDisplay) -Level INF
+    _Write-StandardMessage -Message ("[STATUS] Initializing Invoke-WebRequestEx10 for '{0}'." -f $uriDisplay) -Level INF
 
     $effectiveMethod = if ($PSBoundParameters.ContainsKey('Method') -and $null -ne $Method) {
         $Method.ToString().ToUpperInvariant()
@@ -4198,8 +4305,13 @@ public static class CertificateValidationHelper
         'GET'
     }
 
-    $runningOnPwsh = $PSVersionTable.PSEdition -eq 'Core'
-    $nativeSupportsSkipCertificateCheck = $runningOnPwsh -and $PSVersionTable.PSVersion -ge [version]'7.0'
+    $nativeInvokeWebRequestCommand = Get-Command Invoke-WebRequest -ErrorAction SilentlyContinue
+    $nativeSupportsSkipCertificateCheck =
+        ($null -ne $nativeInvokeWebRequestCommand) -and
+        $nativeInvokeWebRequestCommand.Parameters.ContainsKey('SkipCertificateCheck')
+    $nativeSupportsNoProxy =
+        ($null -ne $nativeInvokeWebRequestCommand) -and
+        $nativeInvokeWebRequestCommand.Parameters.ContainsKey('NoProxy')
     $explicitSkipCertificateCheckSupplied = $PSBoundParameters.ContainsKey('SkipCertificateCheck')
     $explicitEnforceCertificateCheckSupplied = $PSBoundParameters.ContainsKey('EnforceCertificateCheck')
 
@@ -4263,12 +4375,12 @@ public static class CertificateValidationHelper
 
     if ($streamingHashValidationRequested) {
         if (-not $PSBoundParameters.ContainsKey('RequiredStreamingHashType') -or [string]::IsNullOrWhiteSpace($RequiredStreamingHashType)) {
-            Write-StandardMessage -Message ("[ERR] Parameter 'RequiredStreamingHashType' is required when 'RequiredStreamingHash' is supplied.") -Level ERR
+            _Write-StandardMessage -Message ("[ERR] Parameter 'RequiredStreamingHashType' is required when 'RequiredStreamingHash' is supplied.") -Level ERR
             throw "RequiredStreamingHashType is required when RequiredStreamingHash is supplied."
         }
 
         if (-not $PSBoundParameters.ContainsKey('RequiredStreamingHash') -or [string]::IsNullOrWhiteSpace($RequiredStreamingHash)) {
-            Write-StandardMessage -Message ("[ERR] Parameter 'RequiredStreamingHash' is required when 'RequiredStreamingHashType' is supplied.") -Level ERR
+            _Write-StandardMessage -Message ("[ERR] Parameter 'RequiredStreamingHash' is required when 'RequiredStreamingHashType' is supplied.") -Level ERR
             throw "RequiredStreamingHash is required when RequiredStreamingHashType is supplied."
         }
 
@@ -4281,11 +4393,11 @@ public static class CertificateValidationHelper
 
         if (($currentProtocols -band $tls12) -ne $tls12) {
             [System.Net.ServicePointManager]::SecurityProtocol = $currentProtocols -bor $tls12
-            Write-StandardMessage -Message "[STATUS] Added TLS 1.2 to the current process security protocol flags." -Level INF
+            _Write-StandardMessage -Message "[STATUS] Added TLS 1.2 to the current process security protocol flags." -Level INF
         }
     }
     catch {
-        Write-StandardMessage -Message ("[WRN] Failed to ensure TLS 1.2: {0}" -f $_.Exception.Message) -Level WRN
+        _Write-StandardMessage -Message ("[WRN] Failed to ensure TLS 1.2: {0}" -f $_.Exception.Message) -Level WRN
     }
 
     if ($PSBoundParameters.ContainsKey('OutFile')) {
@@ -4295,12 +4407,12 @@ public static class CertificateValidationHelper
             if (-not [string]::IsNullOrWhiteSpace($directory)) {
                 if (-not [System.IO.Directory]::Exists($directory)) {
                     [void][System.IO.Directory]::CreateDirectory($directory)
-                    Write-StandardMessage -Message ("[STATUS] Created output directory '{0}'." -f $directory) -Level INF
+                    _Write-StandardMessage -Message ("[STATUS] Created output directory '{0}'." -f $directory) -Level INF
                 }
             }
         }
         catch {
-            Write-StandardMessage -Message ("[ERR] Failed to prepare output directory for '{0}': {1}" -f $OutFile, $_.Exception.Message) -Level ERR
+            _Write-StandardMessage -Message ("[ERR] Failed to prepare output directory for '{0}': {1}" -f $OutFile, $_.Exception.Message) -Level ERR
             throw
         }
     }
@@ -4324,7 +4436,7 @@ public static class CertificateValidationHelper
             -ForceRefresh:$ForceRefreshProxyProfile `
             -ClearProfile:$ClearProxyProfile
 
-        Write-StandardMessage -Message (
+        _Write-StandardMessage -Message (
             "[STATUS] Proxy profile resolved mode '{0}' from '{1}' for '{2}'." -f
             $proxyProfile.Mode, $proxyProfile.ProfileSource, $uriDisplay
         ) -Level INF
@@ -4332,7 +4444,7 @@ public static class CertificateValidationHelper
         _ApplyProxyProfileToCallParams -CallParams $callParams -ProxyProfile $proxyProfile
     }
     else {
-        Write-StandardMessage -Message ("[STATUS] Caller supplied proxy-related parameters for '{0}'. Persisted proxy profile is skipped." -f $uriDisplay) -Level INF
+        _Write-StandardMessage -Message ("[STATUS] Caller supplied proxy-related parameters for '{0}'. Persisted proxy profile is skipped." -f $uriDisplay) -Level INF
     }
 
     $useStreamingEngine = $false
@@ -4381,52 +4493,47 @@ public static class CertificateValidationHelper
             $useStreamingEngine = $true
         }
         elseif ($UseStreamingDownload) {
-            Write-StandardMessage -Message (
+            _Write-StandardMessage -Message (
                 "[WRN] Streaming download was requested, but the current parameter combination is not safely compatible. Falling back to native Invoke-WebRequest for '{0}'." -f $uriDisplay
             ) -Level WRN
         }
     }
 
     if ($streamingHashValidationRequested -and -not $useStreamingEngine) {
-        Write-StandardMessage -Message ("[ERR] Required streaming hash validation is only supported for the streaming download path (GET + OutFile compatible requests).") -Level ERR
+        _Write-StandardMessage -Message ("[ERR] Required streaming hash validation is only supported for the streaming download path (GET + OutFile compatible requests).") -Level ERR
         throw "Required streaming hash validation is only supported for the streaming download path."
     }
 
     if ($effectiveSkipCertificateCheck) {
         if ($useStreamingEngine) {
             if ($nativeSupportsSkipCertificateCheck) {
-                Write-StandardMessage -Message (
+                _Write-StandardMessage -Message (
                     "[STATUS] PowerShell {0} supports native -SkipCertificateCheck, and the compatible streaming path remains enabled for '{1}' to preserve function-managed download behavior." -f
                     $PSVersionTable.PSVersion, $uriDisplay
                 ) -Level INF
             }
             else {
-                Write-StandardMessage -Message (
+                _Write-StandardMessage -Message (
                     "[STATUS] The streaming download path will apply certificate validation bypass per request for '{0}'." -f $uriDisplay
                 ) -Level INF
             }
         }
         elseif ($nativeSupportsSkipCertificateCheck) {
-            Write-StandardMessage -Message (
+            _Write-StandardMessage -Message (
                 "[STATUS] PowerShell {0} will pass -SkipCertificateCheck directly to native Invoke-WebRequest for '{1}'." -f
                 $PSVersionTable.PSVersion, $uriDisplay
             ) -Level INF
         }
     }
     else {
-        Write-StandardMessage -Message ("[STATUS] TLS server certificate validation remains enabled for '{0}'." -f $uriDisplay) -Level INF
-    }
-
-    if ($streamingHashValidationRequested -and -not $useStreamingEngine) {
-        Write-StandardMessage -Message ("[ERR] Required streaming hash validation is only supported for the streaming download path in the effective request configuration.") -Level ERR
-        throw "Required streaming hash validation is only supported for the effective streaming download path."
+        _Write-StandardMessage -Message ("[STATUS] TLS server certificate validation remains enabled for '{0}'." -f $uriDisplay) -Level INF
     }
 
     if ($useStreamingEngine) {
-        Write-StandardMessage -Message ("[STATUS] Using the streaming download path for '{0}'." -f $uriDisplay) -Level INF
+        _Write-StandardMessage -Message ("[STATUS] Using the streaming download path for '{0}'." -f $uriDisplay) -Level INF
     }
     else {
-        Write-StandardMessage -Message ("[STATUS] Using the native Invoke-WebRequest path for '{0}'." -f $uriDisplay) -Level INF
+        _Write-StandardMessage -Message ("[STATUS] Using the native Invoke-WebRequest path for '{0}'." -f $uriDisplay) -Level INF
     }
 
     $downloadTargetExistedBeforeInvocation = $false
@@ -4489,7 +4596,7 @@ public static class CertificateValidationHelper
             )
 
             if (-not $useStreamingEngine -and -not $nativeSupportsSkipCertificateCheck) {
-                Write-StandardMessage -Message ("[STATUS] Enabling temporary certificate validation bypass for '{0}'." -f $uriDisplay) -Level INF
+                _Write-StandardMessage -Message ("[STATUS] Enabling temporary certificate validation bypass for '{0}'." -f $uriDisplay) -Level INF
                 $previousCertificateValidationCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
                 [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $acceptAllCallback
                 $skipCertificateCheckEnabled = $true
@@ -4502,6 +4609,10 @@ public static class CertificateValidationHelper
             $requestUseDefaultCredentials =
                 ($autoUpgradedToDefaultCredentials) -or
                 ($explicitUseDefaultCredentialsSupplied -and [bool]$UseDefaultCredentials)
+            $resolvedProfileForcesNoProxy =
+                (-not $callerHandledProxy) -and
+                ($null -ne $proxyProfile) -and
+                ([string]$proxyProfile.Mode -eq 'Direct')
 
             if (-not $requestUseDefaultCredentials -and $callParams.ContainsKey('UseDefaultCredentials') -and -not $explicitUseDefaultCredentialsSupplied) {
                 [void]$callParams.Remove('UseDefaultCredentials')
@@ -4512,7 +4623,7 @@ public static class CertificateValidationHelper
             }
 
             if ($attemptIndex -gt 1) {
-                Write-StandardMessage -Message (
+                _Write-StandardMessage -Message (
                     "[STATUS] Starting attempt {0} of {1} for {2} {3}." -f $attemptIndex, $RetryCount, $effectiveMethod, $uriDisplay
                 ) -Level INF
             }
@@ -4558,7 +4669,7 @@ public static class CertificateValidationHelper
                                     }
                                     catch [System.IO.IOException] {
                                         if (_TestDownloadLockIsStale -LockPath $downloadLockPath) {
-                                            Write-StandardMessage -Message ("[STATUS] Removing stale download lock '{0}'." -f $downloadLockPath) -Level WRN
+                                            _Write-StandardMessage -Message ("[STATUS] Removing stale download lock '{0}'." -f $downloadLockPath) -Level WRN
                                             _RemoveFileIfExists -Path $downloadLockPath
                                             continue
                                         }
@@ -4572,7 +4683,7 @@ public static class CertificateValidationHelper
                                             throw ("Timed out while waiting for download lock '{0}'." -f $downloadLockPath)
                                         }
 
-                                        Write-StandardMessage -Message ("[STATUS] Another process is downloading '{0}'. Waiting for lock '{1}' to clear." -f $uriDisplay, $downloadLockPath) -Level INF
+                                        _Write-StandardMessage -Message ("[STATUS] Another process is downloading '{0}'. Waiting for lock '{1}' to clear." -f $uriDisplay, $downloadLockPath) -Level INF
 
                                         $sleepForLockMs = $RetryDelayMilliseconds
                                         if ($TotalTimeoutSec -gt 0 -and $sleepForLockMs -gt $remainingMillisecondsForLock) {
@@ -4620,7 +4731,7 @@ public static class CertificateValidationHelper
                                     $downloadState.StartingOffset = $downloadState.ExistingFileLength
                                     $downloadState.TotalBytesOnDisk = $downloadState.StartingOffset
 
-                                    Write-StandardMessage -Message ("[STATUS] Attempting resume for '{0}' from byte {1}." -f $uriDisplay, $downloadState.StartingOffset) -Level INF
+                                    _Write-StandardMessage -Message ("[STATUS] Attempting resume for '{0}' from byte {1}." -f $uriDisplay, $downloadState.StartingOffset) -Level INF
                                 }
                                 else {
                                     $downloadState.StartingOffset = 0L
@@ -4689,6 +4800,9 @@ public static class CertificateValidationHelper
 
                                     $request.Proxy = $webProxy
                                 }
+                                elseif ($resolvedProfileForcesNoProxy) {
+                                    $request.Proxy = [System.Net.GlobalProxySelection]::GetEmptyWebProxy()
+                                }
 
                                 if ($PSBoundParameters.ContainsKey('UserAgent') -and -not [string]::IsNullOrWhiteSpace($UserAgent)) {
                                     $request.UserAgent = $UserAgent
@@ -4756,7 +4870,7 @@ public static class CertificateValidationHelper
                                     $request.AddRange([long]$downloadState.StartingOffset)
                                 }
 
-                                Write-StandardMessage -Message ("[STATUS] Sending streaming GET request to '{0}'." -f $uriDisplay) -Level INF
+                                _Write-StandardMessage -Message ("[STATUS] Sending streaming GET request to '{0}'." -f $uriDisplay) -Level INF
 
                                 $response = [System.Net.HttpWebResponse]$request.GetResponse()
                                 $responseStream = $response.GetResponseStream()
@@ -4812,7 +4926,7 @@ public static class CertificateValidationHelper
                                         }
 
                                         if (-not $resumeIdentityMatches) {
-                                            Write-StandardMessage -Message ("[WRN] Resume metadata for '{0}' is missing or does not match the current remote object. Restarting from byte 0." -f $uriDisplay) -Level WRN
+                                            _Write-StandardMessage -Message ("[WRN] Resume metadata for '{0}' is missing or does not match the current remote object. Restarting from byte 0." -f $uriDisplay) -Level WRN
 
                                             if ($null -ne $responseStream) { $responseStream.Dispose(); $responseStream = $null }
                                             if ($null -ne $response) { $response.Close(); $response = $null }
@@ -4822,10 +4936,10 @@ public static class CertificateValidationHelper
                                         }
 
                                         $downloadState.ResumeApplied = $true
-                                        Write-StandardMessage -Message ("[STATUS] Resume accepted by the server for '{0}' at byte {1}." -f $uriDisplay, $downloadState.StartingOffset) -Level INF
+                                        _Write-StandardMessage -Message ("[STATUS] Resume accepted by the server for '{0}' at byte {1}." -f $uriDisplay, $downloadState.StartingOffset) -Level INF
                                     }
                                     elseif ($downloadState.ResponseStatusCode -eq 200) {
-                                        Write-StandardMessage -Message ("[WRN] The server ignored the resume range for '{0}'. Restarting the download from byte 0." -f $uriDisplay) -Level WRN
+                                        _Write-StandardMessage -Message ("[WRN] The server ignored the resume range for '{0}'. Restarting the download from byte 0." -f $uriDisplay) -Level WRN
 
                                         if ($null -ne $responseStream) { $responseStream.Dispose(); $responseStream = $null }
                                         if ($null -ne $response) { $response.Close(); $response = $null }
@@ -4923,16 +5037,16 @@ public static class CertificateValidationHelper
                                                 $percentText = $percent.ToString().PadLeft(3)
                                                 $downloadedMbText = $downloadedMbText.PadLeft($contentLengthMbText.Length)
 
-                                                Write-StandardMessage -Message ("[DL] {0} MB of {1} MB ({2} %) for '{3}'." -f $downloadedMbText, $contentLengthMbText, $percentText, $uriDisplay) -Level INF
+                                                _Write-StandardMessage -Message ("[DL] {0} MB of {1} MB ({2} %) for '{3}'." -f $downloadedMbText, $contentLengthMbText, $percentText, $uriDisplay) -Level INF
                                             }
                                             else {
                                                 $percentText = $percent.ToString().PadLeft(3)
-                                                Write-StandardMessage -Message ("[DL] {0} of {1} bytes ({2} %) for '{3}'." -f $downloadState.TotalBytesOnDisk, $contentLength, $percentText, $uriDisplay) -Level INF
+                                                _Write-StandardMessage -Message ("[DL] {0} of {1} bytes ({2} %) for '{3}'." -f $downloadState.TotalBytesOnDisk, $contentLength, $percentText, $uriDisplay) -Level INF
                                             }
                                         }
                                         else {
                                             $megaBytesText = ([int64][Math]::Round($downloadState.TotalBytesOnDisk / 1048576.0, 0)).ToString()
-                                            Write-StandardMessage -Message ("[DL] ~{0} MB from '{1}'." -f $megaBytesText, $uriDisplay) -Level INF
+                                            _Write-StandardMessage -Message ("[DL] ~{0} MB from '{1}'." -f $megaBytesText, $uriDisplay) -Level INF
                                         }
 
                                         $nextProgressBytes += $progressThresholdBytes
@@ -4946,20 +5060,20 @@ public static class CertificateValidationHelper
                                             $contentLengthMbText = ([int64][Math]::Round($contentLength / 1048576.0, 0)).ToString()
                                             $totalMbText = $totalMbText.PadLeft($contentLengthMbText.Length)
 
-                                            Write-StandardMessage -Message ("[DL] {0} MB of {1} MB (100 %) for '{2}'." -f $totalMbText, $contentLengthMbText, $uriDisplay) -Level INF
+                                            _Write-StandardMessage -Message ("[DL] {0} MB of {1} MB (100 %) for '{2}'." -f $totalMbText, $contentLengthMbText, $uriDisplay) -Level INF
                                         }
                                         else {
-                                            Write-StandardMessage -Message ("[DL] {0} of {1} bytes (100 %) for '{2}'." -f $downloadState.TotalBytesOnDisk, $contentLength, $uriDisplay) -Level INF
+                                            _Write-StandardMessage -Message ("[DL] {0} of {1} bytes (100 %) for '{2}'." -f $downloadState.TotalBytesOnDisk, $contentLength, $uriDisplay) -Level INF
                                         }
                                     }
                                 }
                                 else {
                                     $finalMbText = ([int64][Math]::Round($downloadState.TotalBytesOnDisk / 1048576.0, 0)).ToString()
-                                    Write-StandardMessage -Message ("[DL] Complete, total {0} MB from '{1}'." -f $finalMbText, $uriDisplay) -Level INF
+                                    _Write-StandardMessage -Message ("[DL] Complete, total {0} MB from '{1}'." -f $finalMbText, $uriDisplay) -Level INF
                                 }
 
                                 if ($streamingHashValidationRequested) {
-                                    Write-StandardMessage -Message ("[STATUS] Verifying {0} for '{1}'." -f $RequiredStreamingHashType, $OutFile) -Level INF
+                                    _Write-StandardMessage -Message ("[STATUS] Verifying {0} for '{1}'." -f $RequiredStreamingHashType, $OutFile) -Level INF
                                     $actualStreamingHash = _GetFileHashHex -Path $OutFile -Algorithm $RequiredStreamingHashType
 
                                     if ($actualStreamingHash -ne $RequiredStreamingHash) {
@@ -4976,14 +5090,14 @@ public static class CertificateValidationHelper
                                         throw $hashMismatchMessage
                                     }
 
-                                    Write-StandardMessage -Message ("[OK] Required {0} matched for '{1}'." -f $RequiredStreamingHashType, $OutFile) -Level INF
+                                    _Write-StandardMessage -Message ("[OK] Required {0} matched for '{1}'." -f $RequiredStreamingHashType, $OutFile) -Level INF
                                 }
 
                                 if (-not [string]::IsNullOrWhiteSpace($resumeMetadataPath)) {
                                     _RemoveFileIfExists -Path $resumeMetadataPath
                                 }
 
-                                Write-StandardMessage -Message ("[OK] Wrote {0} bytes from '{1}' to '{2}' on attempt {3} of {4}. File size is now {5} bytes." -f $downloadState.BytesDownloadedThisAttempt, $uriDisplay, $OutFile, $attemptIndex, $RetryCount, $downloadState.TotalBytesOnDisk) -Level INF
+                                _Write-StandardMessage -Message ("[OK] Wrote {0} bytes from '{1}' to '{2}' on attempt {3} of {4}. File size is now {5} bytes." -f $downloadState.BytesDownloadedThisAttempt, $uriDisplay, $OutFile, $attemptIndex, $RetryCount, $downloadState.TotalBytesOnDisk) -Level INF
                                 return
                             }
                             finally {
@@ -4994,9 +5108,25 @@ public static class CertificateValidationHelper
                         }
                     }
                     else {
-                        $result = Invoke-WebRequest @callParams
+                        $previousDefaultWebProxy = $null
+                        $defaultWebProxyOverridden = $false
 
-                        Write-StandardMessage -Message (
+                        try {
+                            if ($resolvedProfileForcesNoProxy -and -not $nativeSupportsNoProxy) {
+                                $previousDefaultWebProxy = [System.Net.WebRequest]::DefaultWebProxy
+                                [System.Net.WebRequest]::DefaultWebProxy = [System.Net.GlobalProxySelection]::GetEmptyWebProxy()
+                                $defaultWebProxyOverridden = $true
+                            }
+
+                            $result = Invoke-WebRequest @callParams
+                        }
+                        finally {
+                            if ($defaultWebProxyOverridden) {
+                                [System.Net.WebRequest]::DefaultWebProxy = $previousDefaultWebProxy
+                            }
+                        }
+
+                        _Write-StandardMessage -Message (
                             "[OK] Request completed successfully on attempt {0} of {1} for {2} {3}." -f
                             $attemptIndex, $RetryCount, $effectiveMethod, $uriDisplay
                         ) -Level INF
@@ -5024,17 +5154,17 @@ public static class CertificateValidationHelper
                                         }
 
                                         if ($streamingHashValidationRequested) {
-                                            Write-StandardMessage -Message ("[STATUS] Verifying {0} for '{1}'." -f $RequiredStreamingHashType, $OutFile) -Level INF
+                                            _Write-StandardMessage -Message ("[STATUS] Verifying {0} for '{1}'." -f $RequiredStreamingHashType, $OutFile) -Level INF
                                             $actualStreamingHashOn416 = _GetFileHashHex -Path $OutFile -Algorithm $RequiredStreamingHashType
                                             if ($actualStreamingHashOn416 -ne $RequiredStreamingHash) {
                                                 try { [System.IO.File]::Delete($OutFile) } catch {}
                                                 throw ("Required {0} mismatch for '{1}'. Expected '{2}', actual '{3}'." -f $RequiredStreamingHashType, $OutFile, $RequiredStreamingHash, $actualStreamingHashOn416)
                                             }
 
-                                            Write-StandardMessage -Message ("[OK] Required {0} matched for '{1}'." -f $RequiredStreamingHashType, $OutFile) -Level INF
+                                            _Write-StandardMessage -Message ("[OK] Required {0} matched for '{1}'." -f $RequiredStreamingHashType, $OutFile) -Level INF
                                         }
 
-                                        Write-StandardMessage -Message ("[OK] The existing file '{0}' already matches the remote content length ({1} bytes). No download was necessary." -f $OutFile, $localStateOn416.Length) -Level INF
+                                        _Write-StandardMessage -Message ("[OK] The existing file '{0}' already matches the remote content length ({1} bytes). No download was necessary." -f $OutFile, $localStateOn416.Length) -Level INF
                                         return
                                     }
                                 }
@@ -5057,7 +5187,7 @@ public static class CertificateValidationHelper
                         $isLikelyProxyAuthenticationFailure
 
                     if ($shouldInvalidateManualProxyProfile) {
-                        Write-StandardMessage -Message (
+                        _Write-StandardMessage -Message (
                             "[WRN] Stored manual proxy profile for '{0}' appears invalid or expired. Clearing stored proxy data and re-resolving proxy access." -f
                             $uriDisplay
                         ) -Level WRN
@@ -5077,12 +5207,12 @@ public static class CertificateValidationHelper
                                 -ForceRefresh `
                                 -ClearProfile
 
-                            Write-StandardMessage -Message (
+                            _Write-StandardMessage -Message (
                                 "[STATUS] Proxy profile re-resolved mode '{0}' from '{1}' for '{2}' after manual proxy invalidation." -f
                                 $proxyProfile.Mode, $proxyProfile.ProfileSource, $uriDisplay
                             ) -Level INF
 
-                            if ($proxyProfile.Mode -eq 'Unavailable') {
+                            if ($proxyProfile.Mode -eq 'NoResolvedProxyProfile') {
                                 throw "Stored manual proxy profile was cleared after proxy authentication failure, but no replacement proxy profile could be resolved."
                             }
 
@@ -5090,7 +5220,7 @@ public static class CertificateValidationHelper
                             continue
                         }
                         catch {
-                            Write-StandardMessage -Message (
+                            _Write-StandardMessage -Message (
                                 "[WRN] Failed to re-resolve proxy profile after manual proxy invalidation for '{0}': {1}" -f
                                 $uriDisplay, $_.Exception.Message
                             ) -Level WRN
@@ -5109,7 +5239,7 @@ public static class CertificateValidationHelper
                         $autoUseDefaultCredentialsGuardInfoResolved = $true
 
                         if ($autoUseDefaultCredentialsGuardInfo.IsIntranetLike) {
-                            Write-StandardMessage -Message (
+                            _Write-StandardMessage -Message (
                                 "[STATUS] Automatic default-credentials guard passed for '{0}'. Signal(s): {1}" -f
                                 $uriDisplay, ($autoUseDefaultCredentialsGuardInfo.Signals -join '; ')
                             ) -Level INF
@@ -5122,7 +5252,7 @@ public static class CertificateValidationHelper
                                 'none'
                             }
 
-                            Write-StandardMessage -Message (
+                            _Write-StandardMessage -Message (
                                 "[STATUS] Automatic default-credentials guard blocked upgrade for '{0}'. No intranet-like signals were found. Resolved address(es): {1}" -f
                                 $uriDisplay, $resolvedAddressText
                             ) -Level INF
@@ -5142,7 +5272,7 @@ public static class CertificateValidationHelper
                             $callParams['UseDefaultCredentials'] = $true
                         }
 
-                        Write-StandardMessage -Message (
+                        _Write-StandardMessage -Message (
                             "[STATUS] Received 401 with WWW-Authenticate challenge for '{0}'. Retrying the current attempt with default credentials. Challenge(s): {1}" -f
                             $uriDisplay, ($wwwAuthenticateValues -join ', ')
                         ) -Level WRN
@@ -5169,23 +5299,23 @@ public static class CertificateValidationHelper
                                         }
                                     }
                                     else {
-                                        Write-StandardMessage -Message ("[STATUS] Streaming download failed, but '{0}' existed before this invocation and will be left in place." -f $OutFile) -Level INF
+                                        _Write-StandardMessage -Message ("[STATUS] Streaming download failed, but '{0}' existed before this invocation and will be left in place." -f $OutFile) -Level INF
                                     }
                                 }
                             }
                             catch {
-                                Write-StandardMessage -Message ("[WRN] Failed to delete the partial streaming download '{0}': {1}" -f $OutFile, $_.Exception.Message) -Level WRN
+                                _Write-StandardMessage -Message ("[WRN] Failed to delete the partial streaming download '{0}': {1}" -f $OutFile, $_.Exception.Message) -Level WRN
                             }
                         }
 
                         if ($retryBudgetExpired) {
-                            Write-StandardMessage -Message (
+                            _Write-StandardMessage -Message (
                                 "[ERR] Retry budget expired after {0} ms while processing {1} {2}: {3}" -f
                                 $retryStopwatch.ElapsedMilliseconds, $effectiveMethod, $uriDisplay, $caughtError.Exception.Message
                             ) -Level ERR
                         }
                         else {
-                            Write-StandardMessage -Message (
+                            _Write-StandardMessage -Message (
                                 "[ERR] Attempt {0} of {1} failed and no retries remain for {2} {3}: {4}" -f
                                 $attemptIndex, $RetryCount, $effectiveMethod, $uriDisplay, $caughtError.Exception.Message
                             ) -Level ERR
@@ -5203,7 +5333,7 @@ public static class CertificateValidationHelper
                         $sleepMilliseconds = 0
                     }
 
-                    Write-StandardMessage -Message (
+                    _Write-StandardMessage -Message (
                         "[RETRY] Attempt {0} of {1} failed for {2} {3}: {4}. Retrying in {5} ms." -f
                         $attemptIndex, $RetryCount, $effectiveMethod, $uriDisplay, $caughtError.Exception.Message, $sleepMilliseconds
                     ) -Level WRN
@@ -5259,3 +5389,10 @@ public static class CertificateValidationHelper
     }
 }
 
+<#
+Set-Alias -Name 'Invoke-WebRequest-IStoppedAskingWhy'       -Value 'Invoke-WebRequestEx10'
+Set-Alias -Name 'Invoke-WebRequest-IJustNeedTheFile'        -Value 'Invoke-WebRequestEx10'
+Set-Alias -Name 'Invoke-WebRequest-TemporaryBecamePermanent' -Value 'Invoke-WebRequestEx10'
+Set-Alias -Name 'Invoke-WebRequest-LetsNeverSpeakOfThisAgain' -Value 'Invoke-WebRequestEx10'
+Set-Alias -Name 'Invoke-WebRequest-GetItDoneAnyway'         -Value 'Invoke-WebRequestEx10'
+#>

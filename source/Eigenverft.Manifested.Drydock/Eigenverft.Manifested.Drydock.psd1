@@ -174,7 +174,6 @@ FunctionsToExport = @(
     
     # ...ScheduledTask.ps1
     'New-CompatScheduledTask',
-    'New-CompatScheduledTask2',
 
     # ...String.ps1
     'Join-Text',

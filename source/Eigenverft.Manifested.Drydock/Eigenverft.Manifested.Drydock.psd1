@@ -192,8 +192,9 @@ FunctionsToExport = @(
 
     # ...ProxyAware.ps1
     'Initialize-ProxyAccessProfile',
+    'Initialize-ProxyCompact',
     'Invoke-WebRequestExP',
-    'Initialize-Compact',
+    'Initialize-Bootstrap',
 
     # ...WebRequest.ps1
     'Invoke-WebRequestEx'

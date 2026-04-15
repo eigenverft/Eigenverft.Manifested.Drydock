@@ -2276,7 +2276,7 @@ public static class CertificateValidationHelper
         $form.MaximizeBox = $false
         $form.MinimizeBox = $false
         $form.ClientSize = New-Object System.Drawing.Size(400,170)
-        $form.Font = New-Object System.Drawing.Font('Segoe UI',9)
+        $form.Font = New-Object System.Drawing.Font('Segoe UI',10)
 
         $lbl1 = New-Object System.Windows.Forms.Label
         $lbl1.Text = 'Proxy address'

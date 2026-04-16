@@ -124,7 +124,7 @@ function Invoke-WebRequestEx {
 
     1. Direct access
     2. Environment proxy from process environment variables
-    3. Local relay proxy on loopback
+    3. Local relay proxy on loopback or the current default gateway
     4. System proxy with default credentials
     5. Manual proxy
 
@@ -1894,13 +1894,27 @@ public static class CertificateValidationHelper
     }
 
     function local:_GetLocalRelayProxyCandidates {
+        $candidateUris = @(
+            'http://localhost:3128'
+            'http://127.0.0.1:3128'
+        )
+
+        try {
+            $candidateUris += Get-NetIPConfiguration |
+                Where-Object { $_.IPv4DefaultGateway -and $_.IPv4DefaultGateway.NextHop } |
+                ForEach-Object { "http://{0}:3128" -f $_.IPv4DefaultGateway.NextHop }
+        }
+        catch {
+        }
+
         return @(
-            [uri]'http://localhost:3128',
-            [uri]'http://127.0.0.1:3128'
+            $candidateUris |
+                Select-Object -Unique |
+                ForEach-Object { [uri]$_ }
         )
     }
 
-    function local:_TestLoopbackPortOpen {
+    function local:_TestRelayCandidatePortOpen {
         param(
             [Parameter(Mandatory = $true)]
             [uri]$ProxyUri,
@@ -1910,15 +1924,10 @@ public static class CertificateValidationHelper
             [int]$ConnectTimeoutMilliseconds = 400
         )
 
-        $hostName = $ProxyUri.Host
-        if (@('127.0.0.1', 'localhost', '::1') -notcontains $hostName) {
-            return $false
-        }
-
         $client = $null
         try {
             $client = New-Object System.Net.Sockets.TcpClient
-            $asyncResult = $client.BeginConnect($hostName, $ProxyUri.Port, $null, $null)
+            $asyncResult = $client.BeginConnect($ProxyUri.Host, $ProxyUri.Port, $null, $null)
 
             if (-not $asyncResult.AsyncWaitHandle.WaitOne($ConnectTimeoutMilliseconds, $false)) {
                 return $false
@@ -1949,8 +1958,8 @@ public static class CertificateValidationHelper
         $diagnostics = New-Object System.Collections.Generic.List[string]
 
         foreach ($candidate in (_GetLocalRelayProxyCandidates)) {
-            if (-not (_TestLoopbackPortOpen -ProxyUri $candidate)) {
-                [void]$diagnostics.Add("Local relay proxy candidate '$($candidate.AbsoluteUri)' is not listening on loopback.")
+            if (-not (_TestRelayCandidatePortOpen -ProxyUri $candidate)) {
+                [void]$diagnostics.Add("Local relay proxy candidate '$($candidate.AbsoluteUri)' is not listening on the candidate host and port.")
                 continue
             }
 
@@ -2103,8 +2112,8 @@ public static class CertificateValidationHelper
                     }
                 }
 
-                if (-not (_TestLoopbackPortOpen -ProxyUri $proxyUri)) {
-                    [void]$diagnostics.Add("Persisted local relay proxy '$($proxyUri.AbsoluteUri)' is not listening on loopback.")
+                if (-not (_TestRelayCandidatePortOpen -ProxyUri $proxyUri)) {
+                    [void]$diagnostics.Add("Persisted local relay proxy '$($proxyUri.AbsoluteUri)' is not listening on the candidate host and port.")
                     return [pscustomobject]@{
                         Success = $false
                         Diagnostics = @($diagnostics.ToArray())
@@ -2775,7 +2784,7 @@ public static class CertificateValidationHelper
                 return $runtimeState
             }
 
-            # 3) Local relay proxy on loopback.
+            # 3) Local relay proxy on loopback or the current default gateway.
             $localRelayResult = _TryResolveLocalRelayProxy -TargetUri $TargetUri -ProbeTimeoutSec $ProbeTimeoutSec
 
             foreach ($message in $localRelayResult.Diagnostics) {

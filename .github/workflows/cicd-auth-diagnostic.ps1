@@ -31,7 +31,7 @@ function Get-SafeErrorDetails {
         [System.Management.Automation.ErrorRecord]$ErrorRecord
     )
 
-    [ordered]@{
+    [pscustomobject][ordered]@{
         ExceptionType       = $ErrorRecord.Exception.GetType().FullName
         Message             = $ErrorRecord.Exception.Message
         FullyQualifiedError = $ErrorRecord.FullyQualifiedErrorId
@@ -70,7 +70,7 @@ function Invoke-HttpProbe {
                 $null
             }
 
-            return [ordered]@{
+            return [pscustomobject][ordered]@{
                 Success         = $response.IsSuccessStatusCode
                 StatusCode      = [int]$response.StatusCode
                 ReasonPhrase    = $response.ReasonPhrase
@@ -85,7 +85,7 @@ function Invoke-HttpProbe {
         }
     }
     catch {
-        return [ordered]@{
+        return [pscustomobject][ordered]@{
             Success         = $false
             StatusCode      = $null
             ReasonPhrase    = $null
@@ -104,11 +104,11 @@ function Invoke-HttpProbe {
 function Remove-DiagnosticSources {
     $existingRepository = Get-PSRepository -Name $sourceName -ErrorAction SilentlyContinue
     if ($null -ne $existingRepository) {
-        Unregister-PSRepository -Name $sourceName -ErrorAction Stop
+        $null = Unregister-PSRepository -Name $sourceName -ErrorAction Stop
     }
 
     & dotnet nuget remove source $sourceName 2>&1 | Out-Null
-    $global:LASTEXITCODE = 0
+    $null = ($global:LASTEXITCODE = 0)
 }
 
 function Invoke-RepositoryRegistrationProbe {
@@ -131,10 +131,10 @@ function Invoke-RepositoryRegistrationProbe {
     }
 
     try {
-        Register-PSRepository @registration -ErrorAction Stop
+        $null = Register-PSRepository @registration -ErrorAction Stop
         $registered = Get-PSRepository -Name $sourceName -ErrorAction Stop
 
-        return [ordered]@{
+        return [pscustomobject][ordered]@{
             Success                   = $true
             UsedExplicitCredential    = $UseCredential
             Name                      = $registered.Name
@@ -145,7 +145,7 @@ function Invoke-RepositoryRegistrationProbe {
         }
     }
     catch {
-        return [ordered]@{
+        return [pscustomobject][ordered]@{
             Success                   = $false
             UsedExplicitCredential    = $UseCredential
             Name                      = $sourceName
@@ -158,9 +158,33 @@ function Invoke-RepositoryRegistrationProbe {
     finally {
         $existingRepository = Get-PSRepository -Name $sourceName -ErrorAction SilentlyContinue
         if ($null -ne $existingRepository) {
-            Unregister-PSRepository -Name $sourceName -ErrorAction Stop
+            $null = Unregister-PSRepository -Name $sourceName -ErrorAction Stop
         }
     }
+}
+
+function Get-SingleProbeResult {
+    param (
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$InputObject,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ProbeName
+    )
+
+    $candidates = @($InputObject | Where-Object {
+        $null -ne $_ -and $null -ne $_.PSObject.Properties['Success']
+    })
+
+    if ($candidates.Count -ne 1) {
+        $observedTypes = @($InputObject | ForEach-Object {
+            if ($null -eq $_) { '<null>' } else { $_.GetType().FullName }
+        }) -join ', '
+        throw "Probe '$ProbeName' returned $($candidates.Count) result objects with a Success property. Observed pipeline types: $observedTypes"
+    }
+
+    return $candidates[0]
 }
 
 $registerCommand = Get-Command Register-PSRepository -ErrorAction Stop
@@ -205,20 +229,20 @@ Write-Output "PowerShell: $($runtime.PowerShellVersion) ($($runtime.PowerShellEd
 Write-Output "PowerShellGet command: $($runtime.RegisterCommandSource) $($runtime.RegisterCommandVersion)"
 Write-Output "dotnet: $($runtime.DotNetVersion)"
 
-$anonymousHttp = Invoke-HttpProbe -Uri $GitHubSourceUri
-$authenticatedHttp = Invoke-HttpProbe -Uri $GitHubSourceUri -Credential $credential
+$anonymousHttp = Get-SingleProbeResult -ProbeName 'AnonymousHttp' -InputObject @(Invoke-HttpProbe -Uri $GitHubSourceUri)
+$authenticatedHttp = Get-SingleProbeResult -ProbeName 'AuthenticatedHttp' -InputObject @(Invoke-HttpProbe -Uri $GitHubSourceUri -Credential $credential)
 
 Remove-DiagnosticSources
 $dotnetAddOutput = & dotnet nuget add source $GitHubSourceUri --username $GitHubPackagesUser --password $NuGetGitHubPush --store-password-in-clear-text --name $sourceName 2>&1
 $dotnetAddExitCode = $LASTEXITCODE
-$dotnetAdd = [ordered]@{
+$dotnetAdd = [pscustomobject][ordered]@{
     Success  = ($dotnetAddExitCode -eq 0)
     ExitCode = $dotnetAddExitCode
     Output   = (@($dotnetAddOutput | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine)
 }
 
-$registerWithoutCredential = Invoke-RepositoryRegistrationProbe -UseCredential $false
-$registerWithCredential = Invoke-RepositoryRegistrationProbe -UseCredential $true
+$registerWithoutCredential = Get-SingleProbeResult -ProbeName 'RegisterWithoutCredential' -InputObject @(Invoke-RepositoryRegistrationProbe -UseCredential $false)
+$registerWithCredential = Get-SingleProbeResult -ProbeName 'RegisterWithCredential' -InputObject @(Invoke-RepositoryRegistrationProbe -UseCredential $true)
 
 Remove-DiagnosticSources
 

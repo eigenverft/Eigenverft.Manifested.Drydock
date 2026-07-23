@@ -236,3 +236,16 @@ Ein vollständiger Proof liegt vor, wenn gleichzeitig gilt:
 Jeder Matrix-Job schreibt zusätzlich ein bereinigtes JSON-Artefakt mit Runner-, PowerShell-, PowerShellGet-, PackageManagement-, NuGet-Provider- und Ergebnisdaten. Token oder Credential-Inhalte werden nicht ausgegeben.
 
 Status: **Testimplementierung erstellt; tatsächliche GitHub-Actions-Ergebnisse folgen nach Ausführung.**
+
+
+### Erster Testlauf: Harness-Fehler, noch kein Authentifizierungsbefund
+
+Der erste Matrix-Lauf wurde am 2026-07-23 ausgeführt:
+
+- Run: https://github.com/eigenverft/Eigenverft.Manifested.Drydock/actions/runs/29987312874
+- Commit: `f967934`
+- Runner: `windows-2022`, `windows-2025`, `windows-latest`
+
+Alle drei Jobs erreichten die Laufzeitdiagnose und bestätigten PowerShell `7.6.3` sowie PowerShellGet `2.2.5`. Anschließend brach jedoch das Diagnoseskript selbst mit `The property 'Success' cannot be found on this object` ab. Deshalb ist dieser Lauf **kein Beleg für oder gegen die Auth-Hypothese**.
+
+Ursache ist ein Fehler im Test-Harness: Mindestens eine Hilfsfunktion liefert neben dem strukturierten Ergebnis zusätzliche PowerShell-Pipeline-Ausgabe, sodass der Aufrufer statt genau eines Ergebnisobjekts ein Array erhält. Der Test wird so korrigiert, dass jede Probe genau ein explizites `PSCustomObject` zurückgibt und alle Neben-Ausgaben unterdrückt werden.

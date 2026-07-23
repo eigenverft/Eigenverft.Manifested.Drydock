@@ -138,6 +138,9 @@ FunctionsToExport = @(
     'Join-FileText',
     'Sync-DirectoryTreeLockSafe',
 
+    # ...PathLimits.ps1
+    'Test-WindowsPathLimits',
+
     # ...Logging.ps1
     'Write-ConsoleLog',
 

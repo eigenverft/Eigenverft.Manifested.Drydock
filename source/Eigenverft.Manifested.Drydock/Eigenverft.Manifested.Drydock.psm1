@@ -6,6 +6,7 @@
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Compression.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Convert.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.IO.ps1"
+. "$PSScriptRoot\Eigenverft.Manifested.Drydock.PathLimits.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Logging.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Tests.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Powershell.ps1"

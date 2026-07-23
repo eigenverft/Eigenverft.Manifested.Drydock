@@ -147,7 +147,6 @@ function Get-DrydockPublishReleaseSmokeValue {
     }
 
     Write-Output ("Missing-token validation rejected the call: {0}" -f $missingGitHubTokenError)
-    }
 
     Write-Output 'Publish-PowerShellModuleRelease smoke test completed successfully.'
 }

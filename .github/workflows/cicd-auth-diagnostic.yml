@@ -203,9 +203,9 @@ jobs:
           retention-days: 14
 
   publish-release-smoke:
-    name: Publish release smoke (${{ matrix.os }}, ${{ matrix.shell }})
+    name: Publish release smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     strategy:
       fail-fast: false
@@ -213,14 +213,15 @@ jobs:
         os:
           - windows-2022
           - windows-2025
-        shell:
-          - pwsh
-          - powershell
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run local publish abstraction smoke test
-        shell: ${{ matrix.shell }}
+      - name: Run local publish abstraction smoke test with PowerShell 7
+        shell: pwsh
+        run: .github/workflows/cicd-publish-release-smoke.ps1
+
+      - name: Run local publish abstraction smoke test with Windows PowerShell 5.1
+        shell: powershell
         run: .github/workflows/cicd-publish-release-smoke.ps1

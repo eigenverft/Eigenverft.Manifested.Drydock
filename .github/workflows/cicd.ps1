@@ -68,8 +68,6 @@ $gitCurrentBranch = Get-GitCurrentBranch
 $gitCurrentBranchRoot = Get-GitCurrentBranchRoot
 $gitRepositoryName = Get-GitRepositoryName
 $gitRemoteUrl = Get-GitRemoteUrl
-$GitHubPackagesUser = "eigenverft"
-$GitHubSourceName = "github"
 
 # Failfast / guard if any of the required preloaded environment information is not available
 Test-VariableValue -Variable { $runEnvironment } -ExitIfNullOrEmpty
@@ -89,9 +87,6 @@ $probeGeneratedVersion = Convert-64SecPowershellVersionToDateTime -VersionBuild 
 Test-VariableValue -Variable { $generatedVersion } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
 
-# Name of the temporary local PowerShell Gallery used for the publish validation target.
-$LocalPowershellGalleryName = "LocalPowershellGallery"
-
 ##############################################################################
 # Main CICD Logic
 
@@ -101,8 +96,6 @@ Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPre
 
 Write-Host "===> Testing module manifest at: $($manifestFile.FullName)" -ForegroundColor Cyan
 Test-ModuleManifest -Path $($manifestFile.FullName)
-
-
 
 $pushToLocalSource = $true
 $pushToGitHubSource = $false
@@ -122,43 +115,20 @@ if ($remoteResourcesOk)
 # Each target is intentionally published through a dedicated invocation.
 if ($pushToLocalSource -eq $true)
 {
-    $publishParametersTargetLocal = @{
-        Path           = $manifestFile.DirectoryName
-        Target         = 'Local'
-        RepositoryName = $LocalPowershellGalleryName
-        ErrorAction    = 'Stop'
-    }
-
-    Write-Host "===> Publishing module to local source '$LocalPowershellGalleryName'" -ForegroundColor Cyan
-    Publish-PowerShellModuleRelease @publishParametersTargetLocal
+    Write-Host "===> Publishing module to local source 'LocalPowershellGallery'" -ForegroundColor Cyan
+    Publish-PowerShellModuleRelease -Path $manifestFile.DirectoryName -Target 'Local' -RepositoryName 'LocalPowershellGallery' -ErrorAction Stop
 }
 
 if ($pushToGitHubSource -eq $true)
 {
-    $publishParametersTargetGitHub = @{
-        Path           = $manifestFile.DirectoryName
-        Target         = 'GitHubPackages'
-        RepositoryName = $GitHubSourceName
-        GitHubOwner    = $GitHubPackagesUser
-        GitHubToken    = $NuGetGitHubPush
-        ErrorAction    = 'Stop'
-    }
-
-    Write-Host "===> Publishing module to GitHub source '$GitHubSourceName'" -ForegroundColor Cyan
-    Publish-PowerShellModuleRelease @publishParametersTargetGitHub
+    Write-Host "===> Publishing module to GitHub source 'github'" -ForegroundColor Cyan
+    Publish-PowerShellModuleRelease -Path $manifestFile.DirectoryName -Target 'GitHubPackages' -RepositoryName 'github' -GitHubOwner 'eigenverft' -GitHubToken $NuGetGitHubPush -ErrorAction Stop
 }
 
 if ($pushToPsGallery -eq $true)
 {
-    $publishParametersTargetPsGallery = @{
-        Path        = $manifestFile.DirectoryName
-        Target      = 'PSGallery'
-        ApiKey      = $PsGalleryApiKey
-        ErrorAction = 'Stop'
-    }
-
     Write-Host "===> Publishing module to PSGallery" -ForegroundColor Cyan
-    Publish-PowerShellModuleRelease @publishParametersTargetPsGallery
+    Publish-PowerShellModuleRelease -Path $manifestFile.DirectoryName -Target 'PSGallery' -ApiKey $PsGalleryApiKey -ErrorAction Stop
 }
 
 $commitDatePrefix = Get-Date -Format 'yyyy-MM-dd'

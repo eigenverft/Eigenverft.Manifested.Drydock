@@ -167,6 +167,8 @@ FunctionsToExport = @(
     'Register-LocalNuGetPackageSource',
     'Unregister-LocalNuGetPackageSource',
     
+    # ...Publishing.ps1
+    'Publish-PowerShellModuleRelease',
     # ...Process.ps1
     'Open-UrlInBrowser',
 

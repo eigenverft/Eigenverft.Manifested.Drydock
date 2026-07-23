@@ -361,3 +361,21 @@ Damit sind unterschiedliche Modul-Builds ausgeschlossen. Bei identischen Feed-, 
 ## Endergebnis
 
 Der Fehler ist ein durch den PowerShell-7.6-Wechsel sichtbar gewordener Kompatibilitätsbruch in einem zuvor implizit funktionierenden Authentifizierungsweg. Der produktive Workflow muss das bereits vorhandene GitHub-Token ausdrücklich als `PSCredential` an `Register-PSRepository` übergeben. Dieser Fix ist durch echte GitHub-Actions-A/B-Läufe über mehrere Images, PowerShell-Versionen und byteidentische Modulkombinationen bestätigt.
+
+## Implementierung der dauerhaften Drydock-Abstraktion
+
+Der produktive Fix wird in zwei Stufen umgesetzt:
+
+1. `.github/workflows/cicd.ps1` enthält für das erste Release einmalig die explizite Erzeugung eines `PSCredential` und übergibt dieses über den Splat-Parameter `Credential` an `Register-PSRepository`. Dieser Bootstrap ist notwendig, weil die aktuell aus PSGallery geladene Drydock-Version die neue Abstraktion noch nicht enthalten kann.
+2. Drydock exportiert anschließend die neue Funktion `Publish-PowerShellModuleRelease`. Die Funktion verarbeitet absichtlich genau **ein Ziel pro Aufruf**; mehrere Ziele werden über mehrere dedizierte Parameter-Hashtables und Funktionsaufrufe veröffentlicht.
+
+Unterstützte Zieladapter der ersten Implementierung:
+
+- `Local`: lokale PowerShell-Test-Gallery mit Registrierung, Publish und Cleanup.
+- `PowerShellRepository`: frei konfigurierbare PowerShellGet-kompatible Test- oder Unternehmens-Gallery.
+- `GitHubPackages`: `dotnet nuget`-Quelle plus PowerShellGet-Repository, explizites Credential als Standard und vollständiges Cleanup.
+- `PSGallery`: direkter Publish mit API-Key.
+
+Der historische GitHub-Authentifizierungsweg bleibt ausschließlich über `-UseLegacyGitHubRegistration` erreichbar. Der Standard ist der durch die Diagnose bestätigte explizite Credential-Pfad.
+
+Status: **Implementiert; lokaler Publish-Roundtrip und PowerShell-5.1-/7-Smoke-Matrix stehen noch aus.**

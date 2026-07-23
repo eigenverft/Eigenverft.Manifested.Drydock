@@ -10,6 +10,7 @@
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Logging.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Tests.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Powershell.ps1"
+. "$PSScriptRoot\Eigenverft.Manifested.Drydock.Publishing.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Execution.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Framework.ps1"
 . "$PSScriptRoot\Eigenverft.Manifested.Drydock.Deployment.ps1"

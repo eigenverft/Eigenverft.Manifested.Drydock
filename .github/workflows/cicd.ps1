@@ -137,6 +137,14 @@ if ($pushToLocalSource -eq $true)
 
 if ($pushToGitHubSource -eq $true)
 {
+    # Bootstrap fix for the release that introduces Publish-PowerShellModuleRelease.
+    # The currently published Drydock version does not contain that abstraction yet,
+    # so this CI script must pass the GitHub token explicitly to PowerShellGet once.
+    $GitHubCredential = [System.Management.Automation.PSCredential]::new(
+        $GitHubPackagesUser,
+        (ConvertTo-SecureString $NuGetGitHubPush -AsPlainText -Force)
+    )
+
     $GitHubSourceRegistration = @{
         Name                 = "$GitHubSourceName"
         SourceLocation       = "$GitHubSourceUri"
@@ -144,6 +152,7 @@ if ($pushToGitHubSource -eq $true)
         ScriptSourceLocation = "$GitHubSourceUri"
         ScriptPublishLocation= "$GitHubSourceUri"
         InstallationPolicy   = 'Trusted'
+        Credential           = $GitHubCredential
     }
 
     try

@@ -8,6 +8,8 @@ on:
     paths:
       - '.github/workflows/cicd-auth-diagnostic.yml'
       - '.github/workflows/cicd-auth-diagnostic.ps1'
+      - '.github/workflows/cicd-publish-release-smoke.ps1'
+      - 'source/Eigenverft.Manifested.Drydock/**'
 
 permissions:
   contents: read
@@ -199,3 +201,26 @@ jobs:
           path: ${{ runner.temp }}/cicd-auth-diagnostic-${{ matrix.label }}.json
           if-no-files-found: warn
           retention-days: 14
+
+  publish-release-smoke:
+    name: Publish release smoke (${{ matrix.os }}, ${{ matrix.shell }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2022
+          - windows-2025
+        shell:
+          - pwsh
+          - powershell
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run local publish abstraction smoke test
+        shell: ${{ matrix.shell }}
+        run: .github/workflows/cicd-publish-release-smoke.ps1

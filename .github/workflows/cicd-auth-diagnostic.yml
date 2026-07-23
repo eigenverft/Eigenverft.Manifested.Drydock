@@ -1,0 +1,49 @@
+name: cicd-auth-diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'diagnostic/cicd-auth-proof'
+    paths:
+      - '.github/workflows/cicd-auth-diagnostic.yml'
+      - '.github/workflows/cicd-auth-diagnostic.ps1'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  authenticate:
+    name: Auth proof (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2022
+          - windows-2025
+          - windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run isolated authentication proof
+        shell: pwsh
+        run: >-
+          .github/workflows/cicd-auth-diagnostic.ps1
+          -NuGetGitHubPush "${{ github.token }}"
+          -GitHubPackagesUser "eigenverft"
+          -GitHubSourceUri "https://nuget.pkg.github.com/eigenverft/index.json"
+
+      - name: Upload diagnostic JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cicd-auth-diagnostic-${{ matrix.os }}
+          path: ${{ runner.temp }}/cicd-auth-diagnostic.json
+          if-no-files-found: warn
+          retention-days: 14

@@ -20,7 +20,7 @@ Stelle: `.github/workflows/cicd.ps1` (Aufruf `Register-PSRepository` für `https
 - `Test-VariableValue` für `NuGetGitHubPush` und `PsGalleryApiKey` → Werte vorhanden
 - PSGallery-Voraussetzungen → bestanden
 - lokales Publish → ok
-- `dotnet nuget add source` mit Token → wird vorher ausgeführt
+- `dotnet nuget add source` mit Token → schreibt die Quelle/Credentials erfolgreich in die NuGet-Konfiguration; dieser Befehl validiert das Token nicht gegen den Server
 
 Nicht erreicht wegen des Abbruchs:
 
@@ -39,6 +39,16 @@ Nicht erreicht wegen des Abbruchs:
 
 Zwischen letztem Grün und erstem Rot waren **`cicd.ps1` und `cicd.yml` unverändert**.
 
+## Verifikation des letzten grünen Laufs
+
+Der grüne Lauf vom 2026-04-16 hat den Remote-Publish-Pfad nicht nur übersprungen:
+
+- Workflow-Run `24489910401` meldet den Schritt `Workflow Build/Deploy` als erfolgreich.
+- Um `03:10:42Z` wurde anschließend der erwartete Commit `[2026-04-16] Auto ver bump from CICD to 1.20262.10856 [skip ci]` erzeugt.
+- Dieser Commit liegt im Skript **nach** dem Publish zu lokalem Feed, GitHub Packages und PSGallery.
+
+Damit ist belegt, dass der unveränderte Code im April einschließlich `Register-PSRepository` und der nachfolgenden Publish-Schritte erfolgreich durchlief. Der Unterschied zwischen April und Juli ist somit real und nicht lediglich ein wegen `remoteResourcesOk = $false` übersprungener Publish-Pfad.
+
 ## Was sich extern geändert hat
 
 GitHub hat `windows-latest` / `windows-2025` Mitte Juni 2026 auf das Image **Windows Server 2025 + Visual Studio 2026** umgestellt.
@@ -56,6 +66,99 @@ Im Fail-Log vom 22.07. steht u. a.:
 
 Der erste CI-Lauf nach der langen Pause trifft also das **neue** Runner-Image.
 
+Zusätzlich wurde PowerShell laut offizieller Runner-Ankündigung [`actions/runner-images#14150`](https://github.com/actions/runner-images/issues/14150) zwischen **2026-06-15 und 2026-06-22** auf sämtlichen Images von 7.4.x auf 7.6.x aktualisiert. Die Ankündigung nennt ausdrücklich, dass PowerShell 7.6 auf .NET 10 basiert, während 7.4 auf .NET 8 basierte, und dass Skripte mit Abhängigkeit von spezifischem .NET-Laufzeitverhalten betroffen sein können.
+
+## Zwischenstand: Analyse des PowerShellGet-Quellcodes
+
+Der betroffene Befehl stammt weiterhin aus **PowerShellGet 2.2.5**. Seine Signatur enthält den Parameter `-Credential`; diese Funktionalität ist also nicht mit PowerShell 7.6 neu hinzugekommen oder entfernt worden.
+
+Der offizielle Quellcode zeigt folgenden Ablauf:
+
+1. `Register-PSRepository` ruft `Resolve-Location` und anschließend `Ping-Endpoint` auf.
+2. Nur ein explizit an `Register-PSRepository -Credential` übergebenes `PSCredential` wird bei diesem HTTP-Test verwendet.
+3. Erhält der Test ohne Credential HTTP 401, versucht PowerShellGet einen eigenen Credential Provider.
+4. `Get-CredsFromCredentialProvider` unterstützt dabei ausdrücklich nur Azure-Artifacts-Adressen (`pkgs.dev.azure.com` / `pkgs.visualstudio.com`). Für `nuget.pkg.github.com` liefert die Funktion sofort `$null`.
+5. Bleibt der HTTP-Status 401, erzeugt PowerShellGet exakt die beobachtete Meldung `RepositoryCannotBeRegistered`.
+
+Wichtige Folgerung: Das vorherige
+
+```powershell
+dotnet nuget add source ... --username ... --password ...
+```
+
+beweist nur, dass der .NET-/NuGet-Client die Quelle und die übergebenen Credentials in die NuGet-Konfiguration schreiben konnte. Laut offizieller .NET-Dokumentation fügt der Befehl eine Paketquelle zu den NuGet-Konfigurationsdateien hinzu; eine erfolgreiche Server-Authentifizierung wird dabei nicht nachgewiesen. Der PowerShellGet-Quellcode liest diese gespeicherten `dotnet nuget`-Credentials bei der Registrierung zudem nicht als `PSCredential` ein. `dotnet nuget add source` und `Register-PSRepository` verwenden hier getrennte Authentifizierungswege.
+
+Damit ist die bisherige Annahme zu präzisieren:
+
+- **Bestätigt:** Der konkrete Fehler entsteht, weil `Register-PSRepository` den GitHub-Packages-Feed ohne explizites `-Credential` prüft und dabei HTTP 401 erhält.
+- **Noch nicht bestätigt:** Warum derselbe Ablauf im April 2026 erfolgreich war. Der Image-Wechsel bleibt ein plausibler Auslöser für die Verhaltensänderung, ist aber derzeit nur zeitlich korreliert.
+- **Versionsvergleich:** Im April-Image waren PowerShell `7.4.14` und PowerShellGet `2.2.5` enthalten; im Juli-Fail laufen PowerShell `7.6.3` und weiterhin PowerShellGet `2.2.5`. Damit hat sich nicht die PowerShellGet-Funktion selbst aktualisiert, wohl aber die PowerShell-/ .NET-Laufzeit, über deren `HttpClientHandler` der Feed-Test erfolgt.
+
+### Verifizierter Runner-Image-Vergleich
+
+Offizielle `actions/runner-images`-Manifeste nahe den beiden Läufen zeigen:
+
+| Komponente | letzter grüner Lauf / April-Image | Juli-Image nahe dem Fail |
+|---|---:|---:|
+| Image-Familie | Windows Server 2025 + Visual Studio 2022 | Windows Server 2025 + Visual Studio 2026 |
+| Image-Version | `20260413.84.1` | `20260628.158.1` (nahe dem im Log genannten `20260707.563`) |
+| PowerShell | `7.4.14` | `7.6.3` |
+| PowerShellGet | `1.0.0.1`, `2.2.5` | `1.0.0.1`, `2.2.5` |
+| NuGet CLI | `7.3.0.70` | `7.6.0.59` |
+| Visual Studio | 2022 | 2026 |
+
+Daraus folgt:
+
+- Eine Änderung der **PowerShellGet-Version** oder der sichtbaren `Register-PSRepository`-Parameter ist als direkte Ursache unwahrscheinlich.
+- Geändert haben sich jedoch PowerShell/.NET, NuGet und die gesamte Visual-Studio-/Credential-Provider-Umgebung.
+- Von diesen Änderungen ist für die konkrete Fehlermeldung primär die PowerShell/.NET-HTTP-Ausführung relevant, weil `Ping-Endpoint` einen `System.Net.Http.HttpClientHandler` erzeugt und den Feed selbst prüft.
+- Die NuGet-CLI-Version betrifft zwar den vorherigen `dotnet nuget add source`-Pfad, erklärt aber nicht unmittelbar den 401 aus dem separaten PowerShellGet-Ping.
+
+### Einordnung: latenter Fehler versus auslösende Änderung
+
+GitHub dokumentiert für die NuGet-Registry, dass für öffentliche wie private Pakete eine Authentifizierung erforderlich ist. Gleichzeitig unterstützt `Register-PSRepository` ausdrücklich `-Credential` und fordert diesen Parameter in der beobachteten Fehlermeldung an.
+
+Daher ist die robusteste Bewertung:
+
+- **Latenter Implementierungsfehler:** Das Skript konfiguriert Credentials für den `dotnet`-/NuGet-Client, übergibt sie aber nicht an den separaten PowerShellGet-Aufruf.
+- **Wahrscheinlicher Trigger:** Der Wechsel von PowerShell 7.4/.NET 8 auf 7.6/.NET 10 beziehungsweise das neue Runner-Image hat ein zuvor erfolgreiches, aber nicht vertraglich garantiertes Verhalten verändert oder offengelegt.
+- **Konsequenz:** Selbst wenn ein Rollback auf ein älteres Image den Build wieder grün macht, sollte die Credential-Übergabe korrigiert werden. Andernfalls bleibt der Workflow von einem zufälligen beziehungsweise extern veränderlichen Authentifizierungsverhalten abhängig.
+
+### Minimaler, noch zu verifizierender Fix
+
+Vor dem Aufbau von `$GitHubSourceRegistration` ein `PSCredential` aus Benutzername und Workflow-Token erzeugen und in den Splat-Hashtable aufnehmen:
+
+```powershell
+$GitHubCredential = New-Object System.Management.Automation.PSCredential (
+    $GitHubPackagesUser,
+    (ConvertTo-SecureString $NuGetGitHubPush -AsPlainText -Force)
+)
+
+$GitHubSourceRegistration = @{
+    Name                  = $GitHubSourceName
+    SourceLocation        = $GitHubSourceUri
+    PublishLocation       = $GitHubSourceUri
+    ScriptSourceLocation  = $GitHubSourceUri
+    ScriptPublishLocation = $GitHubSourceUri
+    InstallationPolicy    = 'Trusted'
+    Credential            = $GitHubCredential
+}
+```
+
+Dieser Fix ist aus dem PowerShellGet-Quellcode und der offiziellen GitHub-NuGet-Authentifizierungsdokumentation abgeleitet, wurde im Workflow aber noch nicht als A/B-Lauf bestätigt.
+
+Referenzen:
+
+- [GitHub Docs: Working with the NuGet registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-nuget-registry)
+- [Microsoft Learn: dotnet nuget add source](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-nuget-add-source)
+- [Runner Images: PowerShell 7.4 → 7.6 rollout](https://github.com/actions/runner-images/issues/14150)
+
+Quellcodebezug:
+
+- `PowerShell/PowerShellGetv2`, `Register-PSRepository.ps1`
+- `PowerShell/PowerShellGetv2`, `Ping-Endpoint.ps1`
+- `PowerShell/PowerShellGetv2`, `Get-CredsFromCredentialProvider.ps1`
+
 ## Was es nicht ist
 
 - kein kaputter Autoresolve / `Get-ConfigValue`
@@ -70,14 +173,66 @@ Der erste CI-Lauf nach der langen Pause trifft also das **neue** Runner-Image.
 
 Das erklärt die Fehlermeldung; es erklärt allein noch nicht zwingend, warum derselbe Code im April noch durchlief. Der zeitliche Bruch deckt sich aber mit dem Runner-Image-Wechsel und dem ersten CI danach.
 
-## Empfohlene Gegenprüfung (ohne Code-Umbau)
+## Empfohlene Gegenprüfungen
 
-1. Workflow einmal mit `runs-on: windows-2022` starten.
-2. Wenn das wieder grün wird → starke Bestätigung für Image-/Umgebungsregression.
-3. Wenn es auf `windows-2022` ebenfalls failt → eher GitHub-Packages-/Auth-Verhalten oder Org-/Package-Rechte prüfen.
+Die frühere Empfehlung, lediglich auf `windows-2022` zu wechseln, isoliert die wahrscheinlich relevante Änderung **nicht mehr vollständig**: Auch `windows-2022` wurde im Juni 2026 auf PowerShell 7.6 / .NET 10 aktualisiert.
 
+Empfohlene A/B-Tests in dieser Reihenfolge:
+
+1. **Explizites Credential an PowerShellGet übergeben**
+   Für `Register-PSRepository` aus Benutzername und `${{ github.token }}` ein `PSCredential` erzeugen und als `-Credential` mitsplatten. Wenn die Registrierung damit auf dem aktuellen Image gelingt, ist der unmittelbare Fehler behoben und der getrennte Auth-Pfad bestätigt.
+
+2. **PowerShell-Laufzeit isolieren**
+   Den Workflow testweise mit Windows PowerShell 5.1 (`shell: powershell`) ausführen, sofern der bestehende Kompatibilitätsanspruch des Skripts greift, oder PowerShell 7.4.14 explizit pinnen/installieren. Ein Erfolg unter 7.4/.NET 8 bei unverändertem Image wäre ein deutlich stärkerer Nachweis als nur `windows-2022`.
+
+3. **Image-Familie separat prüfen**
+   `windows-2022` kann weiterhin gegen die VS-2026-Image-Familie testen. Da dort jedoch ebenfalls PowerShell 7.6 läuft, trennt dieser Versuch nur Image-/VS-Komponenten, nicht die PowerShell-/.NET-Version.
+
+4. **Sichere Statusdiagnose ergänzen**
+   Vor der Registrierung den Feed einmal ohne und einmal mit einem aus dem Workflow-Token gebildeten Basic-/`PSCredential`-Kontext anfragen und ausschließlich HTTP-Status, PowerShell-Version, .NET-Version sowie geladene PowerShellGet-/PackageManagement-Versionen loggen. Keine Header, Tokens oder NuGet.Config-Inhalte ausgeben.
+
+### Aktuelle Ursachenbewertung
+
+- **Hohe Sicherheit – unmittelbare Fehlerursache:** `Register-PSRepository` führt einen eigenen unauthentifizierten HTTP-Test aus, erhält 401 und kann für GitHub Packages keinen unterstützten Credential Provider ermitteln.
+- **Mittlere Sicherheit – Auslöser der Regression:** Wechsel von PowerShell 7.4/.NET 8 auf PowerShell 7.6/.NET 10 und gleichzeitig auf die VS-2026-Image-Familie. Der zeitliche Zusammenhang ist exakt durch die offiziellen Rollout-Daten belegt.
+- **Noch offen:** Ob die Regression konkret durch .NET-HTTP-Verhalten, eine Änderung am GitHub-Packages-Service-Index oder eine andere Image-Komponente ausgelöst wurde. In den veröffentlichten .NET-10-Breaking-Changes wurde keine passende Änderung an `HttpClientHandler.UseDefaultCredentials` oder Basic-Authentifizierung gefunden.
+- **Geringere Wahrscheinlichkeit:** Tokenformat oder Tokenberechtigungen als Ursache genau dieser Registrierungsmeldung, weil das Token dem fehlschlagenden `Register-PSRepository` derzeit gar nicht als Credential übergeben wird.
 ## Relevante Runs
 
 - Fail 2026-07-23: https://github.com/eigenverft/Eigenverft.Manifested.Drydock/actions/runs/29983748111
 - Fail 2026-07-22: https://github.com/eigenverft/Eigenverft.Manifested.Drydock/actions/runs/29915211735
 - Letzter Erfolg 2026-04-16: https://github.com/eigenverft/Eigenverft.Manifested.Drydock/actions/runs/24489910401
+
+
+## Reproduzierbarer Authentifizierungs-Proof
+
+Zur belastbaren Verifikation wurden auf dem isolierten Branch `diagnostic/cicd-auth-proof` zwei Diagnosedateien ergänzt:
+
+- `.github/workflows/cicd-auth-diagnostic.yml`
+- `.github/workflows/cicd-auth-diagnostic.ps1`
+
+Der Workflow ist manuell startbar und wird beim Push der beiden Diagnosedateien auf den Diagnose-Branch ausgeführt. Er testet als Matrix:
+
+- `windows-2022`
+- `windows-2025`
+- `windows-latest`
+
+Der Test baut oder veröffentlicht kein Paket und erstellt weder Commit, Tag noch Release. Seine Berechtigungen entsprechen für GitHub Packages dem Originalworkflow (`contents: read`, `packages: write`), damit der A/B-Test nur die Credential-Übergabe verändert. Das Diagnoseskript enthält dennoch keinen Publish-, Push-, Tag- oder Release-Befehl.
+
+Gemessen werden vier voneinander getrennte Fälle:
+
+1. direkter HTTP-GET auf den GitHub-Packages-Feed ohne Credential,
+2. derselbe HTTP-GET mit dem `github.token` als explizitem Basic-/`PSCredential`,
+3. der originale Ablauf `dotnet nuget add source` gefolgt von `Register-PSRepository` **ohne** `-Credential`,
+4. derselbe `Register-PSRepository`-Aufruf **mit** explizitem `-Credential`.
+
+Ein vollständiger Proof liegt vor, wenn gleichzeitig gilt:
+
+- der anonyme HTTP-Aufruf wird mit HTTP 401/403 abgewiesen,
+- der authentifizierte HTTP-Aufruf wird mit HTTP 2xx akzeptiert,
+- `dotnet nuget add source` ist erfolgreich, aber `Register-PSRepository` ohne Credential schlägt weiterhin fehl,
+- `Register-PSRepository` mit demselben Token als `PSCredential` ist erfolgreich.
+
+Jeder Matrix-Job schreibt zusätzlich ein bereinigtes JSON-Artefakt mit Runner-, PowerShell-, PowerShellGet-, PackageManagement-, NuGet-Provider- und Ergebnisdaten. Token oder Credential-Inhalte werden nicht ausgegeben.
+
+Status: **Testimplementierung erstellt; tatsächliche GitHub-Actions-Ergebnisse folgen nach Ausführung.**

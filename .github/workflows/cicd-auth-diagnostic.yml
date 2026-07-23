@@ -223,5 +223,6 @@ jobs:
         run: .github/workflows/cicd-publish-release-smoke.ps1
 
       - name: Run local publish abstraction smoke test with Windows PowerShell 5.1
+        if: always()
         shell: powershell
         run: .github/workflows/cicd-publish-release-smoke.ps1

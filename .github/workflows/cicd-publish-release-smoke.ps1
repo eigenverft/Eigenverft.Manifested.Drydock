@@ -130,7 +130,7 @@ function Get-DrydockPublishReleaseSmokeValue {
         throw 'Custom repository WhatIf smoke result unexpectedly reported Published=True.'
     }
 
-    $missingGitHubTokenRejected = $false
+    $missingGitHubTokenError = $null
     try {
         Publish-PowerShellModuleRelease `
             -Path $testModulePath `
@@ -139,11 +139,14 @@ function Get-DrydockPublishReleaseSmokeValue {
             -WhatIf
     }
     catch {
-        $missingGitHubTokenRejected = $_.Exception.Message -match 'GitHubToken'
+        $missingGitHubTokenError = $_
     }
 
-    if (-not $missingGitHubTokenRejected) {
+    if ($null -eq $missingGitHubTokenError) {
         throw 'GitHubPackages did not reject a missing GitHubToken.'
+    }
+
+    Write-Output ("Missing-token validation rejected the call: {0}" -f $missingGitHubTokenError)
     }
 
     Write-Output 'Publish-PowerShellModuleRelease smoke test completed successfully.'

@@ -15,6 +15,8 @@ Register-PSRepository: The specified repository 'github' is unauthorized and can
 
 Stelle: `.github/workflows/cicd.ps1` (Aufruf `Register-PSRepository` für `https://nuget.pkg.github.com/eigenverft/index.json`).
 
+**Endgültiger Proof:** Ein ausgeführter 2×2-Kreuztest mit PowerShell 7.4.14/7.6.3 und byteidentischen PowerShellGet-/PackageManagement-Dateien belegt, dass das Verhalten der PowerShell-Hostlaufzeit folgt. Unter 7.4 gelingt der implizite Ablauf, unter 7.6 scheitert er ohne `-Credential`; mit explizitem `PSCredential` gelingt er in allen Kombinationen.
+
 ## Was im Log bereits ok war
 
 - `Test-VariableValue` für `NuGetGitHubPush` und `PsGalleryApiKey` → Werte vorhanden
@@ -91,7 +93,7 @@ beweist nur, dass der .NET-/NuGet-Client die Quelle und die übergebenen Credent
 Damit ist die bisherige Annahme zu präzisieren:
 
 - **Bestätigt:** Der konkrete Fehler entsteht, weil `Register-PSRepository` den GitHub-Packages-Feed ohne explizites `-Credential` prüft und dabei HTTP 401 erhält.
-- **Noch nicht bestätigt:** Warum derselbe Ablauf im April 2026 erfolgreich war. Der Image-Wechsel bleibt ein plausibler Auslöser für die Verhaltensänderung, ist aber derzeit nur zeitlich korreliert.
+- **Bestätigt:** Der frühere Erfolg ist reproduzierbar an PowerShell 7.4 gebunden. Auf aktuellen Windows-2022- und Windows-2025-Images funktioniert der implizite Ablauf unter PowerShell 7.4.14, während er unter PowerShell 7.6.3 ohne `-Credential` scheitert.
 - **Versionsvergleich:** Im April-Image waren PowerShell `7.4.14` und PowerShellGet `2.2.5` enthalten; im Juli-Fail laufen PowerShell `7.6.3` und weiterhin PowerShellGet `2.2.5`. Damit hat sich nicht die PowerShellGet-Funktion selbst aktualisiert, wohl aber die PowerShell-/ .NET-Laufzeit, über deren `HttpClientHandler` der Feed-Test erfolgt.
 
 ### Verifizierter Runner-Image-Vergleich
@@ -121,10 +123,10 @@ GitHub dokumentiert für die NuGet-Registry, dass für öffentliche wie private 
 Daher ist die robusteste Bewertung:
 
 - **Latenter Implementierungsfehler:** Das Skript konfiguriert Credentials für den `dotnet`-/NuGet-Client, übergibt sie aber nicht an den separaten PowerShellGet-Aufruf.
-- **Wahrscheinlicher Trigger:** Der Wechsel von PowerShell 7.4/.NET 8 auf 7.6/.NET 10 beziehungsweise das neue Runner-Image hat ein zuvor erfolgreiches, aber nicht vertraglich garantiertes Verhalten verändert oder offengelegt.
+- **Bestätigter Trigger:** Der Wechsel der PowerShell-Hostlaufzeit von 7.4 auf 7.6 verändert das Verhalten reproduzierbar. Der 2×2-Kreuztest schließt sowohl die Windows-Image-Familie als auch unterschiedliche PowerShellGet-/PackageManagement-Dateien als Erklärung aus.
 - **Konsequenz:** Selbst wenn ein Rollback auf ein älteres Image den Build wieder grün macht, sollte die Credential-Übergabe korrigiert werden. Andernfalls bleibt der Workflow von einem zufälligen beziehungsweise extern veränderlichen Authentifizierungsverhalten abhängig.
 
-### Minimaler, noch zu verifizierender Fix
+### Verifizierter Minimalfix
 
 Vor dem Aufbau von `$GitHubSourceRegistration` ein `PSCredential` aus Benutzername und Workflow-Token erzeugen und in den Splat-Hashtable aufnehmen:
 
@@ -145,7 +147,7 @@ $GitHubSourceRegistration = @{
 }
 ```
 
-Dieser Fix ist aus dem PowerShellGet-Quellcode und der offiziellen GitHub-NuGet-Authentifizierungsdokumentation abgeleitet, wurde im Workflow aber noch nicht als A/B-Lauf bestätigt.
+Dieser Fix wurde im isolierten Workflow als A/B-Lauf auf `windows-2022`, `windows-2025` und `windows-latest` sowie in den Runtime-/Modul-Kreuzkombinationen bestätigt: Derselbe Token registriert das Repository zuverlässig, sobald er als `PSCredential` übergeben wird.
 
 Referenzen:
 
@@ -171,32 +173,24 @@ Quellcodebezug:
 
 Ähnliche Meldungen zu `Register-PSRepository` / Publish gegen GitHub Packages mit PowerShellGet 2.x und Auth sind bekannt (NuGet-v3-Feed, Credential-Verhalten, teils Unterschiede zu `dotnet nuget`).
 
-Das erklärt die Fehlermeldung; es erklärt allein noch nicht zwingend, warum derselbe Code im April noch durchlief. Der zeitliche Bruch deckt sich aber mit dem Runner-Image-Wechsel und dem ersten CI danach.
+Der ausgeführte Laufzeit-Kreuztest erklärt inzwischen auch den Unterschied zum April: Der unveränderte Ablauf funktioniert unter PowerShell 7.4.14, aber nicht unter PowerShell 7.6.3. Die genaue interne Änderung innerhalb der PowerShell-/ .NET-Hostlaufzeit ist noch nicht bis auf eine einzelne Runtime-Codezeile eingegrenzt; die kausale Schicht und der robuste Fix sind jedoch experimentell isoliert.
 
-## Empfohlene Gegenprüfungen
+## Ausgeführte Gegenprüfungen
 
-Die frühere Empfehlung, lediglich auf `windows-2022` zu wechseln, isoliert die wahrscheinlich relevante Änderung **nicht mehr vollständig**: Auch `windows-2022` wurde im Juni 2026 auf PowerShell 7.6 / .NET 10 aktualisiert.
+Die zuvor vorgeschlagenen A/B-Tests wurden vollständig ausgeführt:
 
-Empfohlene A/B-Tests in dieser Reihenfolge:
+1. **Explizites Credential:** Auf allen aktuellen Runnern scheitert `Register-PSRepository` ohne `-Credential` und gelingt mit demselben Workflow-Token als `PSCredential`.
+2. **PowerShell-Laufzeit:** PowerShell 7.4.14 reproduziert den früheren impliziten Erfolg auf aktuellen Windows-2022- und Windows-2025-Images; PowerShell 7.6.3 reproduziert den aktuellen Fehler.
+3. **Image-Familie:** Bei gleicher PowerShell-Version verhalten sich Windows 2022 und Windows 2025 gleich. Die Image-/Visual-Studio-Familie ist damit nicht ursächlich.
+4. **Moduldateien:** Der 2×2-Kreuztest verwendet die PowerShellGet-/PackageManagement-Dateien wechselseitig zwischen beiden PowerShell-Versionen. Die rekursiven SHA-256-Fingerprints sind identisch, das Verhalten folgt dennoch der Hostlaufzeit.
+5. **Token und Feed:** Der Feed antwortet ohne Credential mit 401 und mit demselben Token mit 200. Tokenformat und Berechtigung sind damit ausgeschlossen.
 
-1. **Explizites Credential an PowerShellGet übergeben**
-   Für `Register-PSRepository` aus Benutzername und `${{ github.token }}` ein `PSCredential` erzeugen und als `-Credential` mitsplatten. Wenn die Registrierung damit auf dem aktuellen Image gelingt, ist der unmittelbare Fehler behoben und der getrennte Auth-Pfad bestätigt.
+### Endgültige Ursachenbewertung
 
-2. **PowerShell-Laufzeit isolieren**
-   Den Workflow testweise mit Windows PowerShell 5.1 (`shell: powershell`) ausführen, sofern der bestehende Kompatibilitätsanspruch des Skripts greift, oder PowerShell 7.4.14 explizit pinnen/installieren. Ein Erfolg unter 7.4/.NET 8 bei unverändertem Image wäre ein deutlich stärkerer Nachweis als nur `windows-2022`.
-
-3. **Image-Familie separat prüfen**
-   `windows-2022` kann weiterhin gegen die VS-2026-Image-Familie testen. Da dort jedoch ebenfalls PowerShell 7.6 läuft, trennt dieser Versuch nur Image-/VS-Komponenten, nicht die PowerShell-/.NET-Version.
-
-4. **Sichere Statusdiagnose ergänzen**
-   Vor der Registrierung den Feed einmal ohne und einmal mit einem aus dem Workflow-Token gebildeten Basic-/`PSCredential`-Kontext anfragen und ausschließlich HTTP-Status, PowerShell-Version, .NET-Version sowie geladene PowerShellGet-/PackageManagement-Versionen loggen. Keine Header, Tokens oder NuGet.Config-Inhalte ausgeben.
-
-### Aktuelle Ursachenbewertung
-
-- **Hohe Sicherheit – unmittelbare Fehlerursache:** `Register-PSRepository` führt einen eigenen unauthentifizierten HTTP-Test aus, erhält 401 und kann für GitHub Packages keinen unterstützten Credential Provider ermitteln.
-- **Mittlere Sicherheit – Auslöser der Regression:** Wechsel von PowerShell 7.4/.NET 8 auf PowerShell 7.6/.NET 10 und gleichzeitig auf die VS-2026-Image-Familie. Der zeitliche Zusammenhang ist exakt durch die offiziellen Rollout-Daten belegt.
-- **Noch offen:** Ob die Regression konkret durch .NET-HTTP-Verhalten, eine Änderung am GitHub-Packages-Service-Index oder eine andere Image-Komponente ausgelöst wurde. In den veröffentlichten .NET-10-Breaking-Changes wurde keine passende Änderung an `HttpClientHandler.UseDefaultCredentials` oder Basic-Authentifizierung gefunden.
-- **Geringere Wahrscheinlichkeit:** Tokenformat oder Tokenberechtigungen als Ursache genau dieser Registrierungsmeldung, weil das Token dem fehlschlagenden `Register-PSRepository` derzeit gar nicht als Credential übergeben wird.
+- **Bewiesen – unmittelbare Fehlerursache:** Der produktive `Register-PSRepository`-Aufruf übergibt das gültige GitHub-Token nicht als `PSCredential`. Unter PowerShell 7.6 endet der eigene Feed-Test deshalb mit `RepositoryCannotBeRegistered`.
+- **Bewiesen – Auslöser der Regression:** Das Verhalten ändert sich mit der PowerShell-Hostlaufzeit 7.4 → 7.6. Der Effekt bleibt bei Wechsel der Windows-Image-Familie und bei Austausch byteidentischer PowerShellGet-/PackageManagement-Dateien bestehen.
+- **Bewiesen – robuster Fix:** Das vorhandene Workflow-Token als explizites `PSCredential` an `Register-PSRepository` übergeben.
+- **Nicht bis zur einzelnen Runtime-Codezeile eingegrenzt:** Welcher interne Unterschied der PowerShell-/integrierten .NET-Hostlaufzeit bewirkt, dass PowerShell 7.4 den vorherigen NuGet-Credential-Kontext implizit nutzen kann und PowerShell 7.6 nicht. Diese Detailfrage ändert weder Ursachenbeweis noch Fix.
 ## Relevante Runs
 
 - Fail 2026-07-23: https://github.com/eigenverft/Eigenverft.Manifested.Drydock/actions/runs/29983748111
@@ -300,7 +294,7 @@ Die zusätzliche Matrix läuft auf:
 
 Verglichen wird mit den bereits bestätigten Läufen unter der vorinstallierten PowerShell `7.6.3`. Damit wird die PowerShell-/ .NET-Laufzeit von der Windows-Image-Familie getrennt betrachtet.
 
-Status: **Testimplementierung ergänzt; Messergebnis folgt im nächsten Lauf.**
+Status: **Ausgeführt; PowerShell 7.4.14 reproduziert den früheren impliziten Erfolg auf Windows 2022 und Windows 2025.**
 
 
 ### Laufzeit-Isolation: PowerShell 7.4.14 reproduziert den früheren Erfolg
@@ -330,18 +324,40 @@ Damit ist jetzt reproduzierbar belegt:
    - PowerShell 7.4.14: impliziter Ablauf funktioniert.
    - PowerShell 7.6.3: explizites `-Credential` ist erforderlich.
 
-**Zwischenfazit:** Der Wechsel von PowerShell 7.4/.NET 8 auf PowerShell 7.6/.NET 10 ist als auslösender Kompatibilitätsbruch bestätigt. Der robuste Fix bleibt die explizite Übergabe des vorhandenen Tokens als `PSCredential`.
+**Fazit nach Laufzeit-Isolation:** Der Wechsel von PowerShell 7.4/.NET 8 auf PowerShell 7.6/.NET 10 ist als auslösender Kompatibilitätsbruch bestätigt. Der robuste Fix bleibt die explizite Übergabe des vorhandenen Tokens als `PSCredential`.
 
-Noch zu prüfen: Ob die intern geladenen PowerShellGet-/PackageManagement-Dateien trotz gleicher Modulversionsnummer bytegleich sind oder ob zusätzlich ein unterschiedliches Modul-Build vorliegt.
+Diese letzte Alternativhypothese wurde anschließend durch den 2×2-Kreuztest geprüft: Die importierten PowerShellGet-/PackageManagement-Verzeichnisse sind bytegleich; das Ergebnis folgt trotzdem ausschließlich der PowerShell-Hostlaufzeit.
 
 
-### 2×2-Kreuztest für Runtime und Moduldateien
+### 2×2-Kreuztest: Hostlaufzeit eindeutig als auslösende Schicht isoliert
 
-Zur letzten Eingrenzung wird auf `windows-2025` ein Kreuztest ergänzt. Neben den bereits gemessenen Kombinationen werden ausgeführt:
+Der finale Kreuztest wurde erfolgreich ausgeführt:
 
-- PowerShell `7.6.3` mit den aus PowerShell `7.4.14` stammenden PowerShellGet-/PackageManagement-Dateien,
-- PowerShell `7.4.14` mit den aktuell installierten PowerShellGet-/PackageManagement-Dateien aus der 7.6-Distribution.
+- Run: https://github.com/eigenverft/Eigenverft.Manifested.Drydock/actions/runs/29988251566
+- Commit: `e1c86fb`
+- Ergebnis: alle sieben Jobs grün
 
-Zusätzlich berechnet das Diagnoseskript rekursive SHA-256-Fingerprints der tatsächlich importierten Modulverzeichnisse. Dadurch lässt sich unterscheiden, ob das Verhalten an der PowerShell-/ .NET-Laufzeit oder an unterschiedlichen Moduldateien trotz identischer Versionsanzeige liegt.
+Auf demselben `windows-2025`-Image wurden Runtime und Moduldateien wechselseitig kombiniert:
 
-Status: **Kreuztest implementiert; Ergebnis folgt.**
+| PowerShell-Host | importierte Moduldateien | Register ohne Credential | Register mit Credential |
+|---|---|---|---|
+| `7.4.14` | aus der 7.4-Distribution | erfolgreich | erfolgreich |
+| `7.4.14` | aus der installierten 7.6-Distribution | **erfolgreich** | erfolgreich |
+| `7.6.3` | aus der installierten 7.6-Distribution | Fehler `RepositoryCannotBeRegistered` | erfolgreich |
+| `7.6.3` | aus der 7.4-Distribution | **Fehler `RepositoryCannotBeRegistered`** | erfolgreich |
+
+Die tatsächlich importierten Modulverzeichnisse wurden rekursiv gehasht. Beide Distributionen sind für die betroffenen Module bytegleich:
+
+| Modul | Version | Dateien | aggregierter SHA-256 |
+|---|---:|---:|---|
+| PowerShellGet | `2.2.5` | 16 | `7278ea176bfde0db4293da901f997fdca62f3ccc7c8f87efaa368d03392b53fc` |
+| PackageManagement | `1.4.8.1` | 19 | `1d115a3528189f29ae4eb6436c2231d637596eb9778c183f5816d2ee67da79e9` |
+
+Damit sind unterschiedliche Modul-Builds ausgeschlossen. Bei identischen Feed-, Token-, Image-, PowerShellGet-, PackageManagement- und NuGet-Provider-Bedingungen folgt das Ergebnis ausschließlich der PowerShell-Hostversion:
+
+- PowerShell 7.4.14: implizite Registrierung nach `dotnet nuget add source` funktioniert.
+- PowerShell 7.6.3: implizite Registrierung scheitert; explizites `PSCredential` funktioniert.
+
+## Endergebnis
+
+Der Fehler ist ein durch den PowerShell-7.6-Wechsel sichtbar gewordener Kompatibilitätsbruch in einem zuvor implizit funktionierenden Authentifizierungsweg. Der produktive Workflow muss das bereits vorhandene GitHub-Token ausdrücklich als `PSCredential` an `Register-PSRepository` übergeben. Dieser Fix ist durch echte GitHub-Actions-A/B-Läufe über mehrere Images, PowerShell-Versionen und byteidentische Modulkombinationen bestätigt.

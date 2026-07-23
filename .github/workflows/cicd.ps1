@@ -56,6 +56,7 @@ Test-VariableValue -Variable { $PsGalleryApiKey } -ExitIfNullOrEmpty -HideValue
 # Verify required commands are available
 $null = Test-CommandAvailable -Command "dotnet" -ExitIfNotFound
 $null = Test-CommandAvailable -Command "git" -ExitIfNotFound
+$null = Test-CommandAvailable -Command "Publish-PowerShellModuleRelease" -ExitIfNotFound
 
 # Enable the .NET tools specified in the manifest file
 # Enable-TempDotnetTools -ManifestFile "$PSScriptRoot\.config\dotnet-tools\dotnet-tools.json" -NoReturn
@@ -69,7 +70,6 @@ $gitRepositoryName = Get-GitRepositoryName
 $gitRemoteUrl = Get-GitRemoteUrl
 $GitHubPackagesUser = "eigenverft"
 $GitHubSourceName = "github"
-$GitHubSourceUri = $null
 
 # Failfast / guard if any of the required preloaded environment information is not available
 Test-VariableValue -Variable { $runEnvironment } -ExitIfNullOrEmpty
@@ -79,11 +79,6 @@ Test-VariableValue -Variable { $gitCurrentBranchRoot } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $gitRepositoryName } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $gitRemoteUrl } -ExitIfNullOrEmpty
 
-if (-not [string]::IsNullOrWhiteSpace($NuGetGitHubPush))
-{
-    $GitHubSourceUri = "https://nuget.pkg.github.com/$GitHubPackagesUser/index.json"
-    Test-VariableValue -Variable { $GitHubSourceUri } -ExitIfNullOrEmpty
-}
 
 # Generate deployment info based on the current branch name
 $deploymentInfo = Convert-BranchToDeploymentInfo -BranchName "$gitCurrentBranch"
@@ -94,13 +89,8 @@ $probeGeneratedVersion = Convert-64SecPowershellVersionToDateTime -VersionBuild 
 Test-VariableValue -Variable { $generatedVersion } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
 
-# Generate a local PowerShell Gallery repository to publish to.
+# Name of the temporary local PowerShell Gallery used for the publish validation target.
 $LocalPowershellGalleryName = "LocalPowershellGallery"
-$LocalPowershellGalleryName = Register-LocalPSGalleryRepository -RepositoryName "$LocalPowershellGalleryName"
-
-# Generate a local NuGet package source to publish to.
-$LocalNugetSourceName = "LocalNuget"
-$LocalNugetSourceName = Register-LocalNuGetDotNetPackageSource -SourceName "$LocalNugetSourceName"
 
 ##############################################################################
 # Main CICD Logic
@@ -128,65 +118,47 @@ if ($remoteResourcesOk)
     $pushToPsGallery = $true
 }
 
-# Deploy generated module packages to the appropriate destinations
+# Deploy generated module packages to the appropriate destinations.
+# Each target is intentionally published through a dedicated invocation.
 if ($pushToLocalSource -eq $true)
 {
+    $publishParametersTargetLocal = @{
+        Path           = $manifestFile.DirectoryName
+        Target         = 'Local'
+        RepositoryName = $LocalPowershellGalleryName
+        ErrorAction    = 'Stop'
+    }
+
     Write-Host "===> Publishing module to local source '$LocalPowershellGalleryName'" -ForegroundColor Cyan
-    Publish-Module -Path $($manifestFile.DirectoryName) -Repository "$LocalPowershellGalleryName"
+    Publish-PowerShellModuleRelease @publishParametersTargetLocal
 }
 
 if ($pushToGitHubSource -eq $true)
 {
-    # Bootstrap fix for the release that introduces Publish-PowerShellModuleRelease.
-    # The currently published Drydock version does not contain that abstraction yet,
-    # so this CI script must pass the GitHub token explicitly to PowerShellGet once.
-    $GitHubCredential = [System.Management.Automation.PSCredential]::new(
-        $GitHubPackagesUser,
-        (ConvertTo-SecureString $NuGetGitHubPush -AsPlainText -Force)
-    )
-
-    $GitHubSourceRegistration = @{
-        Name                 = "$GitHubSourceName"
-        SourceLocation       = "$GitHubSourceUri"
-        PublishLocation      = "$GitHubSourceUri"
-        ScriptSourceLocation = "$GitHubSourceUri"
-        ScriptPublishLocation= "$GitHubSourceUri"
-        InstallationPolicy   = 'Trusted'
-        Credential           = $GitHubCredential
+    $publishParametersTargetGitHub = @{
+        Path           = $manifestFile.DirectoryName
+        Target         = 'GitHubPackages'
+        RepositoryName = $GitHubSourceName
+        GitHubOwner    = $GitHubPackagesUser
+        GitHubToken    = $NuGetGitHubPush
+        ErrorAction    = 'Stop'
     }
 
-    try
-    {
-        Write-Host "===> Registering temporary GitHub source '$GitHubSourceName' at '$GitHubSourceUri'" -ForegroundColor Cyan
-        $ExistingGitHubPsRepository = Get-PSRepository -Name "$GitHubSourceName" -ErrorAction SilentlyContinue
-        if ($null -ne $ExistingGitHubPsRepository)
-        {
-            Unregister-PSRepository -Name "$GitHubSourceName" -ErrorAction Stop
-        }
-
-        Unregister-LocalNuGetDotNetPackageSource -SourceName "$GitHubSourceName"
-        Invoke-ProcessTyped -Executable "dotnet" -Arguments @("nuget", "add", "source", "--username", "$GitHubPackagesUser", "--password", "$NuGetGitHubPush", "--store-password-in-clear-text", "--name", "$GitHubSourceName", "$GitHubSourceUri") -CaptureOutput $false -CaptureOutputDump $false -HideValues @($NuGetGitHubPush)
-        Register-PSRepository @GitHubSourceRegistration -ErrorAction Stop | Out-Null
-        Write-Host "===> Publishing module to GitHub source '$GitHubSourceName'" -ForegroundColor Cyan
-        Publish-Module -Path $($manifestFile.DirectoryName) -Repository "$GitHubSourceName" -NuGetApiKey "$NuGetGitHubPush"
-    }
-    finally
-    {
-        $ExistingGitHubPsRepository = Get-PSRepository -Name "$GitHubSourceName" -ErrorAction SilentlyContinue
-        if ($null -ne $ExistingGitHubPsRepository)
-        {
-            Write-Host "===> Unregistering temporary GitHub source '$GitHubSourceName'" -ForegroundColor Cyan
-            Unregister-PSRepository -Name "$GitHubSourceName" -ErrorAction Stop
-        }
-
-        Unregister-LocalNuGetDotNetPackageSource -SourceName "$GitHubSourceName"
-    }
+    Write-Host "===> Publishing module to GitHub source '$GitHubSourceName'" -ForegroundColor Cyan
+    Publish-PowerShellModuleRelease @publishParametersTargetGitHub
 }
 
 if ($pushToPsGallery -eq $true)
 {
+    $publishParametersTargetPsGallery = @{
+        Path        = $manifestFile.DirectoryName
+        Target      = 'PSGallery'
+        ApiKey      = $PsGalleryApiKey
+        ErrorAction = 'Stop'
+    }
+
     Write-Host "===> Publishing module to PSGallery" -ForegroundColor Cyan
-    Publish-Module -Path $($manifestFile.DirectoryName) -Repository "PSGallery" -NuGetApiKey "$PsGalleryApiKey"
+    Publish-PowerShellModuleRelease @publishParametersTargetPsGallery
 }
 
 $commitDatePrefix = Get-Date -Format 'yyyy-MM-dd'

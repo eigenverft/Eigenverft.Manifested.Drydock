@@ -387,3 +387,18 @@ Run `29991160845` erreichte die Funktion wegen eines Parserfehlers im Smoke-Harn
 Run `29991385657` ist vollständig grün. Auf Windows 2022 und Windows 2025 bestanden jeweils PowerShell 7 und Windows PowerShell 5.1 den Parser-Test, erzeugten über Target `Local` ein echtes Testpaket, bestätigten genau ein `.nupkg` und entfernten die temporäre Repositoryregistrierung. `GitHubPackages`, dessen Legacy-Modus, `PSGallery` und `PowerShellRepository` wurden über `-WhatIf` ohne externe Mutation validiert.
 
 Der abschließende Run `29991591614` ist ebenfalls vollständig grün und prüft zusätzlich in beiden PowerShell-Versionen die konkrete Validierungsmeldung `Target 'GitHubPackages' requires parameter 'GitHubToken'.`. Damit sind Bootstrap-Fix, neue Single-Target-API, lokaler Publish-Roundtrip, Cleanup, Legacy-Auswahl, externe `-WhatIf`-Adapter und die PowerShell-5.1-/7-Kompatibilität bestätigt.
+
+
+## Migration der produktiven CI auf `Publish-PowerShellModuleRelease`
+
+Nachdem die neue Drydock-Version über PSGallery verfügbar ist, wurde der einmalige Inline-Bootstrap aus `.github/workflows/cicd.ps1` entfernt. Die produktive CI verwendet nun pro Ziel einen eigenen Parameter-Hashtable und einen dedizierten Aufruf:
+
+- `Publish-PowerShellModuleRelease @publishParametersTargetLocal`
+- `Publish-PowerShellModuleRelease @publishParametersTargetGitHub`
+- `Publish-PowerShellModuleRelease @publishParametersTargetPsGallery`
+
+Es gibt weiterhin keine Target-Aggregation. Local, GitHub Packages und PSGallery bleiben bewusst getrennte, sequenzielle Publish-Schritte. Die bisherige Vorregistrierung der lokalen PowerShell Gallery, die ungenutzte lokale NuGet-Quelle sowie der manuelle GitHub-Credential-/Repository-/Cleanup-Block wurden entfernt, da diese Aufgaben nun vom jeweiligen Drydock-Targetadapter übernommen werden.
+
+Die Parameter werden ausschließlich per Splatting übergeben; die `cicd.ps1` verwendet für diese Aufrufe keine Backticks als Zeilenfortsetzung. Ein zusätzlicher `Test-CommandAvailable`-Guard stellt sicher, dass eine veraltete Drydock-Version ohne `Publish-PowerShellModuleRelease` früh und verständlich abgewiesen wird.
+
+Status: Implementiert; der erste produktive Self-Hosting-Lauf mit der veröffentlichten Abstraktion steht noch aus.

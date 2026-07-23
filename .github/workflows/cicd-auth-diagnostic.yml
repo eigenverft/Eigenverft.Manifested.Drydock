@@ -100,7 +100,8 @@ jobs:
               -NuGetGitHubPush '${{ github.token }}' `
               -GitHubPackagesUser 'eigenverft' `
               -GitHubSourceUri 'https://nuget.pkg.github.com/eigenverft/index.json' `
-              -ResultPath $resultPath
+              -ResultPath $resultPath `
+              -DoNotFailOnUnexpected
           if ($LASTEXITCODE -ne 0) {
               throw "PowerShell 7.4.14 diagnostic exited with code $LASTEXITCODE."
           }
@@ -111,5 +112,90 @@ jobs:
         with:
           name: cicd-auth-diagnostic-${{ matrix.os }}-ps74
           path: ${{ runner.temp }}/cicd-auth-diagnostic-ps74.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  runtime-module-cross-test:
+    name: Cross test (${{ matrix.label }})
+    runs-on: windows-2025
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: pwsh-7.6-with-7.4-modules
+            runtime: installed
+            modules: portable
+          - label: pwsh-7.4-with-7.6-modules
+            runtime: portable
+            modules: installed
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download and verify official PowerShell 7.4.14 portable release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseBase = 'https://github.com/PowerShell/PowerShell/releases/download/v7.4.14'
+          $archiveName = 'PowerShell-7.4.14-win-x64.zip'
+          $archivePath = Join-Path $env:RUNNER_TEMP $archiveName
+          $hashesPath = Join-Path $env:RUNNER_TEMP 'powershell-7.4.14-hashes.sha256'
+          $targetPath = Join-Path $env:RUNNER_TEMP 'pwsh-7.4.14'
+
+          Invoke-WebRequest -Uri "$releaseBase/$archiveName" -OutFile $archivePath
+          Invoke-WebRequest -Uri "$releaseBase/hashes.sha256" -OutFile $hashesPath
+          $hashLine = Get-Content $hashesPath | Where-Object { $_ -match [regex]::Escape($archiveName) } | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($hashLine)) {
+              throw "No SHA-256 entry found for $archiveName."
+          }
+          $expectedHash = ($hashLine -split '\s+')[0].Trim().ToLowerInvariant()
+          $actualHash = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+              throw "SHA-256 mismatch for $archiveName. Expected $expectedHash, got $actualHash."
+          }
+          Expand-Archive -Path $archivePath -DestinationPath $targetPath -Force
+
+      - name: Run runtime/module cross test
+        shell: pwsh
+        run: |
+          $portableRoot = Join-Path $env:RUNNER_TEMP 'pwsh-7.4.14'
+          $installedRoot = $PSHOME
+          $runtimeChoice = '${{ matrix.runtime }}'
+          $moduleChoice = '${{ matrix.modules }}'
+          $label = '${{ matrix.label }}'
+
+          $runtimeExe = if ($runtimeChoice -eq 'portable') {
+              Join-Path $portableRoot 'pwsh.exe'
+          }
+          else {
+              Join-Path $installedRoot 'pwsh.exe'
+          }
+
+          $moduleRoot = if ($moduleChoice -eq 'portable') { $portableRoot } else { $installedRoot }
+          $packageManagementPath = Join-Path $moduleRoot 'Modules\PackageManagement\PackageManagement.psd1'
+          $powerShellGetPath = Join-Path $moduleRoot 'Modules\PowerShellGet\PowerShellGet.psd1'
+          $resultPath = Join-Path $env:RUNNER_TEMP "cicd-auth-diagnostic-$label.json"
+
+          & $runtimeExe -NoLogo -NoProfile -File '.github/workflows/cicd-auth-diagnostic.ps1' `
+              -NuGetGitHubPush '${{ github.token }}' `
+              -GitHubPackagesUser 'eigenverft' `
+              -GitHubSourceUri 'https://nuget.pkg.github.com/eigenverft/index.json' `
+              -ResultPath $resultPath `
+              -PackageManagementModulePath $packageManagementPath `
+              -PowerShellGetModulePath $powerShellGetPath `
+              -DoNotFailOnUnexpected
+          if ($LASTEXITCODE -ne 0) {
+              throw "Cross diagnostic '$label' exited with code $LASTEXITCODE."
+          }
+
+      - name: Upload cross-test diagnostic JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cicd-auth-diagnostic-${{ matrix.label }}
+          path: ${{ runner.temp }}/cicd-auth-diagnostic-${{ matrix.label }}.json
           if-no-files-found: warn
           retention-days: 14

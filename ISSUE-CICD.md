@@ -301,3 +301,47 @@ Die zusätzliche Matrix läuft auf:
 Verglichen wird mit den bereits bestätigten Läufen unter der vorinstallierten PowerShell `7.6.3`. Damit wird die PowerShell-/ .NET-Laufzeit von der Windows-Image-Familie getrennt betrachtet.
 
 Status: **Testimplementierung ergänzt; Messergebnis folgt im nächsten Lauf.**
+
+
+### Laufzeit-Isolation: PowerShell 7.4.14 reproduziert den früheren Erfolg
+
+Der erweiterte Lauf wurde ausgeführt:
+
+- Run: https://github.com/eigenverft/Eigenverft.Manifested.Drydock/actions/runs/29987899729
+- Commit: `0709905`
+
+Die drei Jobs mit der aktuell vorinstallierten PowerShell `7.6.3` bestätigten erneut den Fehler ohne `-Credential` und den Erfolg mit `-Credential`.
+
+Die beiden isolierten Jobs mit der offiziellen portablen PowerShell `7.4.14` zeigten auf **beiden** Windows-Image-Familien ein anderes Verhalten:
+
+| Runner | PowerShell | anonymes HTTP | authentifiziertes HTTP | Register ohne Credential | Register mit Credential |
+|---|---:|---:|---:|---|---|
+| `windows-2022` | `7.4.14` | `401 Unauthorized` | `200 OK` | **erfolgreich** | erfolgreich |
+| `windows-2025` | `7.4.14` | `401 Unauthorized` | `200 OK` | **erfolgreich** | erfolgreich |
+| aktuelle Runner | `7.6.3` | `401 Unauthorized` | `200 OK` | **Fehler `RepositoryCannotBeRegistered`** | erfolgreich |
+
+Der 7.4-Testjob wurde vom Harness als rot markiert, weil dessen ursprüngliche Erfolgsbedingung ausdrücklich erwartete, dass die Registrierung ohne Credential fehlschlägt. Das rote Jobresultat ist daher **kein Testfehler**, sondern genau das abweichende Messergebnis, das für die Laufzeit-Isolation gesucht wurde. Die JSON-Datei wurde vor dem absichtlichen Exit geschrieben und als Artefakt hochgeladen.
+
+Damit ist jetzt reproduzierbar belegt:
+
+1. Das Token und die GitHub-Packages-Berechtigung sind gültig.
+2. Die Windows-Image-Familie allein ist nicht entscheidend: PowerShell 7.4 verhält sich auf Windows 2022 und Windows 2025 gleich.
+3. Bei gleicher Feed-URL, gleichem Token, gleicher PowerShellGet-Versionsanzeige `2.2.5` und gleichem Testablauf ändert sich das Verhalten mit der PowerShell-Laufzeit:
+   - PowerShell 7.4.14: impliziter Ablauf funktioniert.
+   - PowerShell 7.6.3: explizites `-Credential` ist erforderlich.
+
+**Zwischenfazit:** Der Wechsel von PowerShell 7.4/.NET 8 auf PowerShell 7.6/.NET 10 ist als auslösender Kompatibilitätsbruch bestätigt. Der robuste Fix bleibt die explizite Übergabe des vorhandenen Tokens als `PSCredential`.
+
+Noch zu prüfen: Ob die intern geladenen PowerShellGet-/PackageManagement-Dateien trotz gleicher Modulversionsnummer bytegleich sind oder ob zusätzlich ein unterschiedliches Modul-Build vorliegt.
+
+
+### 2×2-Kreuztest für Runtime und Moduldateien
+
+Zur letzten Eingrenzung wird auf `windows-2025` ein Kreuztest ergänzt. Neben den bereits gemessenen Kombinationen werden ausgeführt:
+
+- PowerShell `7.6.3` mit den aus PowerShell `7.4.14` stammenden PowerShellGet-/PackageManagement-Dateien,
+- PowerShell `7.4.14` mit den aktuell installierten PowerShellGet-/PackageManagement-Dateien aus der 7.6-Distribution.
+
+Zusätzlich berechnet das Diagnoseskript rekursive SHA-256-Fingerprints der tatsächlich importierten Modulverzeichnisse. Dadurch lässt sich unterscheiden, ob das Verhalten an der PowerShell-/ .NET-Laufzeit oder an unterschiedlichen Moduldateien trotz identischer Versionsanzeige liegt.
+
+Status: **Kreuztest implementiert; Ergebnis folgt.**

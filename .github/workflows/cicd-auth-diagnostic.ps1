@@ -4,7 +4,10 @@ param (
 
     [string]$GitHubPackagesUser = 'eigenverft',
     [string]$GitHubSourceUri = 'https://nuget.pkg.github.com/eigenverft/index.json',
-    [string]$ResultPath = (Join-Path $env:RUNNER_TEMP 'cicd-auth-diagnostic.json')
+    [string]$ResultPath = (Join-Path $env:RUNNER_TEMP 'cicd-auth-diagnostic.json'),
+    [string]$PackageManagementModulePath,
+    [string]$PowerShellGetModulePath,
+    [switch]$DoNotFailOnUnexpected
 )
 
 # This script intentionally mirrors only the safe startup/authentication part of cicd.ps1.
@@ -18,8 +21,19 @@ if ([string]::IsNullOrWhiteSpace($NuGetGitHubPush)) {
     throw 'NuGetGitHubPush is empty. The diagnostic requires github.token.'
 }
 
-Import-Module PackageManagement -Force -ErrorAction Stop
-Import-Module PowerShellGet -MinimumVersion 2.2.5 -Force -ErrorAction Stop
+if ([string]::IsNullOrWhiteSpace($PackageManagementModulePath)) {
+    Import-Module PackageManagement -Force -ErrorAction Stop
+}
+else {
+    Import-Module $PackageManagementModulePath -Force -ErrorAction Stop
+}
+
+if ([string]::IsNullOrWhiteSpace($PowerShellGetModulePath)) {
+    Import-Module PowerShellGet -MinimumVersion 2.2.5 -Force -ErrorAction Stop
+}
+else {
+    Import-Module $PowerShellGetModulePath -Force -ErrorAction Stop
+}
 
 $secureToken = ConvertTo-SecureString -String $NuGetGitHubPush -AsPlainText -Force
 $credential = [System.Management.Automation.PSCredential]::new($GitHubPackagesUser, $secureToken)
@@ -163,6 +177,44 @@ function Invoke-RepositoryRegistrationProbe {
     }
 }
 
+function Get-ModuleTreeFingerprint {
+    param (
+        [Parameter(Mandatory = $true)]
+        [System.Management.Automation.PSModuleInfo]$Module
+    )
+
+    $moduleRoot = Split-Path -Parent $Module.Path
+    $fileEntries = @(Get-ChildItem -LiteralPath $moduleRoot -File -Recurse | Sort-Object FullName | ForEach-Object {
+        [pscustomobject][ordered]@{
+            RelativePath = [System.IO.Path]::GetRelativePath($moduleRoot, $_.FullName)
+            Sha256       = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            Length       = $_.Length
+        }
+    })
+
+    $fingerprintText = @($fileEntries | ForEach-Object {
+        "$($_.RelativePath)|$($_.Sha256)|$($_.Length)"
+    }) -join "`n"
+    $fingerprintBytes = [System.Text.Encoding]::UTF8.GetBytes($fingerprintText)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $aggregateHash = [System.Convert]::ToHexString($sha256.ComputeHash($fingerprintBytes)).ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
+
+    return [pscustomobject][ordered]@{
+        Name            = $Module.Name
+        Version         = $Module.Version.ToString()
+        Path            = $Module.Path
+        Root            = $moduleRoot
+        FileCount       = $fileEntries.Count
+        AggregateSha256 = $aggregateHash
+        Files           = $fileEntries
+    }
+}
+
 function Get-SingleProbeResult {
     param (
         [Parameter(Mandatory = $true)]
@@ -186,6 +238,14 @@ function Get-SingleProbeResult {
 
     return $candidates[0]
 }
+
+$importedPowerShellGet = Get-Module PowerShellGet | Sort-Object Version -Descending | Select-Object -First 1
+$importedPackageManagement = Get-Module PackageManagement | Sort-Object Version -Descending | Select-Object -First 1
+if ($null -eq $importedPowerShellGet -or $null -eq $importedPackageManagement) {
+    throw 'PowerShellGet or PackageManagement was not imported.'
+}
+$powerShellGetFingerprint = Get-ModuleTreeFingerprint -Module $importedPowerShellGet
+$packageManagementFingerprint = Get-ModuleTreeFingerprint -Module $importedPackageManagement
 
 $registerCommand = Get-Command Register-PSRepository -ErrorAction Stop
 $powerShellGetModules = @(Get-Module -ListAvailable PowerShellGet | Sort-Object Version -Descending | ForEach-Object {
@@ -222,6 +282,8 @@ $runtime = [ordered]@{
     PowerShellGetModules        = $powerShellGetModules
     PackageManagementModules    = $packageManagementModules
     NuGetProviders              = $nugetProviders
+    ImportedPowerShellGet       = $powerShellGetFingerprint
+    ImportedPackageManagement   = $packageManagementFingerprint
 }
 
 Write-Output "Runner image: $($runtime.ImageOS) $($runtime.ImageVersion)"
@@ -258,11 +320,14 @@ $conclusion = if ($proofConfirmed) {
 elseif (-not $authenticatedAccepted) {
     'NOT CONFIRMED: The token did not produce a successful authenticated HTTP response. Token permissions or package access must be investigated first.'
 }
+elseif ($registerWithoutCredential.Success -and $registerWithCredential.Success) {
+    'OBSERVED: Implicit registration succeeded without -Credential under this PowerShell/runtime/module combination; explicit registration also succeeded.'
+}
 elseif (-not $registerWithCredential.Success) {
     'PARTIAL: The token authenticates at HTTP level, but Register-PSRepository still fails with explicit PSCredential. The JSON error identifies the next compatibility layer to investigate.'
 }
 else {
-    'INCONCLUSIVE: Observed outcomes did not match the expected A/B model. Review the JSON artifact.'
+    'INCONCLUSIVE: Observed outcomes did not match a known A/B model. Review the JSON artifact.'
 }
 
 $result = [ordered]@{
@@ -313,6 +378,6 @@ if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
     $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 }
 
-if (-not $proofConfirmed) {
+if (-not $proofConfirmed -and -not $DoNotFailOnUnexpected) {
     throw "Authentication proof was not fully confirmed. See $ResultPath for the complete diagnostic result."
 }

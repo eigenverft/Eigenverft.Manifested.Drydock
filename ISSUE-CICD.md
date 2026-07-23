@@ -235,7 +235,7 @@ Ein vollständiger Proof liegt vor, wenn gleichzeitig gilt:
 
 Jeder Matrix-Job schreibt zusätzlich ein bereinigtes JSON-Artefakt mit Runner-, PowerShell-, PowerShellGet-, PackageManagement-, NuGet-Provider- und Ergebnisdaten. Token oder Credential-Inhalte werden nicht ausgegeben.
 
-Status: **Testimplementierung erstellt; tatsächliche GitHub-Actions-Ergebnisse folgen nach Ausführung.**
+Status: **Authentifizierungsursache durch erfolgreichen Matrix-A/B-Test bestätigt.**
 
 
 ### Erster Testlauf: Harness-Fehler, noch kein Authentifizierungsbefund
@@ -249,3 +249,55 @@ Der erste Matrix-Lauf wurde am 2026-07-23 ausgeführt:
 Alle drei Jobs erreichten die Laufzeitdiagnose und bestätigten PowerShell `7.6.3` sowie PowerShellGet `2.2.5`. Anschließend brach jedoch das Diagnoseskript selbst mit `The property 'Success' cannot be found on this object` ab. Deshalb ist dieser Lauf **kein Beleg für oder gegen die Auth-Hypothese**.
 
 Ursache ist ein Fehler im Test-Harness: Mindestens eine Hilfsfunktion liefert neben dem strukturierten Ergebnis zusätzliche PowerShell-Pipeline-Ausgabe, sodass der Aufrufer statt genau eines Ergebnisobjekts ein Array erhält. Der Test wird so korrigiert, dass jede Probe genau ein explizites `PSCustomObject` zurückgibt und alle Neben-Ausgaben unterdrückt werden.
+
+
+### Zweiter Testlauf: Authentifizierungsursache bestätigt
+
+Der korrigierte Matrix-Lauf war auf allen drei Runnern erfolgreich:
+
+- Run: https://github.com/eigenverft/Eigenverft.Manifested.Drydock/actions/runs/29987563652
+- Commit: `41a7125`
+- Ergebnis: alle drei Jobs grün
+
+| Runner | Image | PowerShell | PowerShellGet | anonymes HTTP | authentifiziertes HTTP | `dotnet nuget add source` | Register ohne Credential | Register mit Credential |
+|---|---|---:|---:|---:|---:|---|---|---|
+| `windows-2022` | `win22 20260714.244.1` | `7.6.3` | `2.2.5` | `401 Unauthorized` | `200 OK` | erfolgreich, Exit `0` | Fehler `RepositoryCannotBeRegistered` | erfolgreich, Provider `NuGet` |
+| `windows-2025` | `win25-vs2026 20260714.173.1` | `7.6.3` | `2.2.5` | `401 Unauthorized` | `200 OK` | erfolgreich, Exit `0` | Fehler `RepositoryCannotBeRegistered` | erfolgreich, Provider `NuGet` |
+| `windows-latest` | `win25-vs2026 20260714.173.1` | `7.6.3` | `2.2.5` | `401 Unauthorized` | `200 OK` | erfolgreich, Exit `0` | Fehler `RepositoryCannotBeRegistered` | erfolgreich, Provider `NuGet` |
+
+Die JSON-Artefakte bestätigen für jeden Runner unabhängig:
+
+- `AnonymousRejected = true`
+- `AuthenticatedAccepted = true`
+- `DotNetSourceDidNotAuthorizePowerShellGet = true`
+- `ExplicitCredentialFixedRegistration = true`
+- `ProofConfirmed = true`
+
+Die Fehlermeldung ohne Credential entspricht exakt dem produktiven Fehler:
+
+```text
+The specified repository 'github-auth-diagnostic' is unauthorized and cannot be registered. Try running with -Credential.
+FullyQualifiedErrorId: RepositoryCannotBeRegistered,Register-PSRepository
+```
+
+Mit demselben `github.token`, lediglich als explizites `PSCredential` an `Register-PSRepository` übergeben, wird das Repository erfolgreich registriert.
+
+Damit ist die **unmittelbare Ursache des aktuellen CI-Abbruchs bewiesen**:
+
+> Das Token ist gültig und besitzt ausreichenden Zugriff. `dotnet nuget add source` macht diese Credentials jedoch nicht für den separaten HTTP-Test von PowerShellGet verfügbar. Der produktive `Register-PSRepository`-Aufruf fehlt `-Credential`.
+
+Der Test beweist noch nicht, warum der implizite Ablauf im April 2026 funktioniert hat. Er zeigt aber, dass der robuste und notwendige Fix unabhängig von der aktuellen Windows-Image-Familie die explizite Credential-Übergabe ist.
+
+
+### Laufzeit-Isolation PowerShell 7.4.14 versus 7.6.3
+
+Um den historischen Bruch zwischen April und Juli genauer einzugrenzen, wird derselbe A/B-Test zusätzlich unter der offiziellen portablen PowerShell-Version `7.4.14` ausgeführt. Das offizielle ZIP und die zugehörige `hashes.sha256` werden direkt aus dem PowerShell-Release `v7.4.14` geladen und vor der Ausführung per SHA-256 geprüft.
+
+Die zusätzliche Matrix läuft auf:
+
+- `windows-2022` mit PowerShell `7.4.14`
+- `windows-2025` mit PowerShell `7.4.14`
+
+Verglichen wird mit den bereits bestätigten Läufen unter der vorinstallierten PowerShell `7.6.3`. Damit wird die PowerShell-/ .NET-Laufzeit von der Windows-Image-Familie getrennt betrachtet.
+
+Status: **Testimplementierung ergänzt; Messergebnis folgt im nächsten Lauf.**

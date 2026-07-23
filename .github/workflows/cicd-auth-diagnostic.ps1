@@ -293,15 +293,15 @@ $summary = @"
 
 | Probe | Result |
 |---|---|
-| Runner | `$($runtime.ImageOS)` / `$($runtime.ImageVersion)` |
-| PowerShell | `$($runtime.PowerShellVersion)` |
-| PowerShellGet | `$($runtime.RegisterCommandVersion)` |
-| Anonymous HTTP | `$($anonymousHttp.StatusCode)` `$($anonymousHttp.ReasonPhrase)` |
-| Authenticated HTTP | `$($authenticatedHttp.StatusCode)` `$($authenticatedHttp.ReasonPhrase)` |
-| `dotnet nuget add source` | success: `$($dotnetAdd.Success)` |
-| `Register-PSRepository` without `-Credential` | success: `$($registerWithoutCredential.Success)` |
-| `Register-PSRepository` with `-Credential` | success: `$($registerWithCredential.Success)` |
-| Proof confirmed | **`$proofConfirmed`** |
+| Runner | <code>$($runtime.ImageOS)</code> / <code>$($runtime.ImageVersion)</code> |
+| PowerShell | <code>$($runtime.PowerShellVersion)</code> |
+| PowerShellGet | <code>$($runtime.RegisterCommandVersion)</code> |
+| Anonymous HTTP | <code>$($anonymousHttp.StatusCode)</code> <code>$($anonymousHttp.ReasonPhrase)</code> |
+| Authenticated HTTP | <code>$($authenticatedHttp.StatusCode)</code> <code>$($authenticatedHttp.ReasonPhrase)</code> |
+| dotnet nuget add source | success: <code>$($dotnetAdd.Success)</code> |
+| Register-PSRepository without -Credential | success: <code>$($registerWithoutCredential.Success)</code> |
+| Register-PSRepository with -Credential | success: <code>$($registerWithCredential.Success)</code> |
+| Proof confirmed | **<code>$proofConfirmed</code>** |
 
 $conclusion
 

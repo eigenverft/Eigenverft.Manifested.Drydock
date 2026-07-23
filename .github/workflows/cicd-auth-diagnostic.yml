@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   authenticate:
-    name: Auth proof (${{ matrix.os }})
+    name: Auth proof (${{ matrix.os }}, installed pwsh)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
 
@@ -43,7 +43,73 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cicd-auth-diagnostic-${{ matrix.os }}
+          name: cicd-auth-diagnostic-${{ matrix.os }}-installed
           path: ${{ runner.temp }}/cicd-auth-diagnostic.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  powershell-74-isolation:
+    name: Auth proof (${{ matrix.os }}, PowerShell 7.4.14)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2022
+          - windows-2025
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download and verify official PowerShell 7.4.14 portable release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseBase = 'https://github.com/PowerShell/PowerShell/releases/download/v7.4.14'
+          $archiveName = 'PowerShell-7.4.14-win-x64.zip'
+          $archivePath = Join-Path $env:RUNNER_TEMP $archiveName
+          $hashesPath = Join-Path $env:RUNNER_TEMP 'powershell-7.4.14-hashes.sha256'
+          $targetPath = Join-Path $env:RUNNER_TEMP 'pwsh-7.4.14'
+
+          Invoke-WebRequest -Uri "$releaseBase/$archiveName" -OutFile $archivePath
+          Invoke-WebRequest -Uri "$releaseBase/hashes.sha256" -OutFile $hashesPath
+
+          $hashLine = Get-Content $hashesPath | Where-Object { $_ -match [regex]::Escape($archiveName) } | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($hashLine)) {
+              throw "No SHA-256 entry found for $archiveName."
+          }
+
+          $expectedHash = ($hashLine -split '\s+')[0].Trim().ToLowerInvariant()
+          $actualHash = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $expectedHash) {
+              throw "SHA-256 mismatch for $archiveName. Expected $expectedHash, got $actualHash."
+          }
+
+          Expand-Archive -Path $archivePath -DestinationPath $targetPath -Force
+          & (Join-Path $targetPath 'pwsh.exe') -NoLogo -NoProfile -Command '$PSVersionTable'
+
+      - name: Run proof under PowerShell 7.4.14
+        shell: pwsh
+        run: |
+          $pwsh74 = Join-Path $env:RUNNER_TEMP 'pwsh-7.4.14\pwsh.exe'
+          $resultPath = Join-Path $env:RUNNER_TEMP 'cicd-auth-diagnostic-ps74.json'
+          & $pwsh74 -NoLogo -NoProfile -File '.github/workflows/cicd-auth-diagnostic.ps1' `
+              -NuGetGitHubPush '${{ github.token }}' `
+              -GitHubPackagesUser 'eigenverft' `
+              -GitHubSourceUri 'https://nuget.pkg.github.com/eigenverft/index.json' `
+              -ResultPath $resultPath
+          if ($LASTEXITCODE -ne 0) {
+              throw "PowerShell 7.4.14 diagnostic exited with code $LASTEXITCODE."
+          }
+
+      - name: Upload PowerShell 7.4.14 diagnostic JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cicd-auth-diagnostic-${{ matrix.os }}-ps74
+          path: ${{ runner.temp }}/cicd-auth-diagnostic-ps74.json
           if-no-files-found: warn
           retention-days: 14

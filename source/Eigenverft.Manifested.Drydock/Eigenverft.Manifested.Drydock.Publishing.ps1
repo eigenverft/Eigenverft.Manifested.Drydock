@@ -178,6 +178,7 @@ function Publish-PowerShellModuleRelease {
         param(
             [Parameter(Mandatory = $true)]
             [AllowNull()]
+            [AllowEmptyString()]
             [string]$Value,
 
             [Parameter(Mandatory = $true)]

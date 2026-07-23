@@ -146,6 +146,10 @@ function Get-DrydockPublishReleaseSmokeValue {
         throw 'GitHubPackages did not reject a missing GitHubToken.'
     }
 
+    if ($missingGitHubTokenError.ToString() -notmatch "Target 'GitHubPackages' requires parameter 'GitHubToken'") {
+        throw ("GitHubPackages returned an unexpected missing-token error: {0}" -f $missingGitHubTokenError)
+    }
+
     Write-Output ("Missing-token validation rejected the call: {0}" -f $missingGitHubTokenError)
 
     Write-Output 'Publish-PowerShellModuleRelease smoke test completed successfully.'

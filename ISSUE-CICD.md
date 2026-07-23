@@ -378,4 +378,4 @@ Unterstützte Zieladapter der ersten Implementierung:
 
 Der historische GitHub-Authentifizierungsweg bleibt ausschließlich über `-UseLegacyGitHubRegistration` erreichbar. Der Standard ist der durch die Diagnose bestätigte explizite Credential-Pfad.
 
-Status: **Implementiert; lokaler Publish-Roundtrip und PowerShell-5.1-/7-Smoke-Matrix stehen noch aus.**
+Status nach Run `29990411215`: **Der lokale Publish-Roundtrip ist auf Windows 2022 und Windows 2025 unter PowerShell 7 erfolgreich** (Paket erzeugt und temporäre Repositoryregistrierung entfernt). Die externen Zieladapter wurden ohne Netzwerkmutation über `-WhatIf` durchlaufen. Der Smoke-Test hat dabei einen Fehler in der Fehlerweitergabe entdeckt: Das Re-Throw des internen `ErrorRecord` verlor die konkrete Validierungsmeldung für einen fehlenden `GitHubToken`. Die Implementierung wirft nun die ursprüngliche Exception erneut; der vollständige PowerShell-7-/5.1-Rerun steht noch aus.

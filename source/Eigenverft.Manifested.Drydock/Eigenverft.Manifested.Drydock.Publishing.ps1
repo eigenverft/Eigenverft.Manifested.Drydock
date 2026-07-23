@@ -508,7 +508,8 @@ function Publish-PowerShellModuleRelease {
     $result.CleanupCompleted = if ($cleanupRequested) { $cleanupCompleted } else { $null }
 
     if ($null -ne $operationError) {
-        throw $operationError
+        # Preserve the target-specific validation or publish message for the caller.
+        throw $operationError.Exception
     }
 
     if ($cleanupRequested -and -not $cleanupCompleted) {

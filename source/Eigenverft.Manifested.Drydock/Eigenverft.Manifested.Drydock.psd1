@@ -140,6 +140,7 @@ FunctionsToExport = @(
 
     # ...PathLimits.ps1
     'Test-WindowsPathLimits',
+    'Test-WindowsPathLimitsWithExtendedPath',
 
     # ...Logging.ps1
     'Write-ConsoleLog',

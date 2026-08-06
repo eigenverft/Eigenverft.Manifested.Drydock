@@ -112,8 +112,6 @@ Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
 ##############################################################################
 # Phase 2: Resolve deployment decisions
 
-$isMainBranch = $deploymentResolution.Branch.FirstSegmentLower -eq 'main'
-
 switch ($deploymentResolution.Channel.Value)
 {
     'production'
@@ -121,16 +119,16 @@ switch ($deploymentResolution.Channel.Value)
         $deploymentDecisions = [pscustomobject][ordered]@{
             UpdateModuleManifestVersion = $true
             PublishLocalSource       = $true
-            PublishGitHubSource      = [bool]($isMainBranch -and $remoteResourcesOk -and -not [string]::IsNullOrWhiteSpace($GitHubToken))
-            PublishPsGallery         = [bool]($isMainBranch -and $remoteResourcesOk)
-            CommitVersionChange      = [bool]($isMainBranch -and $remoteResourcesOk)
-            PushVersionCommit        = [bool]($isMainBranch -and $remoteResourcesOk)
-            CreateGitTag             = [bool]($isMainBranch -and $remoteResourcesOk)
+            PublishGitHubSource      = [bool]($remoteResourcesOk -and -not [string]::IsNullOrWhiteSpace($GitHubToken))
+            PublishPsGallery         = [bool]$remoteResourcesOk
+            CommitVersionChange      = [bool]$remoteResourcesOk
+            PushVersionCommit        = [bool]$remoteResourcesOk
+            CreateGitTag             = [bool]$remoteResourcesOk
             CreateGitHubRelease      = [bool](
-                $isMainBranch -and
                 $runEnvironment.IsCI -and
                 $remoteResourcesOk -and
-                -not [string]::IsNullOrWhiteSpace($GitHubToken)
+                -not [string]::IsNullOrWhiteSpace($GitHubToken) -and
+                $deploymentResolution.Branch.FirstSegmentLower -eq 'main'
             )
         }
     }
@@ -156,13 +154,13 @@ switch ($deploymentResolution.Channel.Value)
 ##############################################################################
 # Phase 3: Prepare and validate deployment artifacts
 
-$manifestPath = Join-Path $gitTopLevelDirectory 'source\Eigenverft.Manifested.Drydock\Eigenverft.Manifested.Drydock.psd1'
-if (-not (Test-Path -LiteralPath $manifestPath))
+$manifestFiles = @(Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "$gitRepositoryName.psd1")
+if ($manifestFiles.Count -ne 1)
 {
-    throw "Expected module manifest was not found at '$manifestPath'."
+    throw "Expected exactly one module manifest named '$gitRepositoryName.psd1' under '$gitTopLevelDirectory', but found $($manifestFiles.Count)."
 }
 
-$manifestFile = Get-Item -LiteralPath $manifestPath -ErrorAction Stop
+$manifestFile = $manifestFiles[0]
 
 if ($deploymentDecisions.UpdateModuleManifestVersion)
 {

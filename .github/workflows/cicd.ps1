@@ -18,11 +18,11 @@ $ErrorActionPreference     = 'Stop'   # errors become terminating
 $Global:ConsoleLogMinLevel = 'INF'    # gate: TRC/DBG/INF/WRN/ERR/FTL
 
 # Keep this script compatible with PowerShell 5.1 and PowerShell 7+
-# Lean, pipeline-friendly style—simple, readable, and easy to modify, failfast on errors.
+# Lean, pipeline-friendly style - simple, readable, and easy to modify, failfast on errors.
 Write-Output "Powershell script $(Split-Path -Leaf $PSCommandPath) has started."
 
 # Provides lightweight reachability guards for external services.
-# Detection only—no installs, imports, network changes, or pushes. (e.g Test-PSGalleryConnectivity)
+# Detection only - no installs, imports, network changes, or pushes. (e.g Test-PSGalleryConnectivity)
 # Designed to short-circuit local and CI/CD workflows when dependencies are offline (e.g., skip a push if the Git host is unreachable).
 . "$PSScriptRoot\cicd.bootstrap.ps1"
 
@@ -80,8 +80,26 @@ Test-VariableValue -Variable { $gitRepositoryName } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $gitRemoteUrl } -ExitIfNullOrEmpty
 
 
-# Generate deployment info based on the current branch name
-$deploymentInfo = Convert-BranchToDeploymentInfo -BranchName "$gitCurrentBranch"
+
+##############################################################################
+# Phase 1: Resolve deployment context
+
+$deploymentResolution = Convert-BranchToDeploymentInfo -BranchName "$gitCurrentBranch"
+
+Write-Host "===> Resolved deployment context" -ForegroundColor Cyan
+Write-Host "Branch.Name                      : $gitCurrentBranch"
+Write-Host "Branch.Segments                  : $($deploymentResolution.Branch.Segments -join ', ')"
+Write-Host "Branch.PathSegmentsSanitized     : $($deploymentResolution.Branch.PathSegmentsSanitized -join ', ')"
+Write-Host "Branch.FirstSegmentLower         : $($deploymentResolution.Branch.FirstSegmentLower)"
+Write-Host "Channel.Value                    : $($deploymentResolution.Channel.Value)"
+Write-Host "Channel.Source                   : $($deploymentResolution.Channel.Source)"
+Write-Host "Channel.SegmentsWithChannelFirst : $($deploymentResolution.Channel.SegmentsWithChannelFirst -join ', ')"
+Write-Host "Affix.Label                      : $($deploymentResolution.Affix.Label)"
+Write-Host "Affix.Prefix                     : $($deploymentResolution.Affix.Prefix)"
+Write-Host "Affix.Suffix                     : $($deploymentResolution.Affix.Suffix)"
+Write-Host "Affix.Separator                  : $($deploymentResolution.Affix.Separator)"
+Write-Host "Affix.LabelCase                  : $($deploymentResolution.Affix.LabelCase)"
+Write-Host "Affix.HasLabel                   : $($deploymentResolution.Affix.HasLabel)"
 
 # Generates a version based on the current date time to verify the version functions work as expected
 $generatedVersion = Convert-DateTimeTo64SecPowershellVersion -VersionBuild 1
@@ -89,65 +107,134 @@ $probeGeneratedVersion = Convert-64SecPowershellVersionToDateTime -VersionBuild 
 Test-VariableValue -Variable { $generatedVersion } -ExitIfNullOrEmpty
 Test-VariableValue -Variable { $probeGeneratedVersion } -ExitIfNullOrEmpty
 
-##############################################################################
-# Main CICD Logic
 
-$manifestFile = Find-FilesByPattern -Path "$gitTopLevelDirectory" -Pattern "*.psd1" | Select-Object -First 1
-Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedVersion.VersionFull)"
-Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPrerelease "$($deploymentInfo.Affix.Label)"
+
+##############################################################################
+# Phase 2: Resolve deployment decisions
+
+$isMainBranch = $deploymentResolution.Branch.FirstSegmentLower -eq 'main'
+
+switch ($deploymentResolution.Channel.Value)
+{
+    'production'
+    {
+        $deploymentDecisions = [pscustomobject][ordered]@{
+            UpdateModuleManifestVersion = $true
+            PublishLocalSource       = $true
+            PublishGitHubSource      = [bool]($isMainBranch -and $remoteResourcesOk -and -not [string]::IsNullOrWhiteSpace($GitHubToken))
+            PublishPsGallery         = [bool]($isMainBranch -and $remoteResourcesOk)
+            CommitVersionChange      = [bool]($isMainBranch -and $remoteResourcesOk)
+            PushVersionCommit        = [bool]($isMainBranch -and $remoteResourcesOk)
+            CreateGitTag             = [bool]($isMainBranch -and $remoteResourcesOk)
+            CreateGitHubRelease      = [bool](
+                $isMainBranch -and
+                $runEnvironment.IsCI -and
+                $remoteResourcesOk -and
+                -not [string]::IsNullOrWhiteSpace($GitHubToken)
+            )
+        }
+    }
+
+    default
+    {
+        # Non-production channels currently build and publish locally only.
+        # Staging, quality, and development can receive dedicated decision objects later
+        # without changing the validation or execution phases below.
+        $deploymentDecisions = [pscustomobject][ordered]@{
+            UpdateModuleManifestVersion = $true
+            PublishLocalSource       = $true
+            PublishGitHubSource      = $false
+            PublishPsGallery         = $false
+            CommitVersionChange      = $false
+            PushVersionCommit        = $false
+            CreateGitTag             = $false
+            CreateGitHubRelease      = $false
+        }
+    }
+}
+
+##############################################################################
+# Phase 3: Prepare and validate deployment artifacts
+
+$manifestPath = Join-Path $gitTopLevelDirectory 'source\Eigenverft.Manifested.Drydock\Eigenverft.Manifested.Drydock.psd1'
+if (-not (Test-Path -LiteralPath $manifestPath))
+{
+    throw "Expected module manifest was not found at '$manifestPath'."
+}
+
+$manifestFile = Get-Item -LiteralPath $manifestPath -ErrorAction Stop
+
+if ($deploymentDecisions.UpdateModuleManifestVersion)
+{
+    Update-ManifestModuleVersion -ManifestPath "$($manifestFile.DirectoryName)" -NewVersion "$($generatedVersion.VersionFull)"
+    Update-ManifestPrerelease -ManifestPath "$($manifestFile.DirectoryName)" -NewPrerelease "$($deploymentResolution.Affix.Label)"
+}
 
 Write-Host "===> Testing module manifest at: $($manifestFile.FullName)" -ForegroundColor Cyan
 Test-ModuleManifest -Path $($manifestFile.FullName)
 
-$pushToLocalSource = $true
-$pushToGitHubSource = $false
-$pushToPsGallery = $false
 
-if ($remoteResourcesOk -and -not [string]::IsNullOrWhiteSpace($GitHubToken))
-{
-    $pushToGitHubSource = $true
-}
 
-if ($remoteResourcesOk)
-{
-    $pushToPsGallery = $true
-}
+##############################################################################
+# Phase 4: Execute deployment decisions
 
-# Deploy generated module packages to the appropriate destinations.
-# Each target is intentionally published through a dedicated invocation.
-if ($pushToLocalSource -eq $true)
+Write-Host "===> Executing deployment decisions" -ForegroundColor Cyan
+
+if ($deploymentDecisions.PublishLocalSource)
 {
     Write-Host "===> Publishing module to local source 'LocalPowershellGallery'" -ForegroundColor Cyan
     Publish-PowerShellModuleRelease -Path $manifestFile.DirectoryName -Target 'Local' -RepositoryName 'LocalPowershellGallery' -ErrorAction Stop
 }
 
-if ($pushToGitHubSource -eq $true)
+if ($deploymentDecisions.PublishGitHubSource)
 {
     Write-Host "===> Publishing module to GitHub source 'github'" -ForegroundColor Cyan
     Publish-PowerShellModuleRelease -Path $manifestFile.DirectoryName -Target 'GitHubPackages' -RepositoryName 'github' -GitHubOwner 'eigenverft' -GitHubToken $GitHubToken -ErrorAction Stop
 }
 
-if ($pushToPsGallery -eq $true)
+if ($deploymentDecisions.PublishPsGallery)
 {
     Write-Host "===> Publishing module to PSGallery" -ForegroundColor Cyan
     Publish-PowerShellModuleRelease -Path $manifestFile.DirectoryName -Target 'PSGallery' -ApiKey $PowerShellGalleryApiKey -ErrorAction Stop
 }
 
+
+
+##############################################################################
+# Phase 5: Persist deployment results
+
 $commitDatePrefix = Get-Date -Format 'yyyy-MM-dd'
+$deploymentTags = @()
 
-if ($remoteResourcesOk)
+if ($deploymentDecisions.CreateGitTag)
 {
-    if ($($runEnvironment.IsCI)) {
-        Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "227559461+eigenverft@users.noreply.github.com" -CommitMessage "[$commitDatePrefix] Auto ver bump from CICD to $($generatedVersion.VersionFull) [skip ci]" -Tags @( "v$($generatedVersion.VersionFull)$($deploymentInfo.Affix.Suffix)" ) -ErrorAction Stop
+    $deploymentTags = @("v$($generatedVersion.VersionFull)")
+}
 
-        if (($pushToGitHubSource -eq $true) -and ($deploymentInfo.Branch.FirstSegmentLower -eq 'main'))
-        {
-            $releaseTag = "v$($generatedVersion.VersionFull)$($deploymentInfo.Affix.Suffix)"
-            $null = Test-CommandAvailable -Command "gh" -ExitIfNotFound
-            Write-Host "===> Creating GitHub release for tag '$releaseTag'" -ForegroundColor Cyan
-            Invoke-ProcessTyped -Executable "gh" -Arguments @("release", "create", "$releaseTag", "--verify-tag", "--generate-notes") -CaptureOutput $false -CaptureOutputDump $false
-        }
-    } else {
-        Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "[$commitDatePrefix] Auto ver bump from local to $($generatedVersion.VersionFull) [skip ci]" -Tags @( "v$($generatedVersion.VersionFull)$($deploymentInfo.Affix.Suffix)" ) -ErrorAction Stop
+if ($deploymentDecisions.CommitVersionChange -and $deploymentDecisions.PushVersionCommit)
+{
+    if ($runEnvironment.IsCI)
+    {
+        Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "227559461+eigenverft@users.noreply.github.com" -CommitMessage "[$commitDatePrefix] Auto ver bump from CICD to $($generatedVersion.VersionFull) [skip ci]" -Tags $deploymentTags -ErrorAction Stop
     }
+    else
+    {
+        Invoke-GitAddCommitPush -TopLevelDirectory "$gitTopLevelDirectory" -Folders @("$($manifestFile.DirectoryName)") -CurrentBranch "$gitCurrentBranch" -UserName "eigenverft" -UserEmail "eigenverft@outlook.com" -CommitMessage "[$commitDatePrefix] Auto ver bump from local to $($generatedVersion.VersionFull) [skip ci]" -Tags $deploymentTags -ErrorAction Stop
+    }
+}
+else
+{
+    Write-Host "===> Commit, push, and tag actions are disabled by the resolved deployment decisions." -ForegroundColor Yellow
+}
+
+if ($deploymentDecisions.CreateGitHubRelease)
+{
+    $releaseTag = "v$($generatedVersion.VersionFull)"
+    $null = Test-CommandAvailable -Command "gh" -ExitIfNotFound
+    Write-Host "===> Creating GitHub release for tag '$releaseTag'" -ForegroundColor Cyan
+    Invoke-ProcessTyped -Executable "gh" -Arguments @("release", "create", "$releaseTag", "--verify-tag", "--generate-notes") -CaptureOutput $false -CaptureOutputDump $false
+}
+else
+{
+    Write-Host "===> GitHub release creation is disabled by the resolved deployment decisions." -ForegroundColor Yellow
 }

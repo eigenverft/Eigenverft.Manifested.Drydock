@@ -78,7 +78,6 @@ FunctionsToExport = @(
 
     # ...Compression.ps1
     'Compress-Directory',
-    'Compress-Directory2',
     'Add-FileToZipArchive',
     'Compress-B64Def',
 

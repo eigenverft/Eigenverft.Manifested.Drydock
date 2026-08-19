@@ -521,6 +521,10 @@ function Copy-DirectoryTreeGitAware {
         Existing destination files can be skipped when they already match the selected comparison policy.
         No files or directories are removed from the destination.
 
+        Long-running copies write a compact progress line after about 15 seconds and then about every
+        15 seconds. Large files also write a status line before the copy starts. This uses normal host
+        output so progress remains readable in CI logs; no Write-Progress UI is used.
+
     .PARAMETER SourceDirectory
         The directory tree to copy.
 
@@ -640,6 +644,41 @@ function Copy-DirectoryTreeGitAware {
     $destinationLockToken = [Guid]::NewGuid().ToString('N')
     $destinationLeaseState = [PSCustomObject]@{ Acquired = $false }
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $progressState = [PSCustomObject]@{
+        IntervalMilliseconds = 15000L
+        NextAtMilliseconds   = 15000L
+    }
+    $largeFileSizeThresholdBytes = [long](200 * 1024 * 1024)
+
+    function local:_Write-ProgressMessage {
+        param([string]$CurrentPath)
+
+        $elapsedMilliseconds = $stopwatch.ElapsedMilliseconds
+        if ($elapsedMilliseconds -lt $progressState.NextAtMilliseconds) {
+            return
+        }
+
+        $currentSuffix = ''
+        if (-not [string]::IsNullOrWhiteSpace($CurrentPath)) {
+            $currentSuffix = " Current: '$CurrentPath'."
+        }
+
+        Write-Host (
+            "[Copy-DirectoryTreeGitAware] [PROGRESS] Running {0}. Directories visited: {1}; Git repos: {2}; files processed/copied/unchanged: {3}/{4}/{5}; retries: {6}.{7}" -f
+            $stopwatch.Elapsed.ToString('hh\:mm\:ss'),
+            $stats.DirectoriesVisited,
+            $stats.GitRepositories,
+            $stats.FilesProcessed,
+            $stats.FilesCopied,
+            $stats.FilesUnchanged,
+            $stats.CopyRetries,
+            $currentSuffix
+        )
+
+        while ($progressState.NextAtMilliseconds -le $elapsedMilliseconds) {
+            $progressState.NextAtMilliseconds = $progressState.NextAtMilliseconds + $progressState.IntervalMilliseconds
+        }
+    }
 
     function local:_Write-DetailMessage {
         param([Parameter(Mandatory = $true)][string]$Message)
@@ -772,6 +811,7 @@ function Copy-DirectoryTreeGitAware {
             if ($LockRetryDelaySeconds -gt 0) {
                 Start-Sleep -Seconds $LockRetryDelaySeconds
             }
+            _Write-ProgressMessage -CurrentPath $destinationRootResolved
         }
     }
 
@@ -844,6 +884,7 @@ function Copy-DirectoryTreeGitAware {
         )
 
         $stats.FilesProcessed = $stats.FilesProcessed + 1
+        _Write-ProgressMessage -CurrentPath $SourceFullPath
 
         try {
             if (_Test-DestinationFileMatches -SourceFullPath $SourceFullPath -DestinationFullPath $DestinationFullPath) {
@@ -859,6 +900,17 @@ function Copy-DirectoryTreeGitAware {
         $destinationParent = Split-Path -Path $DestinationFullPath -Parent
         if (-not [string]::IsNullOrEmpty($destinationParent)) {
             _Ensure-Directory -Path $destinationParent
+        }
+
+        try {
+            $sourceInfoBeforeCopy = Get-Item -LiteralPath $SourceFullPath -Force -ErrorAction Stop
+            if ([long]$sourceInfoBeforeCopy.Length -ge $largeFileSizeThresholdBytes) {
+                $sizeMB = [Math]::Round(([double]$sourceInfoBeforeCopy.Length / 1MB), 1)
+                Write-Host "[Copy-DirectoryTreeGitAware] [STATUS] Copying large file (about $sizeMB MB), this may take a while: '$SourceFullPath'."
+            }
+        }
+        catch {
+            _Write-DetailMessage "Could not read file size before copy for '$SourceFullPath'. $($_.Exception.Message)"
         }
 
         $maxAttempts = $CopyRetryCount + 1
@@ -879,6 +931,7 @@ function Copy-DirectoryTreeGitAware {
                 }
 
                 $stats.FilesCopied = $stats.FilesCopied + 1
+                _Write-ProgressMessage -CurrentPath $SourceFullPath
                 return
             }
             catch {
@@ -956,6 +1009,7 @@ function Copy-DirectoryTreeGitAware {
         _Ensure-Directory -Path $RepositoryDestinationPath
 
         $repositoryFiles = @(_Get-GitRepositoryFileList -RepositoryPath $repositoryResolved)
+        _Write-ProgressMessage -CurrentPath $repositoryResolved
         foreach ($relativeGitPath in $repositoryFiles) {
             $relativeFileSystemPath = $relativeGitPath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
             $sourcePath = Join-Path -Path $repositoryResolved -ChildPath $relativeFileSystemPath
@@ -986,6 +1040,7 @@ function Copy-DirectoryTreeGitAware {
         )
 
         $stats.DirectoriesVisited = $stats.DirectoriesVisited + 1
+        _Write-ProgressMessage -CurrentPath $CurrentSourcePath
 
         $gitMarker = Join-Path -Path $CurrentSourcePath -ChildPath '.git'
         if (Test-Path -LiteralPath $gitMarker) {

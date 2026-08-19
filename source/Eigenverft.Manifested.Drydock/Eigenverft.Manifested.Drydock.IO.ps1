@@ -2165,7 +2165,7 @@ Valid values:
 - 'Length'                    : Skip copy when source and destination lengths are equal.
 - 'LengthAndLastWriteTimeUtc' : Skip copy when length and LastWriteTimeUtc match.
 - 'Sha256Hash'                : Skip copy when a SHA256 hash comparison matches.
-- 'Md5FastHash'               : Skip copy when an MD5 hash comparison matches. (typically faster, this is the default)
+- 'Md5FastHash'               : Skip copy when an MD5 hash comparison matches (typically faster than SHA256).
 #>
     [CmdletBinding()]
     param(

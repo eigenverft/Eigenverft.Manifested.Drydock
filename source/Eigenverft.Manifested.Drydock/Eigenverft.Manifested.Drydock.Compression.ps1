@@ -1,12 +1,16 @@
 function Compress-Directory {
 <#
 .SYNOPSIS
-Creates a zip archive from a source directory in an idempotent, cross-platform way.
+Creates a zip archive from a source directory by streaming the tree through one ZipArchive.
 
 .DESCRIPTION
-Uses Compress-Archive (Microsoft.PowerShell.Archive) to produce a .zip from the contents of a materialized
-source directory. If the destination archive already exists, the default FilePolicy is OverwriteIfExists.
-The function is idempotent: repeated runs converge without drift.
+Creates the archive with System.IO.Compression.ZipArchive instead of Compress-Archive. The archive is opened once
+for the complete directory tree. Relative directory structure and empty directories are preserved. File content is
+streamed in bounded chunks so long-running work can emit a compact heartbeat about every 15 seconds without using
+Write-Progress.
+
+The archive is built in a temporary file beside the destination and is published only after the temporary archive
+can be reopened successfully. An interrupted or failed run therefore does not replace an existing valid archive.
 
 .PARAMETER SourceDirectory
 Materialized directory whose contents will be zipped.
@@ -17,28 +21,28 @@ Full path to the resulting .zip file.
 .PARAMETER FilePolicy
 Behavior when DestinationFile already exists.
 - SkipIfExists: skip work if the archive exists.
-- OverwriteIfExists: replace any existing archive (default).
+- OverwriteIfExists: replace the existing archive only after a new archive was created successfully (default).
 
 .PARAMETER CompressionLevel
-Compression level for Compress-Archive.
+Compression level for zip entries.
 Valid values: Optimal, Fastest, NoCompression.
+
+.PARAMETER LogDetailLevel
+Summary writes start, progress, status, warning, and final summary messages. Detailed also writes directory,
+reparse-point, file-entry, validation, and publication details.
 
 .EXAMPLE
 Compress-Directory -SourceDirectory "C:\Data\Reports" -DestinationFile "C:\Temp\reports.zip"
-Creates or overwrites C:\Temp\reports.zip from directory contents (default policy).
+Creates or replaces C:\Temp\reports.zip after the new archive was completed and validated.
 
 .EXAMPLE
-Compress-Directory -SourceDirectory "/home/carsten/projects/app" -DestinationFile "/tmp/app.zip" -FilePolicy SkipIfExists
-Creates /tmp/app.zip if missing; skips if present.
-
-.EXAMPLE
-Compress-Directory -SourceDirectory "D:\build\out" -DestinationFile "D:\artifacts\out.zip" -CompressionLevel Fastest
-Rebuilds out.zip using fastest compression.
+Compress-Directory -SourceDirectory "D:\Archive\App_260819" -DestinationFile "D:\ZipArchive\App_260819.zip" -CompressionLevel Fastest
+Streams the complete directory tree into one zip archive using fast compression.
 
 .NOTES
-- Compatible with Windows PowerShell 5/5.1 and PowerShell 7+ on Windows/macOS/Linux.
-- No SupportsShouldProcess; no pipeline input; StrictMode-safe (v3).
-- Emits minimal messages via _Write-StandardMessage for key actions only.
+- Compatible with Windows PowerShell 5/5.1 and PowerShell 7+.
+- Keeps the existing Compress-Directory parameters and adds LogDetailLevel for long-running visibility.
+- Does not follow directory reparse points; the reparse-point directory entry itself is retained.
 #>
     [CmdletBinding(PositionalBinding=$false)]
     param(
@@ -56,10 +60,13 @@ Rebuilds out.zip using fastest compression.
 
         [Parameter()]
         [ValidateSet('Optimal','Fastest','NoCompression')]
-        [string]$CompressionLevel = 'Optimal'
+        [string]$CompressionLevel = 'Optimal',
+
+        [Parameter()]
+        [ValidateSet('Detailed','Summary')]
+        [string]$LogDetailLevel = 'Summary'
     )
 
-    # Inline helper for minimal, consistent console logging (scoped locally).
     function local:_Write-StandardMessage {
         [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         # This function is globally exempt from the GENERAL POWERSHELL REQUIREMENTS unless explicitly stated otherwise.
@@ -116,7 +123,7 @@ Rebuilds out.zip using fastest compression.
             }
         }
         if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
-        $lineNumber=$null ; 
+        $lineNumber=$null ;
         $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
         if(-not $lineNumber){
             $p=$caller.PSObject.Properties['Position']
@@ -151,73 +158,234 @@ Rebuilds out.zip using fastest compression.
 
         if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
     }
+    function local:_Write-DetailMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([Parameter(Mandatory=$true)][string]$Message)
 
-    # First call: title (no tag prefix in message)
-    _Write-StandardMessage -Message '--- Compress directory to zip archive ---' -Level 'INF'
-
-    # Require Compress-Archive (fail fast if missing).
-    $compressCmd = Get-Command -Name 'Compress-Archive' -ErrorAction SilentlyContinue
-    if ($null -eq $compressCmd) {
-        throw 'Required cmdlet "Compress-Archive" not found. Install/enable module "Microsoft.PowerShell.Archive" or update PowerShell (5.1+/7+).'
+        if ($LogDetailLevel -eq 'Detailed') {
+            _Write-StandardMessage -Message ("[DETAIL] {0}" -f $Message) -Level 'DBG' -MinLevel 'DBG'
+        }
     }
 
-    # Resolve and validate source directory (materialized).
+    function local:_Format-ByteSize {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([Parameter(Mandatory=$true)][long]$Bytes)
+
+        if ($Bytes -lt 1KB) { return ("{0:N0} B" -f $Bytes) }
+        if ($Bytes -lt 1MB) { return ("{0:N1} KB" -f ([double]$Bytes / 1KB)) }
+        if ($Bytes -lt 1GB) { return ("{0:N1} MB" -f ([double]$Bytes / 1MB)) }
+        if ($Bytes -lt 1TB) { return ("{0:N2} GB" -f ([double]$Bytes / 1GB)) }
+        return ("{0:N2} TB" -f ([double]$Bytes / 1TB))
+    }
+
+    _Write-StandardMessage -Message '--- Compress directory to zip archive (streaming) ---' -Level 'INF'
+
+    if (-not ([System.Management.Automation.PSTypeName]'System.IO.Compression.ZipArchive').Type) {
+        Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
+    }
+
     $SourceResolvedPath = Resolve-Path -LiteralPath $SourceDirectory -ErrorAction SilentlyContinue
     if ($null -eq $SourceResolvedPath) {
         throw ("Source directory not found: {0}" -f $SourceDirectory)
     }
+
     $SourceFullPath = $SourceResolvedPath.Path
     if (-not (Test-Path -LiteralPath $SourceFullPath -PathType Container)) {
         throw ("Path is not a directory: {0}" -f $SourceFullPath)
     }
 
-    # Ensure destination parent directory exists when needed.
-    $DestinationParentPath = Split-Path -Path $DestinationFile -Parent
-    if ($null -ne $DestinationParentPath -and $DestinationParentPath -ne '') {
-        if (-not (Test-Path -LiteralPath $DestinationParentPath -PathType Container)) {
-            New-Item -ItemType Directory -Path $DestinationParentPath -Force | Out-Null
-            $DestinationParentDirectory = $DestinationParentPath
-            _Write-StandardMessage -Message ("[CREATE] Created output directory: {0}" -f $DestinationParentDirectory) -Level 'INF'
-        }
+    $DestinationFullPath = [System.IO.Path]::GetFullPath($DestinationFile)
+    $DestinationParentPath = [System.IO.Path]::GetDirectoryName($DestinationFullPath)
+    if ([string]::IsNullOrEmpty($DestinationParentPath)) {
+        throw ("Destination directory could not be resolved: {0}" -f $DestinationFile)
+    }
+    if (-not (Test-Path -LiteralPath $DestinationParentPath -PathType Container)) {
+        New-Item -ItemType Directory -Path $DestinationParentPath -Force -ErrorAction Stop | Out-Null
+        _Write-StandardMessage -Message ("[CREATE] Created output directory: {0}" -f $DestinationParentPath) -Level 'INF'
     }
 
-    # Idempotency gate: handle existing archive by policy (default OverwriteIfExists).
-    $DestinationFileExists = Test-Path -LiteralPath $DestinationFile -PathType Leaf
-    if ($DestinationFileExists) {
-        if ($FilePolicy -eq 'SkipIfExists') {
-            _Write-StandardMessage -Message ("[SKIP] Zip already present, skipped: {0}" -f $DestinationFile) -Level 'INF'
+    $DestinationFileExists = Test-Path -LiteralPath $DestinationFullPath -PathType Leaf
+    if ($DestinationFileExists -and $FilePolicy -eq 'SkipIfExists') {
+        _Write-StandardMessage -Message ("[SKIP] Zip already present, skipped: {0}" -f $DestinationFullPath) -Level 'INF'
+        return
+    }
+
+    $tempFile = Join-Path -Path $DestinationParentPath -ChildPath (".{0}.{1}.tmp" -f [System.IO.Path]::GetFileName($DestinationFullPath), [Guid]::NewGuid().ToString('N'))
+    $sourceRoot = (New-Object System.IO.DirectoryInfo($SourceFullPath)).FullName.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $sourcePrefix = $sourceRoot + [System.IO.Path]::DirectorySeparatorChar
+    $pathComparison = if ($env:OS -eq 'Windows_NT') { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+    $compressionEnum = [System.IO.Compression.CompressionLevel]::$CompressionLevel
+    $reparsePoint = [System.IO.FileAttributes]::ReparsePoint
+    $largeFileSizeThresholdBytes = [long](200 * 1024 * 1024)
+    # ZIP/DOS timestamps support calendar years 1980 through 2107 with two-second resolution.
+    $zipTimestampMinimumYear = 1980
+    $zipTimestampMaximumYear = 2107
+    $copyBuffer = New-Object byte[] (1024 * 1024)
+
+    $archiveStream = $null
+    $zip = $null
+    $fileCount = 0L
+    $directoryCount = 0L
+    $byteCount = 0L
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $progressState = [PSCustomObject]@{
+        IntervalMilliseconds = 15000L
+        NextAtMilliseconds   = 15000L
+    }
+
+    function local:_Write-ProgressMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([string]$CurrentPath)
+
+        $elapsedMilliseconds = $timer.ElapsedMilliseconds
+        if ($elapsedMilliseconds -lt $progressState.NextAtMilliseconds) {
             return
         }
-        if ($FilePolicy -eq 'OverwriteIfExists') {
-            Remove-Item -LiteralPath $DestinationFile -Force
-            _Write-StandardMessage -Message ("[OVERWRITE] Removed existing zip (overwrite policy): {0}" -f $DestinationFile) -Level 'INF'
+
+        $zipBytes = 0L
+        if ($archiveStream) {
+            try {
+                $zipBytes = [long]$archiveStream.Length
+            }
+            catch {
+                _Write-DetailMessage "Could not read current temporary zip size. $($_.Exception.Message)"
+            }
+        }
+
+        $currentSuffix = if ([string]::IsNullOrEmpty($CurrentPath)) { '' } else { " Current: '$CurrentPath'." }
+        _Write-StandardMessage -Message (
+            "[PROGRESS] Running {0}. Files/directories: {1}/{2}; source: {3}; zip: {4}.{5}" -f
+            $timer.Elapsed.ToString('hh\:mm\:ss'), $fileCount, $directoryCount, (_Format-ByteSize -Bytes $byteCount), (_Format-ByteSize -Bytes $zipBytes), $currentSuffix
+        ) -Level 'INF'
+
+        while ($progressState.NextAtMilliseconds -le $elapsedMilliseconds) {
+            $progressState.NextAtMilliseconds = $progressState.NextAtMilliseconds + $progressState.IntervalMilliseconds
         }
     }
 
-    # Compress directory contents (not the root directory node).
-    $SourceContentPattern = Join-Path -Path $SourceFullPath -ChildPath '*'
-
-    $oldProgressPreference = $ProgressPreference
     try {
-        # Temporarily suppress progress bar from Compress-Archive.
-        $ProgressPreference = 'SilentlyContinue'
-
         _Write-StandardMessage -Message (
-            "[STATUS] Starting compression from '{0}' to '{1}' (Level={2}, Policy={3})." -f
-            $SourceFullPath, $DestinationFile, $CompressionLevel, $FilePolicy
+            "[STATUS] Starting streaming compression from '{0}' to '{1}' (Level={2}, Policy={3}, Detail={4})." -f
+            $SourceFullPath, $DestinationFullPath, $CompressionLevel, $FilePolicy, $LogDetailLevel
         ) -Level 'INF'
+        _Write-DetailMessage ("Temporary archive path: '{0}'." -f $tempFile)
 
-        Compress-Archive -Path $SourceContentPattern -DestinationPath $DestinationFile -CompressionLevel $CompressionLevel
-    } catch {
-        $ErrorMessage = $_.Exception.Message
-        _Write-StandardMessage -Message ("[ERR] Failed to create archive: {0}" -f $ErrorMessage) -Level 'ERR'
-        throw ("Failed to create archive. {0}" -f $ErrorMessage)
-    } finally {
-        # Restore previous progress preference.
-        $ProgressPreference = $oldProgressPreference
+        $archiveStream = [System.IO.File]::Open($tempFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $zip = New-Object System.IO.Compression.ZipArchive($archiveStream, [System.IO.Compression.ZipArchiveMode]::Create, $false)
+
+        $pendingDirectories = New-Object 'System.Collections.Generic.Stack[System.IO.DirectoryInfo]'
+        $pendingDirectories.Push((New-Object System.IO.DirectoryInfo($sourceRoot)))
+
+        while ($pendingDirectories.Count -gt 0) {
+            $currentDirectory = $pendingDirectories.Pop()
+
+            foreach ($childDirectory in $currentDirectory.GetDirectories()) {
+                $relativeDirectoryPath = $childDirectory.FullName.Substring($sourcePrefix.Length)
+                $directoryEntryName = $relativeDirectoryPath.Replace([System.IO.Path]::DirectorySeparatorChar, '/').Replace([System.IO.Path]::AltDirectorySeparatorChar, '/').TrimEnd('/') + '/'
+                [void]$zip.CreateEntry($directoryEntryName)
+                $directoryCount++
+                _Write-DetailMessage ("Added directory entry '{0}'." -f $directoryEntryName)
+
+                if (($childDirectory.Attributes -band $reparsePoint) -eq 0) {
+                    $pendingDirectories.Push($childDirectory)
+                }
+                else {
+                    _Write-DetailMessage ("Directory reparse point retained as entry but not traversed: '{0}'." -f $childDirectory.FullName)
+                }
+
+                _Write-ProgressMessage -CurrentPath $relativeDirectoryPath
+            }
+
+            foreach ($file in $currentDirectory.GetFiles()) {
+                if ([string]::Equals($file.FullName, $DestinationFullPath, $pathComparison) -or
+                    [string]::Equals($file.FullName, $tempFile, $pathComparison)) {
+                    continue
+                }
+
+                $relativeFilePath = $file.FullName.Substring($sourcePrefix.Length)
+                $entryName = $relativeFilePath.Replace([System.IO.Path]::DirectorySeparatorChar, '/').Replace([System.IO.Path]::AltDirectorySeparatorChar, '/')
+                _Write-DetailMessage ("Writing file '{0}' as entry '{1}' ({2})." -f $file.FullName, $entryName, (_Format-ByteSize -Bytes ([long]$file.Length)))
+
+                if ([long]$file.Length -ge $largeFileSizeThresholdBytes) {
+                    _Write-StandardMessage -Message ("[STATUS] Compressing large file (about {0}), this may take a while: '{1}'." -f (_Format-ByteSize -Bytes ([long]$file.Length)), $relativeFilePath) -Level 'INF'
+                }
+
+                $entry = $zip.CreateEntry($entryName, $compressionEnum)
+                # Preserve the source modification time when it is representable by the ZIP/DOS timestamp format.
+                if ($file.LastWriteTime.Year -ge $zipTimestampMinimumYear -and $file.LastWriteTime.Year -le $zipTimestampMaximumYear) {
+                    $entry.LastWriteTime = [DateTimeOffset]$file.LastWriteTime
+                }
+
+                $sourceStream = $null
+                $entryStream = $null
+                try {
+                    $sourceStream = [System.IO.File]::Open($file.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+                    $entryStream = $entry.Open()
+
+                    do {
+                        $readCount = $sourceStream.Read($copyBuffer, 0, $copyBuffer.Length)
+                        if ($readCount -gt 0) {
+                            $entryStream.Write($copyBuffer, 0, $readCount)
+                            $byteCount = $byteCount + $readCount
+                            _Write-ProgressMessage -CurrentPath $relativeFilePath
+                        }
+                    } while ($readCount -gt 0)
+                }
+                finally {
+                    if ($entryStream) { $entryStream.Dispose() }
+                    if ($sourceStream) { $sourceStream.Dispose() }
+                }
+
+                $fileCount++
+                _Write-ProgressMessage -CurrentPath $relativeFilePath
+            }
+        }
+
+        $zip.Dispose()
+        $zip = $null
+        $archiveStream.Dispose()
+        $archiveStream = $null
+
+        $validationStream = $null
+        $validationZip = $null
+        $validatedEntryCount = 0
+        try {
+            $validationStream = [System.IO.File]::Open($tempFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+            $validationZip = New-Object System.IO.Compression.ZipArchive($validationStream, [System.IO.Compression.ZipArchiveMode]::Read, $false)
+            $validatedEntryCount = $validationZip.Entries.Count
+            _Write-DetailMessage ("Reopened temporary archive successfully; entries={0}." -f $validatedEntryCount)
+        }
+        finally {
+            if ($validationZip) { $validationZip.Dispose() }
+            if ($validationStream) { $validationStream.Dispose() }
+        }
+
+        _Write-DetailMessage ("Publishing completed temporary archive to '{0}'." -f $DestinationFullPath)
+        if ($DestinationFileExists) {
+            Remove-Item -LiteralPath $DestinationFullPath -Force -ErrorAction Stop
+        }
+        [System.IO.File]::Move($tempFile, $DestinationFullPath)
+        $tempFile = $null
+
+        $zipByteCount = [long](Get-Item -LiteralPath $DestinationFullPath -Force -ErrorAction Stop).Length
+        _Write-StandardMessage -Message (
+            "[SUMMARY] Completed in {0}. Files/directories/entries: {1}/{2}/{3}; source/zip: {4}/{5}; level: {6}; from: {7}; to: {8}" -f
+            $timer.Elapsed.ToString('hh\:mm\:ss'), $fileCount, $directoryCount, $validatedEntryCount, (_Format-ByteSize -Bytes $byteCount), (_Format-ByteSize -Bytes $zipByteCount), $CompressionLevel, $SourceFullPath, $DestinationFullPath
+        ) -Level 'INF'
     }
-
-    _Write-StandardMessage -Message ("[OK] Compression finished, created zip: {0}" -f $DestinationFile) -Level 'INF'
+    catch {
+        $errorMessage = $_.Exception.Message
+        _Write-StandardMessage -Message ("[ERR] Failed to create archive: {0}" -f $errorMessage) -Level 'ERR'
+        throw
+    }
+    finally {
+        if ($zip) { $zip.Dispose() }
+        if ($archiveStream) { $archiveStream.Dispose() }
+        if ($tempFile -and (Test-Path -LiteralPath $tempFile -PathType Leaf)) {
+            Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+        }
+        $timer.Stop()
+    }
 }
 
 function Add-FileToZipArchive {

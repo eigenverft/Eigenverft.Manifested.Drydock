@@ -47,10 +47,11 @@ function Copy-DirectoryTreeGitAware {
         Delay between destination lease retries.
 
     .PARAMETER LockTokenExpiryHours
-        Age after which a stale destination lease may be removed. Default is 12 hours.
+        Age after which a stale destination lease may be removed. Default is 12 hours. Local leases created by
+        this command may be removed sooner when their recorded owner process is no longer running.
 
     .PARAMETER LogDetailLevel
-        Summary writes start, progress, status, warning, and final summary messages. Detailed also writes
+        Summary writes start, progress, status, warning, error, and final summary messages. Detailed also writes
         repository, lease, retry, and skip details.
 
     .EXAMPLE
@@ -158,6 +159,13 @@ function Copy-DirectoryTreeGitAware {
     $sourceLockBaseName = 'transit.source'
     $destinationLockPath = Join-Path -Path $destinationRootResolved -ChildPath $destinationLockFileName
     $destinationLockToken = [Guid]::NewGuid().ToString('N')
+    $currentProcess = [System.Diagnostics.Process]::GetCurrentProcess()
+    try {
+        $currentProcessStartUtc = $currentProcess.StartTime.ToUniversalTime()
+    }
+    finally {
+        $currentProcess.Dispose()
+    }
     $destinationLeaseState = [PSCustomObject]@{ Acquired = $false }
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $progressState = [PSCustomObject]@{
@@ -173,7 +181,8 @@ function Copy-DirectoryTreeGitAware {
         param(
             [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
             [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
-            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel,
+            [Parameter()][switch]$NoThrow
         )
 
         if ($null -eq $Message) {
@@ -255,7 +264,7 @@ function Copy-DirectoryTreeGitAware {
             Write-Host "$prefix$lvl$suffix"
         }
 
-        if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
+        if($sev -ge 4 -and -not $NoThrow -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
     }
 
     function local:_Write-ProgressMessage {
@@ -316,7 +325,12 @@ function Copy-DirectoryTreeGitAware {
             return $false
         }
 
+        $rawContent = $null
         $expiresUtc = $null
+        $ownerMachineName = $null
+        $ownerProcessId = 0
+        $ownerProcessStartUtc = $null
+        $staleOwnerReason = $null
         try {
             $rawContent = Get-Content -LiteralPath $LockFilePath -Raw -ErrorAction Stop
             if (-not [string]::IsNullOrWhiteSpace($rawContent)) {
@@ -349,12 +363,68 @@ function Copy-DirectoryTreeGitAware {
             $expiresUtc = [DateTime]::UtcNow.AddSeconds(-1)
         }
 
-        if ([DateTime]::UtcNow -le $expiresUtc) {
+        # New local leases carry process identity; legacy and remote leases continue to use expiry only.
+        if (-not [string]::IsNullOrWhiteSpace($rawContent)) {
+            try {
+                $ownerJson = ConvertFrom-Json -InputObject $rawContent -ErrorAction Stop
+                $machineProperty = $ownerJson.PSObject.Properties['MachineName']
+                $processIdProperty = $ownerJson.PSObject.Properties['ProcessId']
+                $processStartProperty = $ownerJson.PSObject.Properties['ProcessStartUtc']
+
+                if ($null -ne $machineProperty -and $null -ne $machineProperty.Value -and
+                    $null -ne $processIdProperty -and $null -ne $processIdProperty.Value -and
+                    $null -ne $processStartProperty -and $null -ne $processStartProperty.Value) {
+                    $ownerMachineName = [string]$machineProperty.Value
+                    $ownerProcessId = [int]$processIdProperty.Value
+                    $ownerProcessStartUtc = [DateTime]::Parse(
+                        [string]$processStartProperty.Value,
+                        [System.Globalization.CultureInfo]::InvariantCulture,
+                        [System.Globalization.DateTimeStyles]::AdjustToUniversal
+                    )
+                }
+            }
+            catch {
+                _Write-DetailMessage "Could not read optional process identity from transit lease '$LockFilePath'; expiry remains authoritative. $($_.Exception.Message)"
+            }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($ownerMachineName) -and
+            [string]::Equals($ownerMachineName, [System.Environment]::MachineName, [System.StringComparison]::OrdinalIgnoreCase) -and
+            $ownerProcessId -gt 0 -and $null -ne $ownerProcessStartUtc) {
+            $ownerProcess = $null
+            try {
+                $ownerProcess = [System.Diagnostics.Process]::GetProcessById($ownerProcessId)
+                $observedProcessStartUtc = $ownerProcess.StartTime.ToUniversalTime()
+                if ([Math]::Abs(($observedProcessStartUtc - $ownerProcessStartUtc).TotalSeconds) -gt 1) {
+                    $staleOwnerReason = "local owner PID $ownerProcessId was reused"
+                }
+            }
+            catch [System.ArgumentException] {
+                $staleOwnerReason = "local owner PID $ownerProcessId is no longer running"
+            }
+            catch [System.InvalidOperationException] {
+                $staleOwnerReason = "local owner PID $ownerProcessId is no longer running"
+            }
+            catch {
+                _Write-DetailMessage "Could not verify local owner PID $ownerProcessId for transit lease '$LockFilePath'; expiry remains authoritative. $($_.Exception.Message)"
+            }
+            finally {
+                if ($null -ne $ownerProcess) {
+                    $ownerProcess.Dispose()
+                }
+            }
+        }
+
+        if ($null -eq $staleOwnerReason -and [DateTime]::UtcNow -le $expiresUtc) {
             return $false
         }
 
+        if ($null -eq $staleOwnerReason) {
+            $staleOwnerReason = "lease expiry passed at $($expiresUtc.ToString('o'))"
+        }
+
         Remove-Item -LiteralPath $LockFilePath -Force -ErrorAction Stop
-        _Write-DetailMessage "Removed stale transit lease '$LockFilePath'."
+        _Write-StandardMessage -Message "[WRN] Removed stale transit lease '$LockFilePath': $staleOwnerReason." -Level 'WRN'
         return $true
     }
 
@@ -394,9 +464,12 @@ function Copy-DirectoryTreeGitAware {
 
                     $nowUtc = [DateTime]::UtcNow
                     $payload = [PSCustomObject]@{
-                        CreatedUtc = $nowUtc.ToString('o')
-                        ExpiresUtc = $nowUtc.AddHours($LockTokenExpiryHours).ToString('o')
-                        Token      = $destinationLockToken
+                        CreatedUtc      = $nowUtc.ToString('o')
+                        ExpiresUtc      = $nowUtc.AddHours($LockTokenExpiryHours).ToString('o')
+                        MachineName     = [System.Environment]::MachineName
+                        ProcessId       = $PID
+                        ProcessStartUtc = $currentProcessStartUtc.ToString('o')
+                        Token           = $destinationLockToken
                     }
                     $json = $payload | ConvertTo-Json -Compress
                     $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
@@ -417,11 +490,13 @@ function Copy-DirectoryTreeGitAware {
             }
 
             if ($attempt -ge $LockRetryCount) {
-                throw "Destination '$destinationRootResolved' is still leased after $LockRetryCount retries."
+                $leaseFailureMessage = "Destination '$destinationRootResolved' is still leased after $LockRetryCount retries; copy was not started."
+                _Write-StandardMessage -Message "[ERR] $leaseFailureMessage" -Level 'ERR' -NoThrow
+                throw $leaseFailureMessage
             }
 
             $attempt = $attempt + 1
-            _Write-DetailMessage "Destination is leased; waiting $LockRetryDelaySeconds seconds (attempt $attempt of $LockRetryCount)."
+            _Write-StandardMessage -Message "[ERR] Destination '$destinationRootResolved' is leased; copy is blocked. Retrying in $LockRetryDelaySeconds seconds (attempt $attempt of $LockRetryCount)." -Level 'ERR' -NoThrow
             if ($LockRetryDelaySeconds -gt 0) {
                 Start-Sleep -Seconds $LockRetryDelaySeconds
             }
@@ -542,11 +617,28 @@ function Copy-DirectoryTreeGitAware {
                 try {
                     $sourceInfoAfterCopy = Get-Item -LiteralPath $SourceFullPath -Force -ErrorAction Stop
                     $destinationInfoAfterCopy = Get-Item -LiteralPath $DestinationFullPath -Force -ErrorAction Stop
-                    $destinationInfoAfterCopy.LastWriteTimeUtc = $sourceInfoAfterCopy.LastWriteTimeUtc
-                    $destinationInfoAfterCopy.CreationTimeUtc = $sourceInfoAfterCopy.CreationTimeUtc
+                    $destinationAttributes = $destinationInfoAfterCopy.Attributes
+                    $readOnlyFlag = [System.IO.FileAttributes]::ReadOnly
+                    $readOnlyWasCleared = (($destinationAttributes -band $readOnlyFlag) -ne 0)
+
+                    # Copy-Item preserves ReadOnly; temporarily clear it so Windows permits timestamp updates.
+                    try {
+                        if ($readOnlyWasCleared) {
+                            $writableAttributes = [System.IO.FileAttributes]([int]$destinationAttributes -bxor [int]$readOnlyFlag)
+                            [System.IO.File]::SetAttributes($DestinationFullPath, $writableAttributes)
+                        }
+
+                        [System.IO.File]::SetLastWriteTimeUtc($DestinationFullPath, $sourceInfoAfterCopy.LastWriteTimeUtc)
+                        [System.IO.File]::SetCreationTimeUtc($DestinationFullPath, $sourceInfoAfterCopy.CreationTimeUtc)
+                    }
+                    finally {
+                        if ($readOnlyWasCleared) {
+                            [System.IO.File]::SetAttributes($DestinationFullPath, $destinationAttributes)
+                        }
+                    }
                 }
                 catch {
-                    _Write-StandardMessage -Message "[WRN] Copied '$SourceFullPath' but failed to preserve timestamps: $($_.Exception.Message)" -Level 'WRN'
+                    _Write-StandardMessage -Message "[WRN] Copied '$SourceFullPath' but failed to preserve timestamps or file attributes: $($_.Exception.Message)" -Level 'WRN'
                 }
 
                 $stats.FilesCopied = $stats.FilesCopied + 1

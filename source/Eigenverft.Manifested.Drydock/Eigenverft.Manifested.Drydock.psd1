@@ -122,6 +122,7 @@ FunctionsToExport = @(
     'Get-GitRepositoryName',
     'Get-GitRemoteUrl',
     'Invoke-GitAddCommitPush',
+    'Copy-DirectoryTreeGitAware',
 
     # ...GitHub.ps1
     'Get-GitHubLatestRelease',

@@ -498,3 +498,36 @@ Adds the repo to safe.directory before proceeding.
     Write-Host "[Invoke-GitAddCommitPush] Completed."
 }
 
+function Copy-DirectoryTreeGitAware {
+    <#
+    .SYNOPSIS
+        Copies a directory tree while respecting Git repositories found below the source path.
+
+    .DESCRIPTION
+        Copies files and folders recursively from the source directory to the destination directory.
+
+        Outside Git repositories, the directory tree is copied normally.
+
+        When a Git repository is found below the source directory, its .git metadata is not copied
+        and files ignored by that repository are left out. The copy then continues through the rest
+        of the source tree, including other Git repositories that may be found later.
+
+    .PARAMETER SourceDirectory
+        The directory tree to copy.
+
+    .PARAMETER DestinationDirectory
+        The directory that receives the copied tree.
+
+    .NOTES
+        This command is currently a stub. The copy behavior described above is not implemented yet.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceDirectory,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationDirectory
+    )
+}
+

@@ -389,9 +389,22 @@ Streams the complete directory tree into one zip archive using fast compression.
         }
     }
 
+    function local:_Format-ByteSize {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param([Parameter(Mandatory=$true)][long]$Bytes)
+
+        if ($Bytes -lt 1KB) { return ("{0:N0} B" -f $Bytes) }
+        if ($Bytes -lt 1MB) { return ("{0:N1} KB" -f ([double]$Bytes / 1KB)) }
+        if ($Bytes -lt 1GB) { return ("{0:N1} MB" -f ([double]$Bytes / 1MB)) }
+        if ($Bytes -lt 1TB) { return ("{0:N2} GB" -f ([double]$Bytes / 1GB)) }
+        return ("{0:N2} TB" -f ([double]$Bytes / 1TB))
+    }
+
     _Write-StandardMessage -Message '--- Compress directory to zip archive (streaming) ---' -Level 'INF'
 
-    Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
+    if (-not ([System.Management.Automation.PSTypeName]'System.IO.Compression.ZipArchive').Type) {
+        Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
+    }
 
     $SourceResolvedPath = Resolve-Path -LiteralPath $SourceDirectory -ErrorAction SilentlyContinue
     if ($null -eq $SourceResolvedPath) {
@@ -426,6 +439,9 @@ Streams the complete directory tree into one zip archive using fast compression.
     $compressionEnum = [System.IO.Compression.CompressionLevel]::$CompressionLevel
     $reparsePoint = [System.IO.FileAttributes]::ReparsePoint
     $largeFileSizeThresholdBytes = [long](200 * 1024 * 1024)
+    # ZIP/DOS timestamps support calendar years 1980 through 2107 with two-second resolution.
+    $zipTimestampMinimumYear = 1980
+    $zipTimestampMaximumYear = 2107
     $copyBuffer = New-Object byte[] (1024 * 1024)
 
     $archiveStream = $null
@@ -460,8 +476,8 @@ Streams the complete directory tree into one zip archive using fast compression.
 
         $currentSuffix = if ([string]::IsNullOrEmpty($CurrentPath)) { '' } else { " Current: '$CurrentPath'." }
         _Write-StandardMessage -Message (
-            "[PROGRESS] Running {0}. Files/directories: {1}/{2}; source bytes: {3:N0}; zip bytes: {4:N0}.{5}" -f
-            $timer.Elapsed.ToString('hh\:mm\:ss'), $fileCount, $directoryCount, $byteCount, $zipBytes, $currentSuffix
+            "[PROGRESS] Running {0}. Files/directories: {1}/{2}; source: {3}; zip: {4}.{5}" -f
+            $timer.Elapsed.ToString('hh\:mm\:ss'), $fileCount, $directoryCount, (_Format-ByteSize -Bytes $byteCount), (_Format-ByteSize -Bytes $zipBytes), $currentSuffix
         ) -Level 'INF'
 
         while ($progressState.NextAtMilliseconds -le $elapsedMilliseconds) {
@@ -510,15 +526,15 @@ Streams the complete directory tree into one zip archive using fast compression.
 
                 $relativeFilePath = $file.FullName.Substring($sourcePrefix.Length)
                 $entryName = $relativeFilePath.Replace([System.IO.Path]::DirectorySeparatorChar, '/').Replace([System.IO.Path]::AltDirectorySeparatorChar, '/')
-                _Write-DetailMessage ("Writing file '{0}' as entry '{1}' ({2:N0} bytes)." -f $file.FullName, $entryName, $file.Length)
+                _Write-DetailMessage ("Writing file '{0}' as entry '{1}' ({2})." -f $file.FullName, $entryName, (_Format-ByteSize -Bytes ([long]$file.Length)))
 
                 if ([long]$file.Length -ge $largeFileSizeThresholdBytes) {
-                    $sizeMB = [Math]::Round(([double]$file.Length / 1MB), 1)
-                    _Write-StandardMessage -Message ("[STATUS] Compressing large file (about {0} MB), this may take a while: '{1}'." -f $sizeMB, $relativeFilePath) -Level 'INF'
+                    _Write-StandardMessage -Message ("[STATUS] Compressing large file (about {0}), this may take a while: '{1}'." -f (_Format-ByteSize -Bytes ([long]$file.Length)), $relativeFilePath) -Level 'INF'
                 }
 
                 $entry = $zip.CreateEntry($entryName, $compressionEnum)
-                if ($file.LastWriteTime.Year -ge 1980 -and $file.LastWriteTime.Year -le 2107) {
+                # Preserve the source modification time when it is representable by the ZIP/DOS timestamp format.
+                if ($file.LastWriteTime.Year -ge $zipTimestampMinimumYear -and $file.LastWriteTime.Year -le $zipTimestampMaximumYear) {
                     $entry.LastWriteTime = [DateTimeOffset]$file.LastWriteTime
                 }
 
@@ -575,8 +591,8 @@ Streams the complete directory tree into one zip archive using fast compression.
 
         $zipByteCount = [long](Get-Item -LiteralPath $DestinationFullPath -Force -ErrorAction Stop).Length
         _Write-StandardMessage -Message (
-            "[SUMMARY] Completed in {0}. Files/directories/entries: {1}/{2}/{3}; source/zip bytes: {4:N0}/{5:N0}; level: {6}; from: {7}; to: {8}" -f
-            $timer.Elapsed.ToString('hh\:mm\:ss'), $fileCount, $directoryCount, $validatedEntryCount, $byteCount, $zipByteCount, $CompressionLevel, $SourceFullPath, $DestinationFullPath
+            "[SUMMARY] Completed in {0}. Files/directories/entries: {1}/{2}/{3}; source/zip: {4}/{5}; level: {6}; from: {7}; to: {8}" -f
+            $timer.Elapsed.ToString('hh\:mm\:ss'), $fileCount, $directoryCount, $validatedEntryCount, (_Format-ByteSize -Bytes $byteCount), (_Format-ByteSize -Bytes $zipByteCount), $CompressionLevel, $SourceFullPath, $DestinationFullPath
         ) -Level 'INF'
     }
     catch {

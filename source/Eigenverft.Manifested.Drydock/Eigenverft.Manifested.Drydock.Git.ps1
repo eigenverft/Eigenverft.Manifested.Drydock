@@ -504,13 +504,15 @@ function Copy-DirectoryTreeGitAware {
         Copies a directory tree while respecting Git repositories found below the source path.
 
     .DESCRIPTION
-        Copies files and folders recursively from the source directory to the destination directory.
+        Copies a directory tree like a normal recursive copy, but treats Git repositories specially.
 
-        Outside Git repositories, the directory tree is copied normally.
+        The command is intended for fast backup or staging copies of large directory trees. Files and
+        folders outside Git repositories are copied normally. When a Git repository is found, its .git
+        metadata is not copied and files ignored by that repository are left out.
 
-        When a Git repository is found below the source directory, its .git metadata is not copied
-        and files ignored by that repository are left out. The copy then continues through the rest
-        of the source tree, including other Git repositories that may be found later.
+        This avoids copying Git metadata and common generated artifacts such as build output, caches,
+        logs, and other files that are normally excluded through Git ignore rules. The copy then
+        continues through the rest of the source tree and handles other Git repositories the same way.
 
     .PARAMETER SourceDirectory
         The directory tree to copy.

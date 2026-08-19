@@ -2191,7 +2191,7 @@ Valid values:
         [int]$LockTokenExpiryHours = 12,
 
         [ValidateSet('None','Length','LengthAndLastWriteTimeUtc','Sha256Hash','Md5FastHash')]
-        [string]$CopyComparisonPolicy = 'Md5FastHash',
+        [string]$CopyComparisonPolicy = 'LengthAndLastWriteTimeUtc',
 
         [Parameter()]
         [ValidateSet('Detailed','Summary')]

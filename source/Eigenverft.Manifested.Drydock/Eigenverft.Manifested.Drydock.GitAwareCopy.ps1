@@ -50,7 +50,19 @@ function Copy-DirectoryTreeGitAware {
         Age after which a stale destination lease may be removed. Default is 12 hours.
 
     .PARAMETER LogDetailLevel
-        Summary writes only the final result. Detailed also writes repository, lease, retry, and skip details.
+        Summary writes start, progress, status, warning, and final summary messages. Detailed also writes
+        repository, lease, retry, and skip details.
+
+    .EXAMPLE
+        Copy-DirectoryTreeGitAware -SourceDirectory 'D:\Programs\Eigenverft.App.McpServer' -DestinationDirectory 'E:\Backup\Eigenverft.App.McpServer'
+
+        Creates a fast backup-style copy. Normal directories are copied recursively; Git metadata and files
+        ignored by repository .gitignore files are left out.
+
+    .EXAMPLE
+        Copy-DirectoryTreeGitAware -SourceDirectory 'D:\Workspace' -DestinationDirectory 'E:\WorkspaceBackup' -CopyComparisonPolicy Length
+
+        Uses file length to skip destination files that already match the source length.
 
     .NOTES
         This is the first implementation draft. Directory reparse points are skipped and reported instead
@@ -85,6 +97,7 @@ function Copy-DirectoryTreeGitAware {
         [int]$LockRetryDelaySeconds = 30,
 
         [Parameter()]
+        [ValidateRange(1, 87600)]
         [int]$LockTokenExpiryHours = 12,
 
         [Parameter()]
@@ -101,23 +114,26 @@ function Copy-DirectoryTreeGitAware {
         throw "Source directory '$SourceDirectory' does not exist or is not a directory."
     }
 
-    if ($LockTokenExpiryHours -le 0) {
-        $LockTokenExpiryHours = 24
-        Write-Warning "LockTokenExpiryHours was <= 0; defaulting to 24 hours."
-    }
-
     $sourceRootResolved = (Resolve-Path -LiteralPath $SourceDirectory).ProviderPath
     $destinationRootFull = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($DestinationDirectory)
 
     $sourceCompare = $sourceRootResolved.TrimEnd('\', '/')
     $destinationCompare = $destinationRootFull.TrimEnd('\', '/')
     $sourcePrefix = $sourceCompare + [System.IO.Path]::DirectorySeparatorChar
+    if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        $pathComparison = [System.StringComparison]::OrdinalIgnoreCase
+        $pathComparer = [System.StringComparer]::OrdinalIgnoreCase
+    }
+    else {
+        $pathComparison = [System.StringComparison]::Ordinal
+        $pathComparer = [System.StringComparer]::Ordinal
+    }
 
-    if ([string]::Equals($sourceCompare, $destinationCompare, [System.StringComparison]::OrdinalIgnoreCase)) {
+    if ([string]::Equals($sourceCompare, $destinationCompare, $pathComparison)) {
         throw 'Source and destination paths must be different.'
     }
 
-    if ($destinationCompare.StartsWith($sourcePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    if ($destinationCompare.StartsWith($sourcePrefix, $pathComparison)) {
         throw "Destination '$destinationRootFull' must not be inside source '$sourceRootResolved'."
     }
 
@@ -137,7 +153,7 @@ function Copy-DirectoryTreeGitAware {
         ReparsePointsSkipped  = 0L
     }
 
-    $processedRepositories = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $processedRepositories = New-Object 'System.Collections.Generic.HashSet[string]' ($pathComparer)
     $destinationLockFileName = 'transit.destination.lock'
     $sourceLockBaseName = 'transit.source'
     $destinationLockPath = Join-Path -Path $destinationRootResolved -ChildPath $destinationLockFileName
@@ -150,7 +166,19 @@ function Copy-DirectoryTreeGitAware {
     }
     $largeFileSizeThresholdBytes = [long](200 * 1024 * 1024)
 
+    function local:_Write-Message {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSAvoidUsingWriteHost","")]
+        param(
+            [Parameter(Mandatory = $true)][string]$Tag,
+            [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Message
+        )
+
+        Write-Host "[Copy-DirectoryTreeGitAware] [$Tag] $Message"
+    }
+
     function local:_Write-ProgressMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param([string]$CurrentPath)
 
         $elapsedMilliseconds = $stopwatch.ElapsedMilliseconds
@@ -163,8 +191,8 @@ function Copy-DirectoryTreeGitAware {
             $currentSuffix = " Current: '$CurrentPath'."
         }
 
-        Write-Host (
-            "[Copy-DirectoryTreeGitAware] [PROGRESS] Running {0}. Directories visited: {1}; Git repos: {2}; files processed/copied/unchanged: {3}/{4}/{5}; retries: {6}.{7}" -f
+        _Write-Message -Tag 'PROGRESS' -Message (
+            "Running {0}. Directories visited: {1}; Git repos: {2}; files processed/copied/unchanged: {3}/{4}/{5}; retries: {6}.{7}" -f
             $stopwatch.Elapsed.ToString('hh\:mm\:ss'),
             $stats.DirectoriesVisited,
             $stats.GitRepositories,
@@ -181,13 +209,15 @@ function Copy-DirectoryTreeGitAware {
     }
 
     function local:_Write-DetailMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param([Parameter(Mandatory = $true)][string]$Message)
         if ($LogDetailLevel -eq 'Detailed') {
-            Write-Host "[Copy-DirectoryTreeGitAware] $Message"
+            _Write-Message -Tag 'DETAIL' -Message $Message
         }
     }
 
     function local:_Ensure-Directory {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param([Parameter(Mandatory = $true)][string]$Path)
 
         if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
@@ -198,6 +228,7 @@ function Copy-DirectoryTreeGitAware {
     }
 
     function local:_Remove-StaleTransitLockIfExpired {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param([Parameter(Mandatory = $true)][string]$LockFilePath)
 
         if (-not (Test-Path -LiteralPath $LockFilePath -PathType Leaf -ErrorAction SilentlyContinue)) {
@@ -220,7 +251,7 @@ function Copy-DirectoryTreeGitAware {
                     }
                 }
                 catch {
-                    # Fall back to file timestamps for older or invalid lease payloads.
+                    _Write-DetailMessage "Transit lease '$LockFilePath' has no usable ExpiresUtc value; falling back to file timestamps."
                 }
             }
 
@@ -247,6 +278,8 @@ function Copy-DirectoryTreeGitAware {
     }
 
     function local:_Acquire-DestinationLease {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param()
         $attempt = 0
 
         while ($true) {
@@ -260,8 +293,8 @@ function Copy-DirectoryTreeGitAware {
             $readerExists = $false
             $readerItems = @(Get-ChildItem -LiteralPath $destinationRootResolved -File -Force -ErrorAction SilentlyContinue)
             foreach ($readerItem in $readerItems) {
-                if ([string]::Equals($readerItem.Name, $sourceLockBaseName, [System.StringComparison]::OrdinalIgnoreCase) -or
-                    $readerItem.Name.StartsWith($sourceLockBaseName + '.', [System.StringComparison]::OrdinalIgnoreCase)) {
+                if ([string]::Equals($readerItem.Name, $sourceLockBaseName, $pathComparison) -or
+                    $readerItem.Name.StartsWith($sourceLockBaseName + '.', $pathComparison)) {
                     if (-not (_Remove-StaleTransitLockIfExpired -LockFilePath $readerItem.FullName)) {
                         $readerExists = $true
                     }
@@ -293,7 +326,7 @@ function Copy-DirectoryTreeGitAware {
                     return
                 }
                 catch [System.IO.IOException] {
-                    # Another process won the CreateNew race. Retry through the normal lease path.
+                    _Write-DetailMessage 'Destination lease CreateNew race detected; retrying through the normal lease checks.'
                 }
                 finally {
                     if ($null -ne $stream) {
@@ -316,6 +349,8 @@ function Copy-DirectoryTreeGitAware {
     }
 
     function local:_Release-DestinationLease {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param()
         if (-not $destinationLeaseState.Acquired) {
             return
         }
@@ -329,7 +364,7 @@ function Copy-DirectoryTreeGitAware {
             $jsonObject = ConvertFrom-Json -InputObject $rawContent -ErrorAction Stop
             $tokenProperty = $jsonObject.PSObject.Properties['Token']
             if ($null -eq $tokenProperty -or [string]$tokenProperty.Value -ne $destinationLockToken) {
-                Write-Warning "Destination lease '$destinationLockPath' changed owner; it will not be removed by this process."
+                _Write-Message -Tag 'WARNING' -Message "Destination lease '$destinationLockPath' changed owner; it will not be removed by this process."
                 return
             }
 
@@ -337,11 +372,13 @@ function Copy-DirectoryTreeGitAware {
             _Write-DetailMessage "Released destination lease '$destinationLockPath'."
         }
         catch {
-            Write-Warning "Failed to release destination lease '$destinationLockPath': $($_.Exception.Message)"
+            _Write-Message -Tag 'WARNING' -Message "Failed to release destination lease '$destinationLockPath': $($_.Exception.Message)"
         }
     }
 
-    function local:_Test-DestinationFileMatches {
+    function local:_Test-DestinationFileMatch {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSAvoidUsingBrokenHashAlgorithms","")]
         param(
             [Parameter(Mandatory = $true)][string]$SourceFullPath,
             [Parameter(Mandatory = $true)][string]$DestinationFullPath
@@ -378,6 +415,7 @@ function Copy-DirectoryTreeGitAware {
     }
 
     function local:_Copy-OneFile {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param(
             [Parameter(Mandatory = $true)][string]$SourceFullPath,
             [Parameter(Mandatory = $true)][string]$DestinationFullPath
@@ -387,7 +425,7 @@ function Copy-DirectoryTreeGitAware {
         _Write-ProgressMessage -CurrentPath $SourceFullPath
 
         try {
-            if (_Test-DestinationFileMatches -SourceFullPath $SourceFullPath -DestinationFullPath $DestinationFullPath) {
+            if (_Test-DestinationFileMatch -SourceFullPath $SourceFullPath -DestinationFullPath $DestinationFullPath) {
                 $stats.FilesUnchanged = $stats.FilesUnchanged + 1
                 _Write-DetailMessage "Skipped unchanged file '$SourceFullPath'."
                 return
@@ -406,7 +444,7 @@ function Copy-DirectoryTreeGitAware {
             $sourceInfoBeforeCopy = Get-Item -LiteralPath $SourceFullPath -Force -ErrorAction Stop
             if ([long]$sourceInfoBeforeCopy.Length -ge $largeFileSizeThresholdBytes) {
                 $sizeMB = [Math]::Round(([double]$sourceInfoBeforeCopy.Length / 1MB), 1)
-                Write-Host "[Copy-DirectoryTreeGitAware] [STATUS] Copying large file (about $sizeMB MB), this may take a while: '$SourceFullPath'."
+                _Write-Message -Tag 'STATUS' -Message "Copying large file (about $sizeMB MB), this may take a while: '$SourceFullPath'."
             }
         }
         catch {
@@ -427,7 +465,7 @@ function Copy-DirectoryTreeGitAware {
                     $destinationInfoAfterCopy.CreationTimeUtc = $sourceInfoAfterCopy.CreationTimeUtc
                 }
                 catch {
-                    Write-Warning "Copied '$SourceFullPath' but failed to preserve timestamps: $($_.Exception.Message)"
+                    _Write-Message -Tag 'WARNING' -Message "Copied '$SourceFullPath' but failed to preserve timestamps: $($_.Exception.Message)"
                 }
 
                 $stats.FilesCopied = $stats.FilesCopied + 1
@@ -450,6 +488,7 @@ function Copy-DirectoryTreeGitAware {
     }
 
     function local:_Get-GitRepositoryFileList {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param([Parameter(Mandatory = $true)][string]$RepositoryPath)
 
         $startInfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -466,7 +505,7 @@ function Copy-DirectoryTreeGitAware {
             $startInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
         }
         catch {
-            # Older runtimes may not expose explicit redirected-stream encodings.
+            _Write-DetailMessage 'Redirected Git stream encoding could not be set explicitly on this runtime.'
         }
 
         $process = New-Object System.Diagnostics.Process
@@ -493,6 +532,7 @@ function Copy-DirectoryTreeGitAware {
     }
 
     function local:_Copy-GitRepository {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param(
             [Parameter(Mandatory = $true)][string]$RepositorySourcePath,
             [Parameter(Mandatory = $true)][string]$RepositoryDestinationPath
@@ -534,6 +574,7 @@ function Copy-DirectoryTreeGitAware {
     }
 
     function local:_Walk-Directory {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
         param(
             [Parameter(Mandatory = $true)][string]$CurrentSourcePath,
             [Parameter(Mandatory = $true)][string]$CurrentDestinationPath
@@ -552,7 +593,7 @@ function Copy-DirectoryTreeGitAware {
 
         $items = @(Get-ChildItem -LiteralPath $CurrentSourcePath -Force -ErrorAction Stop)
         foreach ($item in $items) {
-            if ([string]::Equals($item.Name, '.git', [System.StringComparison]::OrdinalIgnoreCase)) {
+            if ([string]::Equals($item.Name, '.git', $pathComparison)) {
                 continue
             }
 
@@ -561,7 +602,7 @@ function Copy-DirectoryTreeGitAware {
             if ($item.PSIsContainer) {
                 if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
                     $stats.ReparsePointsSkipped = $stats.ReparsePointsSkipped + 1
-                    Write-Warning "Skipping directory reparse point '$($item.FullName)' in first implementation draft."
+                    _Write-Message -Tag 'WARNING' -Message "Skipping directory reparse point '$($item.FullName)' in first implementation draft."
                     continue
                 }
 
@@ -573,13 +614,15 @@ function Copy-DirectoryTreeGitAware {
         }
     }
 
+    _Write-Message -Tag 'START' -Message "Copying '$sourceRootResolved' to '$destinationRootResolved' with comparison policy '$CopyComparisonPolicy'."
+
     try {
         _Acquire-DestinationLease
         _Walk-Directory -CurrentSourcePath $sourceRootResolved -CurrentDestinationPath $destinationRootResolved
 
         $stopwatch.Stop()
-        Write-Host (
-            "[Copy-DirectoryTreeGitAware] Completed in {0}. Directories visited/created: {1}/{2}; Git repos: {3}; files processed/copied/unchanged/missing: {4}/{5}/{6}/{7}; retries: {8}; reparse points skipped: {9}. From: {10} To: {11}" -f
+        _Write-Message -Tag 'SUMMARY' -Message (
+            "Completed in {0}. Directories visited/created: {1}/{2}; Git repos: {3}; files processed/copied/unchanged/missing: {4}/{5}/{6}/{7}; retries: {8}; reparse points skipped: {9}. From: {10} To: {11}" -f
             $stopwatch.Elapsed,
             $stats.DirectoriesVisited,
             $stats.DirectoriesCreated,

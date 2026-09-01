@@ -3149,3 +3149,93 @@ Valid values:
     }
 }
 
+function Remove-EmptyDirectories {
+<#
+.SYNOPSIS
+    Removes empty directories recursively.
+
+.DESCRIPTION
+    Recursively scans the specified directory and removes all empty
+    subdirectories.
+
+    Directories are processed from the deepest level upwards so that parent
+    directories which become empty after their child directories are removed
+    can also be deleted.
+
+    A directory is considered empty only when it contains neither files nor
+    directories. Hidden and system items are included in this check.
+
+    By default, the directory specified by -Path itself is not removed.
+    Use -RemoveRootIfEmpty to also remove the root directory when it is empty
+    after processing all subdirectories.
+
+.PARAMETER Path
+    Specifies the root directory to scan recursively.
+
+    The path must reference an existing directory.
+
+.PARAMETER RemoveRootIfEmpty
+    Also removes the directory specified by -Path if it is empty after all
+    empty subdirectories have been processed.
+
+.EXAMPLE
+    Remove-EmptyDirectories -Path 'C:\Temp'
+
+    Removes all empty subdirectories below C:\Temp.
+    C:\Temp itself is preserved.
+
+.EXAMPLE
+    Remove-EmptyDirectories -Path 'C:\Temp' -RemoveRootIfEmpty
+
+    Removes all empty subdirectories below C:\Temp and also removes C:\Temp
+    itself if it is empty afterwards.
+
+.EXAMPLE
+    Remove-EmptyDirectories -Path 'C:\Temp' -RemoveRootIfEmpty -WhatIf
+
+    Shows which directories would be removed without actually deleting them.
+
+.NOTES
+    Compatibility: Windows PowerShell 5.1 and PowerShell 7+.
+
+    Hidden and system files or directories count as content and therefore
+    prevent a directory from being removed.
+#>
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string] $Path,
+
+        [Parameter()]
+        [switch] $RemoveRootIfEmpty
+    )
+
+    $rootPath = [System.IO.Path]::GetFullPath($Path)
+
+    if (-not [System.IO.Directory]::Exists($rootPath)) {
+        throw "Directory does not exist: '$rootPath'"
+    }
+
+    $directories = @(Get-ChildItem -LiteralPath $rootPath -Directory -Recurse -Force -ErrorAction Stop | Sort-Object { $_.FullName.Length } -Descending)
+
+    foreach ($directory in $directories) {
+        $content = Get-ChildItem -LiteralPath $directory.FullName -Force -ErrorAction Stop | Select-Object -First 1
+
+        if ($null -eq $content) {
+            if ($PSCmdlet.ShouldProcess($directory.FullName, 'Remove empty directory')) {
+                Remove-Item -LiteralPath $directory.FullName -Force -ErrorAction Stop
+            }
+        }
+    }
+
+    if ($RemoveRootIfEmpty) {
+        $rootContent = Get-ChildItem -LiteralPath $rootPath -Force -ErrorAction Stop | Select-Object -First 1
+
+        if ($null -eq $rootContent) {
+            if ($PSCmdlet.ShouldProcess($rootPath, 'Remove empty root directory')) {
+                Remove-Item -LiteralPath $rootPath -Force -ErrorAction Stop
+            }
+        }
+    }
+}

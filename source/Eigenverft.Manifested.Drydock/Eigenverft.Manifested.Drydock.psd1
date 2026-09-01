@@ -140,6 +140,7 @@ FunctionsToExport = @(
     'Copy-FilesRecursively',
     'Join-FileText',
     'Sync-DirectoryTreeLockSafe',
+    'Remove-EmptyDirectories',
 
     # ...PathLimits.ps1
     'Test-WindowsPathLimits',

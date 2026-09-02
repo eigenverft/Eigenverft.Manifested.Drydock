@@ -1896,20 +1896,24 @@ No line-ending checks are performed; inputs are assumed correct. Optionally add 
 platform newlines between files via -BetweenFiles, defaulting to none. Idempotent: if the resulting
 text equals the current output file’s content, the file is not rewritten.
 
-All parameters require absolute paths. Input files must exist. Output directory must exist.
+All parameters require absolute paths. Input files must exist. Output directory must exist unless
+-CreateOutputDirectory is specified.
 The output file must not appear among input files.
 
 .PARAMETER InputFiles
 Absolute paths of existing input files, concatenated in the given order.
 
 .PARAMETER OutputFile
-Absolute path of the output file. Parent directory must already exist.
+Absolute path of the output file. Parent directory must already exist unless -CreateOutputDirectory is specified.
 
 .PARAMETER BetweenFiles
 How many platform newlines to insert between files. Default 'None'.
 - 'None' : Insert nothing between files.
 - 'One'  : Insert exactly one platform newline between files.
 - 'Two'  : Insert exactly two platform newlines between files.
+
+.PARAMETER CreateOutputDirectory
+Create the output parent directory when it does not exist.
 
 .EXAMPLE
 Join-FileText -InputFiles @('C:\Repo\A.md','C:\Repo\B.md') -OutputFile 'C:\Repo\Combined.md'
@@ -1943,7 +1947,10 @@ No pipeline input. No WhatIf/Confirm. ASCII-only implementation.
 
         [Parameter(Mandatory=$false)]
         [ValidateSet('None','One','Two')]
-        [string] $BetweenFiles = 'None'
+        [string] $BetweenFiles = 'None',
+
+        [Parameter(Mandatory=$false)]
+        [switch] $CreateOutputDirectory
     )
 
     # ---------------- Inline helpers (local scope) ----------------
@@ -2032,7 +2039,10 @@ No pipeline input. No WhatIf/Confirm. ASCII-only implementation.
     if (-not (_Is-Rooted -Path $OutputFile)) { throw "OutputFile must be an absolute path." }
     $outParent = Split-Path -Path $OutputFile -Parent
     if ([string]::IsNullOrWhiteSpace($outParent)) { throw "OutputFile must include a parent directory." }
-    if (-not (Test-Path -LiteralPath $outParent -PathType Container)) { throw ("Output directory does not exist: {0}" -f $outParent) }
+    if (-not (Test-Path -LiteralPath $outParent -PathType Container)) {
+        if (-not $CreateOutputDirectory) { throw ("Output directory does not exist: {0}" -f $outParent) }
+        $null = [System.IO.Directory]::CreateDirectory($outParent)
+    }
 
     foreach ($p in $InputFiles) {
         if ($p -eq $OutputFile) { throw "OutputFile must not be included in InputFiles. Choose a different output destination." }

@@ -1,22 +1,16 @@
-# This workflow will build a .NET project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-net
-# https://github.com/actions
-
 name: cicd.yml
 
 on:
   push:
     paths:
-      - 'source/Eigenverft.Manifested.Drydock/**'
+      - 'src/prj/Eigenverft.Manifested.Drydock/**'
     branches:
-      - 'master'
       - 'main'
       - 'hotfix'
       - 'release'
       - 'develop'
       - 'bugfix'
       - 'feature'
-      - 'master/**'
       - 'main/**'
       - 'hotfix/**'
       - 'release/**'
@@ -49,7 +43,7 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Diagnostic print enviroment vars
+    - name: Diagnostic print environment vars
       run: printenv
 
     - name: Display powershell core version

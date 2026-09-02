@@ -474,7 +474,7 @@ internal sealed class PlaywrightAuthRunner
 }
 
 # Example:
-# . .\foo.ps1
+# . .\BrowserLogin.ps1
 $session = New-WebRequestSessionFromBrowserLogin `
      -Url 'https://account.microsoft.com/' `
      -SessionId 'account-test' `

@@ -1,6 +1,10 @@
+<p align="center">
+  <img alt="Eigenverft" src="resources/eigenverft-lockup-horizontal-on_all.svg" width="500">
+</p>
+
 # Eigenverft.Manifested.Drydock
 
-[![PowerShell Gallery Version](https://img.shields.io/powershellgallery/v/Eigenverft.Manifested.Drydock?label=PSGallery&logo=powershell)](https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock) [![PowerShell Gallery Downloads](https://img.shields.io/powershellgallery/dt/Eigenverft.Manifested.Drydock?label=Downloads&logo=powershell)](https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock) [![PowerShell Support](https://img.shields.io/badge/PowerShell-5.1%2B%20Desktop%2FCore-5391FE?logo=powershell&logoColor=white)](source/Eigenverft.Manifested.Drydock/Eigenverft.Manifested.Drydock.psd1) [![Build Status](https://img.shields.io/github/actions/workflow/status/eigenverft/Eigenverft.Manifested.Drydock/cicd.yml?branch=main&label=build)](https://github.com/eigenverft/Eigenverft.Manifested.Drydock/actions/workflows/cicd.yml) [![License](https://img.shields.io/github/license/eigenverft/Eigenverft.Manifested.Drydock?logo=mit)](LICENSE)
+[![PowerShell Gallery Version](https://img.shields.io/powershellgallery/v/Eigenverft.Manifested.Drydock?label=PSGallery&logo=powershell)](https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock) [![PowerShell Gallery Downloads](https://img.shields.io/powershellgallery/dt/Eigenverft.Manifested.Drydock?label=Downloads&logo=powershell)](https://www.powershellgallery.com/packages/Eigenverft.Manifested.Drydock) [![PowerShell Support](https://img.shields.io/badge/PowerShell-5.1%2B%20Desktop%2FCore-5391FE?logo=powershell&logoColor=white)](src/prj/Eigenverft.Manifested.Drydock/Eigenverft.Manifested.Drydock.psd1) [![Build Status](https://img.shields.io/github/actions/workflow/status/eigenverft/Eigenverft.Manifested.Drydock/cicd.yml?branch=main&label=build)](https://github.com/eigenverft/Eigenverft.Manifested.Drydock/actions/workflows/cicd.yml) [![License](https://img.shields.io/github/license/eigenverft/Eigenverft.Manifested.Drydock?logo=mit)](LICENSE)
 
 PowerShell helper functions for the Eigenverft Manifested Drydock, optimized for lightning-fast iteration and reliable local + CI/CD workflows.
 
@@ -35,10 +39,10 @@ No admin rights needed, sets up PowerShellGet and PackageManagement for CurrentU
 
 ```batch
 # From Command Prompt:
-powershell -NoProfile -ExecutionPolicy Unrestricted -Command "& { irm -Uri https://raw.githubusercontent.com/eigenverft/Eigenverft.Manifested.Drydock/refs/heads/main/install/DrydockInit.ps1 | iex }"
+powershell -NoProfile -ExecutionPolicy Unrestricted -Command "& { irm -Uri https://raw.githubusercontent.com/eigenverft/Eigenverft.Manifested.Drydock/refs/heads/main/src/prj/Eigenverft.Manifested.Drydock.Bootstrap/DrydockInit.ps1 | iex }"
 
 # From PowerShell 5.1:
-Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope Process ; irm -Uri https://raw.githubusercontent.com/eigenverft/Eigenverft.Manifested.Drydock/refs/heads/main/install/DrydockInit.ps1 | iex
+Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope Process ; irm -Uri https://raw.githubusercontent.com/eigenverft/Eigenverft.Manifested.Drydock/refs/heads/main/src/prj/Eigenverft.Manifested.Drydock.Bootstrap/DrydockInit.ps1 | iex
 ```
 
 ---
@@ -60,7 +64,7 @@ Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Scope Process ; irm -Uri http
 - **Get-GitRemoteUrl (gru)** Return `remote.origin.url` as configured.
   Example: `Get-GitRemoteUrl`
 - **Invoke-GitAddCommitPush (igacp)** Stage folders, commit with transient identity, push branch, optionally tag.
-  Example: `Invoke-GitAddCommitPush -TopLevelDirectory (Get-GitTopLevelDirectory) -Folders @('source/Eigenverft.Manifested.Drydock') -CurrentBranch (Get-GitCurrentBranch)`
+  Example: `Invoke-GitAddCommitPush -TopLevelDirectory (Get-GitTopLevelDirectory) -Folders @('src/prj/Eigenverft.Manifested.Drydock') -CurrentBranch (Get-GitCurrentBranch)`
 
 ### 📊 Versioning & Deployments
 - **Convert-DateTimeTo64SecVersionComponents (cdv64)** Encode DateTime to `Build.Major.Minor.Revision` with 64s granularity.

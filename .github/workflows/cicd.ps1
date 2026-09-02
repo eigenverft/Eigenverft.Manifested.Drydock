@@ -28,7 +28,7 @@ Write-Output "Powershell script $(Split-Path -Leaf $PSCommandPath) has started."
 
 $remoteResourcesOk = Test-RemoteResourcesAvailable -Quiet
 
-# Ensure connectivity to PowerShell Gallery before attempting module installation, if not assuming being offline, installation is present check existance with Test-ModuleAvailable
+# Ensure connectivity to PowerShell Gallery before attempting module installation, if not assuming being offline, installation is present check existence with Test-ModuleAvailable
 if ($remoteResourcesOk)
 {
     # Install the required modules to run this script, Eigenverft.Manifested.Drydock needs to be Powershell 5.1 and Powershell 7+ compatible

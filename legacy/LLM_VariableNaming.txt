@@ -39,7 +39,7 @@ Root, Base, Relative, Full (absolute), Source, Destination, Input, Output, Versi
 ## Casing and cross-language style (be consistent)
 
 - Pick one casing style and use it everywhere. If code is already present, match its casing. Consistency is the only hard rule.
-- Typical defaults but can be differently implemented thats ok:
+- Typical defaults but can be differently implemented that's ok:
   - PowerShell and C#: PascalCase (e.g., DocsOutputDirectory).
   - JS/TS/Go/Java: camelCase (e.g., docsOutputDirectory)
   - Python/Ruby: snake_case (e.g., docs_output_directory)

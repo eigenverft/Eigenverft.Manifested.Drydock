@@ -904,3 +904,718 @@ function Invoke-ProcessTyped {
     }
 }
 
+
+function Invoke-Execution {
+<#
+.SYNOPSIS
+Executes a native process with live streaming output and optional log file.
+
+.DESCRIPTION
+Drop-in replacement for Invoke-Execution.
+Fixes the “wrong user environment variables when using -Credential” problem by building the
+target user’s environment block (CreateEnvironmentBlock) and applying it to ProcessStartInfo
+*before* calling .Start().
+
+Everything else (streaming, logging, return object shape) is kept as-is.
+
+.PARAMETER File
+Full path (or name in PATH) of the executable.
+
+.PARAMETER Arguments
+Array of arguments; combined with Build-ArgString.
+
+.PARAMETER WorkingDirectory
+Process working directory.
+
+.PARAMETER Credential
+Optional PSCredential to run the process as another user.
+
+.PARAMETER LogPath
+Optional log file. When set, each StdOut/StdErr line is appended to this file.
+
+.PARAMETER LimitLogLines
+Maximum number of lines to keep in memory for each stream. Use 0 or negative for unlimited.
+Defaults to 1000.
+
+.OUTPUTS
+[pscustomobject] with ExitCode, StdOut, StdErr, StdAll, LogPath, LimitHit.
+#>
+    [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string] $File,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
+        [string[]] $Arguments,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string] $WorkingDirectory,
+
+        [Parameter(Mandatory = $false)]
+        [System.Management.Automation.PSCredential] $Credential,
+
+        [Parameter(Mandatory = $false)]
+        [string] $LogPath,
+
+        [Parameter(Mandatory = $false)]
+        [int] $LimitLogLines = 1000,
+
+        [Parameter(Mandatory = $false)]
+        [switch] $TakeLastOnLimit
+    )
+
+    function local:_Write-StandardMessage {
+        [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+        param(
+            [Parameter(Mandatory=$true)][AllowEmptyString()][string]$Message,
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$Level='INF',
+            [Parameter()][ValidateSet('TRC','DBG','INF','WRN','ERR','FTL')][string]$MinLevel
+        )
+        if ($null -eq $Message) { $Message = [string]::Empty }
+        $sevMap=@{TRC=0;DBG=1;INF=2;WRN=3;ERR=4;FTL=5}
+        if(-not $PSBoundParameters.ContainsKey('MinLevel')){
+            $gv=Get-Variable ConsoleLogMinLevel -Scope Global -ErrorAction SilentlyContinue
+            $MinLevel=if($gv -and $gv.Value -and -not [string]::IsNullOrEmpty([string]$gv.Value)){[string]$gv.Value}else{'INF'}
+        }
+        $lvl=$Level.ToUpperInvariant()
+        $min=$MinLevel.ToUpperInvariant()
+        $sev=$sevMap[$lvl];if($null -eq $sev){$lvl='INF';$sev=$sevMap['INF']}
+        $gate=$sevMap[$min];if($null -eq $gate){$min='INF';$gate=$sevMap['INF']}
+        if($sev -ge 4 -and $sev -lt $gate -and $gate -ge 4){$lvl=$min;$sev=$gate}
+        if($sev -lt $gate){return}
+        $ts=[DateTime]::UtcNow.ToString('yy-MM-dd HH:mm:ss.ff')
+        $stack=Get-PSCallStack ; $helperName=$MyInvocation.MyCommand.Name ; $helperScript=$MyInvocation.MyCommand.ScriptBlock.File ; $caller=$null
+        if($stack){
+            for($i=0;$i -lt $stack.Count;$i++){
+                $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_') -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+            }
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName -and -not $fn.StartsWith('_')){$caller=$f;break}
+                }
+            }
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName;$sn=$f.ScriptName
+                    if($fn -and $fn -ne $helperName -and (-not $helperScript -or -not $sn -or $sn -ne $helperScript)){$caller=$f;break}
+                }
+            }
+            if(-not $caller){
+                for($i=0;$i -lt $stack.Count;$i++){
+                    $f=$stack[$i];$fn=$f.FunctionName
+                    if($fn -and $fn -ne $helperName){$caller=$f;break}
+                }
+            }
+        }
+        if(-not $caller){$caller=[pscustomobject]@{ScriptName=$PSCommandPath;FunctionName=$null}}
+        $lineNumber=$null
+        $p=$caller.PSObject.Properties['ScriptLineNumber'];if($p -and $p.Value){$lineNumber=[string]$p.Value}
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Position']
+            if($p -and $p.Value){
+                $sp=$p.Value.PSObject.Properties['StartLineNumber'];if($sp -and $sp.Value){$lineNumber=[string]$sp.Value}
+            }
+        }
+        if(-not $lineNumber){
+            $p=$caller.PSObject.Properties['Location']
+            if($p -and $p.Value){
+                $m=[regex]::Match([string]$p.Value,':(\d+)\s+char:','IgnoreCase');if($m.Success -and $m.Groups.Count -gt 1){$lineNumber=$m.Groups[1].Value}
+            }
+        }
+        $file=if($caller.ScriptName){Split-Path -Leaf $caller.ScriptName}else{'cmd'}
+        if($file -ne 'console' -and $lineNumber){$file="{0}:{1}" -f $file,$lineNumber}
+        $prefix="[$ts "
+        $suffix="] [$file] $Message"
+        $cfg=@{TRC=@{Fore='DarkGray';Back=$null};DBG=@{Fore='Cyan';Back=$null};INF=@{Fore='Green';Back=$null};WRN=@{Fore='Yellow';Back=$null};ERR=@{Fore='Red';Back='DarkRed'}}[$lvl]
+        $fore=$cfg.Fore
+        $back=$cfg.Back
+        $isInteractive=[System.Environment]::UserInteractive
+        if($isInteractive -and ($fore -or $back)){
+            Write-Host -NoNewline $prefix
+            if($fore -and $back){Write-Host -NoNewline $lvl -ForegroundColor $fore -BackgroundColor $back}
+            elseif($fore){Write-Host -NoNewline $lvl -ForegroundColor $fore}
+            elseif($back){Write-Host -NoNewline $lvl -BackgroundColor $back}
+            Write-Host $suffix
+        } else {
+            Write-Host "$prefix$lvl$suffix"
+        }
+        if($sev -ge 4 -and $ErrorActionPreference -eq 'Stop'){throw ("ConsoleLog.{0}: {1}" -f $lvl,$Message)}
+    }
+
+    function local:_Build-NewArgString {
+    <#
+    .SYNOPSIS
+    Builds a command-line arg string plus a masked display variant.
+
+    .DESCRIPTION
+    Quotes args containing spaces, tabs, newlines, or quotes. Quotes are escaped as \".
+    If -HiddenArgs and/or -HiddenArgIndexes are provided, matching args are replaced with [Hidden]
+    in the Display output. Used output is never modified.
+
+    .PARAMETER Args
+    Array of individual argument strings.
+
+    .PARAMETER HiddenArgs
+    Argument values that should be hidden in the Display output (exact match).
+
+    .PARAMETER HiddenArgIndexes
+    0-based positions in Args that should be hidden in the Display output.
+
+    .PARAMETER CaseInsensitive
+    If set, HiddenArgs matching is case-insensitive.
+
+    .OUTPUTS
+    [PSCustomObject] with:
+    - Used    (string)
+    - Display (string)
+
+    .EXAMPLE
+    $r = Build-ArgString -Args @('--user','carsten','--password','s3cr3t') -HiddenArgs @('s3cr3t')
+    $r.Used
+    $r.Display
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessage("PSUseApprovedVerbs","")]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]] $Args,
+
+        [Parameter(Mandatory = $false)]
+        [string[]] $HiddenArgs = @(),
+
+        [Parameter(Mandatory = $false)]
+        [int[]] $HiddenArgIndexes = @(),
+
+        [Parameter(Mandatory = $false)]
+        [switch] $CaseInsensitive
+    )
+
+        function local:__Build-QuotedArgString {
+            <#
+            .SYNOPSIS
+            Builds the quoted command-line string from an array of arguments.
+            #>
+            param([Parameter(Mandatory = $true)][string[]] $InputArgs)
+
+            $count = $InputArgs.Length
+            $sb = New-Object System.Text.StringBuilder
+
+            for ($i = 0; $i -lt $count; $i++) {
+                $a = $InputArgs[$i]
+                if ($null -ne $a) {
+                    # Reviewer note: This checks for space, tab, newline, and quote.
+                    $needsQ = ($a.IndexOf(' ') -ge 0) -or ($a.IndexOf("`t") -ge 0) -or ($a.IndexOf("`n") -ge 0) -or ($a.IndexOf('"') -ge 0)
+                    if ($needsQ) {
+                        $escaped = $a.Replace('"','\"')
+                        $a = '"' + $escaped + '"'
+                    }
+                    [void]$sb.Append($a)
+                    if ($i -lt ($count - 1)) { [void]$sb.Append(' ') }
+                }
+            }
+
+            return $sb.ToString()
+        }
+
+        $usedString = __Build-QuotedArgString -InputArgs $Args
+
+        $hasHideByValue = ($null -ne $HiddenArgs -and $HiddenArgs.Count -gt 0)
+        $hasHideByIndex = ($null -ne $HiddenArgIndexes -and $HiddenArgIndexes.Count -gt 0)
+
+        if (-not $hasHideByValue -and -not $hasHideByIndex) {
+            return [pscustomobject]@{
+                Used    = $usedString
+                Display = $usedString
+            }
+        }
+
+        $comparer = if ($CaseInsensitive) { [System.StringComparer]::OrdinalIgnoreCase } else { [System.StringComparer]::Ordinal }
+        $hiddenSet = New-Object "System.Collections.Generic.HashSet[string]" ($comparer)
+        foreach ($h in $HiddenArgs) {
+            if ($null -ne $h) { [void]$hiddenSet.Add($h) }
+        }
+
+        $indexSet = New-Object "System.Collections.Generic.HashSet[int]"
+        foreach ($idx in $HiddenArgIndexes) {
+            [void]$indexSet.Add([int]$idx)
+        }
+
+        $displayArgs = New-Object string[] $Args.Length
+        for ($i = 0; $i -lt $Args.Length; $i++) {
+            $a = $Args[$i]
+            if ($null -eq $a) {
+                $displayArgs[$i] = $null
+                continue
+            }
+
+            $shouldHide = $indexSet.Contains($i) -or $hiddenSet.Contains($a)
+            $displayArgs[$i] = if ($shouldHide) { '[Hidden]' } else { $a }
+        }
+
+        $displayString = __Build-QuotedArgString -InputArgs $displayArgs
+
+        return [pscustomobject]@{
+            Used    = $usedString
+            Display = $displayString
+        }
+    }
+
+    # Ensure the C# helper type is loaded only once.
+    if (-not ('ExecHelpersV3.ExecNativeRunnerV3_Fixed' -as [type])) {
+        _Write-StandardMessage -Message 'Loading ExecHelpersV3.ExecNativeRunnerV3_Fixed C# helper type...' -Level 'INF'
+
+        $execNative2CSharp = @'
+using System;
+using System.IO;
+using System.Text;
+using System.Diagnostics;
+using System.Collections;
+using System.Collections.Generic;
+using System.Security;
+using System.Runtime.InteropServices;
+
+namespace ExecHelpersV3
+{
+    public class ExecResultV3
+    {
+        public int ExitCode { get; set; }
+        public string StdOut { get; set; }
+        public string StdErr { get; set; }
+        public string StdAll { get; set; }
+        public bool LimitHit { get; set; }
+    }
+
+    public static class ExecNativeRunnerV3_Fixed
+    {
+        private const int LOGON32_LOGON_INTERACTIVE = 2;
+        private const int LOGON32_LOGON_BATCH = 4;
+        private const int LOGON32_PROVIDER_DEFAULT = 0;
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct PROFILEINFO
+        {
+            public int dwSize;
+            public int dwFlags;
+            public string lpUserName;
+            public string lpProfilePath;
+            public string lpDefaultPath;
+            public string lpServerName;
+            public string lpPolicyPath;
+            public IntPtr hProfile;
+        }
+
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool LogonUser(
+            string lpszUsername,
+            string lpszDomain,
+            string lpszPassword,
+            int dwLogonType,
+            int dwLogonProvider,
+            out IntPtr phToken);
+
+        [DllImport("userenv.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool LoadUserProfile(IntPtr hToken, ref PROFILEINFO lpProfileInfo);
+
+        [DllImport("userenv.dll", SetLastError = true)]
+        private static extern bool UnloadUserProfile(IntPtr hToken, IntPtr hProfile);
+
+        [DllImport("userenv.dll", SetLastError = true)]
+        private static extern bool CreateEnvironmentBlock(out IntPtr lpEnvironment, IntPtr hToken, bool bInherit);
+
+        [DllImport("userenv.dll", SetLastError = true)]
+        private static extern bool DestroyEnvironmentBlock(IntPtr lpEnvironment);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr hObject);
+
+        private static SecureString ToSecureString(string s)
+        {
+            if (s == null) return null;
+            var ss = new SecureString();
+            foreach (char c in s) ss.AppendChar(c);
+            ss.MakeReadOnly();
+            return ss;
+        }
+
+        private static void EnsureEssentialEnvVars(System.Collections.Specialized.StringDictionary env)
+        {
+            string[] essentials = new string[] { "SystemRoot", "WINDIR", "ComSpec", "Path" };
+            foreach (string e in essentials)
+            {
+                if (!env.ContainsKey(e))
+                {
+                    string val = Environment.GetEnvironmentVariable(e);
+                    if (!string.IsNullOrEmpty(val))
+                    {
+                        env[e] = val;
+                    }
+                }
+            }
+        }
+
+        private static void ApplyUserEnvironmentIfPossible(ProcessStartInfo psi, string userName, string domain, string password)
+        {
+            // Important: Only touch psi.EnvironmentVariables AFTER we have a user env block,
+            // otherwise we force inheriting the caller environment (the bug you saw).
+            IntPtr token = IntPtr.Zero;
+            IntPtr envBlock = IntPtr.Zero;
+            PROFILEINFO prof = new PROFILEINFO();
+            bool profileLoaded = false;
+
+            try
+            {
+                // Try BATCH first (agents/services), then INTERACTIVE.
+                bool ok = LogonUser(userName, domain, password, LOGON32_LOGON_BATCH, LOGON32_PROVIDER_DEFAULT, out token);
+                if (!ok)
+                {
+                    ok = LogonUser(userName, domain, password, LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, out token);
+                }
+                if (!ok || token == IntPtr.Zero)
+                {
+                    // Fallback: Do not touch psi.EnvironmentVariables at all.
+                    // CreateProcessWithLogonW will then build an env for the target user.
+                    return;
+                }
+
+                prof.dwSize = Marshal.SizeOf(typeof(PROFILEINFO));
+                prof.lpUserName = userName;
+
+                // Best-effort: if this fails, we still try CreateEnvironmentBlock.
+                profileLoaded = LoadUserProfile(token, ref prof);
+
+                if (!CreateEnvironmentBlock(out envBlock, token, false) || envBlock == IntPtr.Zero)
+                {
+                    // Same fallback as above: do not touch psi.EnvironmentVariables.
+                    return;
+                }
+
+                // Parse the environment block (Unicode "k=v\0... \0\0").
+                // Then explicitly apply it to ProcessStartInfo BEFORE Start().
+                var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+                IntPtr cur = envBlock;
+                while (true)
+                {
+                    string entry = Marshal.PtrToStringUni(cur);
+                    if (string.IsNullOrEmpty(entry))
+                    {
+                        break;
+                    }
+
+                    int eq = entry.IndexOf('=');
+                    if (eq > 0)
+                    {
+                        string key = entry.Substring(0, eq);
+
+                        // Skip pseudo vars like "=C:".
+                        if (!key.StartsWith("=", StringComparison.Ordinal))
+                        {
+                            string val = entry.Substring(eq + 1);
+                            dict[key] = val;
+                        }
+                    }
+
+                    cur = IntPtr.Add(cur, (entry.Length + 1) * 2);
+                }
+
+                // Now touch EnvironmentVariables and replace content.
+                var env = psi.EnvironmentVariables;
+                env.Clear();
+                foreach (var kv in dict)
+                {
+                    env[kv.Key] = kv.Value;
+                }
+
+                if (!env.ContainsKey("HOME") && env.ContainsKey("USERPROFILE"))
+                {
+                    env["HOME"] = env["USERPROFILE"];
+                }
+
+                EnsureEssentialEnvVars(env);
+            }
+            finally
+            {
+                if (envBlock != IntPtr.Zero)
+                {
+                    try { DestroyEnvironmentBlock(envBlock); } catch { }
+                }
+
+                if (profileLoaded && prof.hProfile != IntPtr.Zero)
+                {
+                    try { UnloadUserProfile(token, prof.hProfile); } catch { }
+                }
+
+                if (token != IntPtr.Zero)
+                {
+                    try { CloseHandle(token); } catch { }
+                }
+            }
+        }
+
+        public static ExecResultV3 Run(
+            string file,
+            string arguments,
+            string workingDirectory,
+            string logPath,
+            string userName,
+            string domain,
+            string password,
+            int limitLogLines,
+            bool keepFirstOnLimit,
+            bool suppressConsoleWrite
+        )
+        {
+            var psi = new ProcessStartInfo();
+            psi.FileName = file;
+            psi.Arguments = arguments ?? string.Empty;
+            psi.WorkingDirectory = string.IsNullOrEmpty(workingDirectory)
+                ? Environment.CurrentDirectory
+                : workingDirectory;
+            psi.UseShellExecute = false;
+            psi.RedirectStandardOutput = true;
+            psi.RedirectStandardError = true;
+            psi.StandardOutputEncoding = new UTF8Encoding(false);
+            psi.StandardErrorEncoding  = new UTF8Encoding(false);
+            psi.CreateNoWindow = true;
+
+            bool useCred = !string.IsNullOrEmpty(userName);
+
+            if (useCred)
+            {
+                psi.UserName = userName;
+                if (!string.IsNullOrEmpty(domain))
+                {
+                    psi.Domain = domain;
+                }
+
+                psi.Password = ToSecureString(password);
+                psi.LoadUserProfile = true;
+
+                // FIX: Build and apply the target user's environment block explicitly.
+                ApplyUserEnvironmentIfPossible(psi, userName, domain, password);
+            }
+
+            var proc = new Process();
+            proc.StartInfo = psi;
+
+            var stdoutLines = new List<string>();
+            var stderrLines = new List<string>();
+            var allLines = new List<string>();
+            bool limitHit = false;
+
+            TextWriter logWriter = null;
+            StreamWriter baseWriter = null;
+
+            try
+            {
+                if (!string.IsNullOrEmpty(logPath))
+                {
+                    string dir = Path.GetDirectoryName(logPath);
+                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    {
+                        Directory.CreateDirectory(dir);
+                    }
+
+                    baseWriter = new StreamWriter(logPath, true, new UTF8Encoding(false));
+                    baseWriter.AutoFlush = true;
+                    logWriter = TextWriter.Synchronized(baseWriter);
+
+                    string fullCommand = file ?? string.Empty;
+                    if (!string.IsNullOrEmpty(arguments))
+                    {
+                        fullCommand = fullCommand + " " + arguments;
+                    }
+
+                    string headerLine = string.Format(
+                        "[{0:yy-MM-dd HH:mm:ss}] COMMAND: {1}",
+                        DateTime.Now,
+                        fullCommand
+                    );
+
+                    logWriter.WriteLine(headerLine);
+                }
+
+                DataReceivedEventHandler outHandler = delegate(object sender, DataReceivedEventArgs e)
+                {
+                    if (e.Data == null) return;
+
+                    lock (stdoutLines)
+                    {
+                        stdoutLines.Add(e.Data);
+                        if (limitLogLines > 0 && stdoutLines.Count > limitLogLines)
+                        {
+                            limitHit = true;
+                            if (keepFirstOnLimit) stdoutLines.RemoveAt(stdoutLines.Count - 1);
+                            else stdoutLines.RemoveAt(0);
+                        }
+                    }
+                    lock (allLines)
+                    {
+                        allLines.Add(e.Data);
+                        if (limitLogLines > 0 && allLines.Count > limitLogLines)
+                        {
+                            limitHit = true;
+                            if (keepFirstOnLimit) allLines.RemoveAt(allLines.Count - 1);
+                            else allLines.RemoveAt(0);
+                        }
+                    }
+
+                    if (logWriter != null) logWriter.WriteLine(e.Data);
+                    if (!suppressConsoleWrite) Console.Out.WriteLine(e.Data);
+                };
+
+                DataReceivedEventHandler errHandler = delegate(object sender, DataReceivedEventArgs e)
+                {
+                    if (e.Data == null) return;
+
+                    lock (stderrLines)
+                    {
+                        stderrLines.Add(e.Data);
+                        if (limitLogLines > 0 && stderrLines.Count > limitLogLines)
+                        {
+                            limitHit = true;
+                            if (keepFirstOnLimit) stderrLines.RemoveAt(stderrLines.Count - 1);
+                            else stderrLines.RemoveAt(0);
+                        }
+                    }
+                    lock (allLines)
+                    {
+                        allLines.Add(e.Data);
+                        if (limitLogLines > 0 && allLines.Count > limitLogLines)
+                        {
+                            limitHit = true;
+                            if (keepFirstOnLimit) allLines.RemoveAt(allLines.Count - 1);
+                            else allLines.RemoveAt(0);
+                        }
+                    }
+
+                    if (logWriter != null) logWriter.WriteLine(e.Data);
+                    if (!suppressConsoleWrite) Console.Error.WriteLine(e.Data);
+                };
+
+                proc.OutputDataReceived += outHandler;
+                proc.ErrorDataReceived += errHandler;
+
+                if (!proc.Start())
+                {
+                    throw new InvalidOperationException("Failed to start process '" + file + "'.");
+                }
+
+                proc.BeginOutputReadLine();
+                proc.BeginErrorReadLine();
+
+                proc.WaitForExit();
+
+                var result = new ExecResultV3();
+                result.ExitCode = proc.ExitCode;
+                result.StdOut = string.Join(Environment.NewLine, stdoutLines.ToArray());
+                result.StdErr = string.Join(Environment.NewLine, stderrLines.ToArray());
+                result.StdAll = string.Join(Environment.NewLine, allLines.ToArray());
+                result.LimitHit = limitHit;
+
+                return result;
+            }
+            finally
+            {
+                try { if (logWriter != null) logWriter.Flush(); } catch { }
+                if (baseWriter != null) baseWriter.Dispose();
+                proc.Dispose();
+            }
+        }
+    }
+}
+'@
+
+        Add-Type -TypeDefinition $execNative2CSharp -Language CSharp
+        _Write-StandardMessage -Message 'ExecHelpersV3.ExecNativeRunnerV3_Fixed C# helper type loaded.' -Level 'INF'
+    }
+
+    # Map PSCredential -> user/domain/plain password for the C# helper.
+    $user          = $null
+    $domain        = $null
+    $plainPassword = $null
+
+    if ($Credential) {
+        $userName = $Credential.UserName
+        $domain   = $null
+        $user     = $userName
+
+        if ($userName -match '^[^\\]+\\[^\\]+$') {
+            $parts  = $userName.Split('\', 2)
+            $domain = $parts[0]
+            $user   = $parts[1]
+            if ($domain -eq '.') {
+                $domain = $env:COMPUTERNAME
+            }
+        }
+        elseif ($userName -match '@') {
+            $domain = $null
+            $user   = $userName
+        }
+        else {
+            $domain = $env:COMPUTERNAME
+            $user   = $userName
+        }
+
+        $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Credential.Password)
+        try {
+            $plainPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        }
+        finally {
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+    }
+
+    # Build the argument string with your existing helper.
+    $argString = _Build-NewArgString -Args $Arguments -HiddenArgs @($plainPassword)
+
+    # Log the invocation.
+    $credInfo = if ($Credential) { $Credential.UserName } else { '<none>' }
+    $logInfo  = if ($LogPath)    { $LogPath }            else { '<none>' }
+
+    _Write-StandardMessage -Message ('[Invoked] File="{0}" Args="{1}" WorkingDirectory="{2}" Credential="{3}" LogPath="{4}"' -f $File,$argString.Display,$WorkingDirectory,$credInfo,$logInfo) -Level 'INF'
+
+    # Call the fixed C# helper (with configurable limit).
+    $result = [ExecHelpersV3.ExecNativeRunnerV3_Fixed]::Run(
+        $File,
+        $argString.Used,
+        $WorkingDirectory,
+        $LogPath,
+        $user,
+        $domain,
+        $plainPassword,
+        $LimitLogLines,
+        -not $TakeLastOnLimit,  # keepFirstOnLimit -> keep last lines
+        $true    # suppressConsoleWrite
+    )
+
+    if ($result.LimitHit) {
+        _Write-StandardMessage -Message ('[Warn] Output truncated to in-memory limit for File="{0}"' -f $File) -Level 'WRN'
+    }
+
+    $plainPassword = $null
+
+    $lvl = if ($result.ExitCode -eq 0) { 'INF' } else { 'ERR' }
+
+    $stdAllForLog = ''
+    if ($result -and -not [string]::IsNullOrEmpty([string]$result.StdAll)) {
+        $stdAllForLog = "`n$($result.StdAll)"
+    }
+
+    $messageText = '[Returned] File="{0}" ExitCode={1} StdAll={2}' -f $File, $result.ExitCode, $stdAllForLog
+    _Write-StandardMessage -Message $messageText -Level $lvl
+
+    [pscustomobject]@{
+        ExitCode = $result.ExitCode
+        StdOut   = $result.StdOut
+        StdErr   = $result.StdErr
+        StdAll   = $result.StdAll
+        LogPath  = $LogPath
+        LimitHit = $result.LimitHit
+    }
+}

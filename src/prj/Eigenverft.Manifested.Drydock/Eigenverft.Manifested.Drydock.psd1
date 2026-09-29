@@ -108,6 +108,7 @@ FunctionsToExport = @(
     # ...Execution.ps1
     'Invoke-Exec',
     'Invoke-ProcessTyped',
+    'Invoke-Execution',
     
     # ...Framework.ps1
     'Get-DotNetFrameworkInfo',
